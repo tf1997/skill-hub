@@ -1,0 +1,51 @@
+{
+  "$schema": "../fronted/node_modules/@tauri-apps/cli/schema.json",
+  "build": {
+    "beforeBuildCommand": "npm --prefix ../fronted run build",
+    "beforeDevCommand": "npm --prefix ../fronted run build",
+    "devPath": "../fronted/dist",
+    "distDir": "../fronted/dist"
+  },
+  "package": {
+    "productName": "Skill Hub",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": false,
+        "open": true
+      },
+      "shell": {
+        "all": false,
+        "open": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "category": "DeveloperTool",
+      "icon": [
+        "icons/icon.png",
+        "icons/icon.ico"
+      ],
+      "identifier": "com.skillhub.desktop",
+      "targets": "all"
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "center": true,
+        "decorations": true,
+        "height": 820,
+        "minHeight": 680,
+        "minWidth": 1040,
+        "resizable": true,
+        "title": "Skill Hub",
+        "width": 1240
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+fronted/node_modules/
+fronted/dist/
+fronted/.vite/
+src-tauri/target/
+src-tauri/Cargo.lock
+*.log

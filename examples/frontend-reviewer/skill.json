@@ -1,0 +1,20 @@
+{
+  "schema": "skillhub.skill.v1",
+  "id": "frontend-reviewer",
+  "namespace": "official",
+  "name": "Frontend Reviewer",
+  "version": "1.0.0",
+  "summary": "Review frontend components for usability, accessibility, and visual consistency.",
+  "categories": ["frontend"],
+  "tags": ["react", "review", "accessibility"],
+  "levels": ["personal", "project"],
+  "author": {
+    "name": "Skill Hub"
+  },
+  "license": "MIT",
+  "compatibility": {},
+  "permissions": {
+    "network": false,
+    "filesystem": "project-read"
+  }
+}

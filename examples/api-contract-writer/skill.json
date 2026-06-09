@@ -1,0 +1,20 @@
+{
+  "schema": "skillhub.skill.v1",
+  "id": "api-contract-writer",
+  "namespace": "official",
+  "name": "API Contract Writer",
+  "version": "1.0.0",
+  "summary": "Draft API contracts, edge cases, and test scenarios for backend services.",
+  "categories": ["backend"],
+  "tags": ["api", "openapi", "testing"],
+  "levels": ["personal", "project"],
+  "author": {
+    "name": "Skill Hub"
+  },
+  "license": "MIT",
+  "compatibility": {},
+  "permissions": {
+    "network": false,
+    "filesystem": "project-read"
+  }
+}
