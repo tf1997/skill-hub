@@ -15,6 +15,12 @@ use crate::models::{
     Source, TargetRoot, UpdateCandidate,
 };
 
+pub const COMPILED_SOURCE_ID: &str = "compiled-source";
+pub const COMPILED_SOURCE_NAME: &str = "本地 MinIO";
+pub const COMPILED_SOURCE_ENDPOINT: &str = "http://127.0.0.1:9000";
+pub const COMPILED_SOURCE_BUCKET: &str = "skill-market";
+pub const COMPILED_SOURCE_REGION: Option<&str> = None;
+
 #[derive(Clone)]
 pub struct AppState {
     pub conn: Arc<Mutex<Connection>>,
@@ -38,6 +44,7 @@ pub fn init_state(app: &AppHandle) -> Result<AppState> {
     let db_path = app_dir.join("skillhub.sqlite");
     let conn = Connection::open(db_path)?;
     migrate(&conn)?;
+    enforce_compiled_source(&conn)?;
     seed_if_empty(&conn)?;
 
     Ok(AppState {
@@ -157,6 +164,35 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "DELETE FROM sources WHERE id <> ?1",
+        params![COMPILED_SOURCE_ID],
+    )?;
+    conn.execute(
+        "DELETE FROM catalog_cache WHERE source_id <> ?1",
+        params![COMPILED_SOURCE_ID],
+    )?;
+    conn.execute(
+        "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           endpoint = excluded.endpoint,
+           bucket = excluded.bucket,
+           region = excluded.region,
+           enabled = 1",
+        params![
+            COMPILED_SOURCE_ID,
+            COMPILED_SOURCE_NAME,
+            COMPILED_SOURCE_ENDPOINT,
+            COMPILED_SOURCE_BUCKET,
+            COMPILED_SOURCE_REGION
+        ],
+    )?;
+    Ok(())
+}
+
 fn seed_if_empty(conn: &Connection) -> Result<()> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))?;
     if count == 0 {
@@ -175,21 +211,6 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
         }
     }
 
-    let source_count: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0))?;
-    if source_count == 0 {
-        conn.execute(
-            "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)",
-            params![
-                "demo-source",
-                "本地 MinIO",
-                "http://127.0.0.1:9000",
-                "skill-market",
-                Option::<String>::None
-            ],
-        )?;
-    }
-
     let skill_count: i64 =
         conn.query_row("SELECT COUNT(*) FROM catalog_cache", [], |row| row.get(0))?;
     if skill_count == 0 {
@@ -202,7 +223,7 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
                   tags_json, targets_json, levels_json, manifest_path, raw_manifest, etag, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13)",
                 params![
-                    "demo-source",
+                    COMPILED_SOURCE_ID,
                     skill.namespace,
                     skill.id,
                     skill.latest_version,
@@ -593,7 +614,7 @@ fn sample_skills() -> Vec<MarketSkill> {
             levels: vec!["personal".to_string(), "project".to_string()],
             manifest_path: "skills/official/frontend-reviewer/manifest.json".to_string(),
             updated_at: Some(now()),
-            source_id: Some("demo-source".to_string()),
+            source_id: Some(COMPILED_SOURCE_ID.to_string()),
             installed_bindings: Vec::new(),
             cached_versions: Vec::new(),
         },
@@ -609,7 +630,7 @@ fn sample_skills() -> Vec<MarketSkill> {
             levels: vec!["personal".to_string(), "project".to_string()],
             manifest_path: "skills/official/api-contract-writer/manifest.json".to_string(),
             updated_at: Some(now()),
-            source_id: Some("demo-source".to_string()),
+            source_id: Some(COMPILED_SOURCE_ID.to_string()),
             installed_bindings: Vec::new(),
             cached_versions: Vec::new(),
         },
@@ -625,7 +646,7 @@ fn sample_skills() -> Vec<MarketSkill> {
             levels: vec!["personal".to_string(), "project".to_string()],
             manifest_path: "skills/community/prd-shaper/manifest.json".to_string(),
             updated_at: Some(now()),
-            source_id: Some("demo-source".to_string()),
+            source_id: Some(COMPILED_SOURCE_ID.to_string()),
             installed_bindings: Vec::new(),
             cached_versions: Vec::new(),
         },

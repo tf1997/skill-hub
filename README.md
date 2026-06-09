@@ -30,6 +30,7 @@ Skill Hub 是一个 Tauri v1 + Rust + React 的桌面 skill 市场客户端。�
 - MinIO / S3-compatible public object URL
 
 MinIO 源由本地默认配置和运维脚本维护，不暴露在客户端 UI 页面中。
+客户端启动时会强制使用代码中的固定源，并覆盖本地 SQLite 中已有的 `sources` 记录。固定源配置位于 `src-tauri/src/db.rs` 的 `COMPILED_SOURCE_*` 常量。
 
 ## 开发运行
 

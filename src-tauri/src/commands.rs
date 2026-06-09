@@ -14,9 +14,9 @@ use zip::ZipArchive;
 
 use crate::{
     db::{
-        app_bootstrap, canonical_display_path, insert_audit, list_bindings_inner,
-        list_cached_versions_inner, list_local_skills_inner, list_market_skills_inner,
-        list_projects_inner, list_sources_inner, list_target_roots_inner,
+        app_bootstrap, canonical_display_path, enforce_compiled_source, insert_audit,
+        list_bindings_inner, list_cached_versions_inner, list_local_skills_inner,
+        list_market_skills_inner, list_projects_inner, list_sources_inner, list_target_roots_inner,
         list_update_candidates_inner, new_id, now, AppState,
     },
     models::{
@@ -66,50 +66,17 @@ pub async fn list_market_skills(state: State<'_, AppState>) -> CommandResult<Vec
 pub async fn list_sources(state: State<'_, AppState>) -> CommandResult<Vec<Source>> {
     map_result((|| {
         let conn = state.conn.lock().expect("db mutex poisoned");
+        enforce_compiled_source(&conn)?;
         list_sources_inner(&conn)
     })())
 }
 
 #[tauri::command]
 pub async fn save_source(
-    request: SaveSourceRequest,
-    state: State<'_, AppState>,
+    _request: SaveSourceRequest,
+    _state: State<'_, AppState>,
 ) -> CommandResult<Source> {
-    map_result((|| {
-        let endpoint = request.endpoint.trim().trim_end_matches('/').to_string();
-        Url::parse(&endpoint).context("源地址不是有效 URL")?;
-        let bucket = request.bucket.trim().to_string();
-        if bucket.is_empty() {
-            return Err(anyhow!("bucket 不能为空"));
-        }
-
-        let id = request.id.unwrap_or_else(new_id);
-        let conn = state.conn.lock().expect("db mutex poisoned");
-        conn.execute(
-            "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
-             ON CONFLICT(id) DO UPDATE SET
-               name = excluded.name,
-               endpoint = excluded.endpoint,
-               bucket = excluded.bucket,
-               region = excluded.region,
-               enabled = excluded.enabled",
-            params![
-                id,
-                request.name.trim(),
-                endpoint,
-                bucket,
-                request.region,
-                if request.enabled { 1_i64 } else { 0_i64 }
-            ],
-        )?;
-
-        let sources = list_sources_inner(&conn)?;
-        sources
-            .into_iter()
-            .find(|source| source.id == id)
-            .ok_or_else(|| anyhow!("保存源后读取失败"))
-    })())
+    map_result(Err(anyhow!("数据源由代码配置强制控制，客户端不能修改")))
 }
 
 #[tauri::command]
@@ -231,9 +198,7 @@ async fn install_skill_inner(
         .clone()
         .unwrap_or_else(|| skill.latest_version.clone());
     let version_info = match source.as_ref() {
-        Some(source) if source.id != "demo-source" => {
-            Some(fetch_manifest_version(source, &skill.manifest_path, &version).await?)
-        }
+        Some(source) => Some(fetch_manifest_version(source, &skill.manifest_path, &version).await?),
         _ => None,
     };
 
@@ -435,11 +400,6 @@ async fn prepare_package(
         write_demo_package(&package_dir, skill, version)?;
         return Ok(package_dir);
     };
-
-    if source.id == "demo-source" {
-        write_demo_package(&package_dir, skill, version)?;
-        return Ok(package_dir);
-    }
 
     let Some(version_info) = version_info else {
         write_demo_package(&package_dir, skill, version)?;
@@ -754,6 +714,7 @@ pub async fn list_update_candidates(
 async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
     let sources = {
         let conn = state.conn.lock().expect("db mutex poisoned");
+        enforce_compiled_source(&conn)?;
         list_sources_inner(&conn)?
             .into_iter()
             .filter(|source| source.enabled)
@@ -1117,7 +1078,7 @@ async fn preview_skill_inner(
             };
             let version = requested_version.unwrap_or_else(|| skill.latest_version.clone());
             let version_info = match source.as_ref() {
-                Some(source) if source.id != "demo-source" => {
+                Some(source) => {
                     Some(fetch_manifest_version(source, &skill.manifest_path, &version).await?)
                 }
                 _ => None,
