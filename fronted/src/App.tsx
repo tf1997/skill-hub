@@ -881,81 +881,97 @@ function InstalledView(props: {
   onPreviewCache: (item: CachedSkillItem) => void;
   onDeleteCache: (item: CachedSkillItem) => void;
 }) {
-  const [showCache, setShowCache] = useState(false);
+  const [activeTab, setActiveTab] = useState<"bindings" | "cache" | "local">("bindings");
+  const activeTitle =
+    activeTab === "bindings" ? "生效矩阵" : activeTab === "cache" ? "本地缓存" : "本地已有 skill";
+  const activeDescription =
+    activeTab === "bindings"
+      ? "同一 skill 在同一平台下只能选择个人级或项目级之一。"
+      : activeTab === "cache"
+        ? "已下载但不一定生效的 skill 包，删除缓存不会卸载已安装目录。"
+        : "扫描个人级和项目级目录中包含 SKILL.md 的 skill。";
+  const tabs = [
+    { key: "bindings" as const, label: "生效矩阵", count: props.bindings.length },
+    { key: "cache" as const, label: "本地缓存", count: props.cachedSkills.length },
+    { key: "local" as const, label: "本地已有 skill", count: props.localSkills.length }
+  ];
 
   return (
-    <section className={`content-stack installed-view ${showCache ? "with-cache" : ""}`}>
+    <section className="content-stack installed-view">
       <div className="section-toolbar">
         <div>
-          <h2>生效矩阵</h2>
-          <p>同一 skill 在同一平台下只能选择个人级或项目级之一。</p>
+          <h2>{activeTitle}</h2>
+          <p>{activeDescription}</p>
         </div>
-        <div className="toolbar-actions">
-          <button
-            className={`primary-soft ${showCache ? "active" : ""}`}
-            onClick={() => setShowCache((value) => !value)}
-          >
-            <Archive size={17} />
-            本地缓存
-            <Badge>{props.cachedSkills.length}</Badge>
-          </button>
-          <button className="primary-soft" onClick={props.onScan}>
-            <ShieldCheck size={17} />
-            扫描
-          </button>
-        </div>
-      </div>
-
-      <div className="data-table">
-        <div className="table-head">
-          <span>Skill</span>
-          <span>平台</span>
-          <span>范围</span>
-          <span>版本</span>
-          <span>状态</span>
-          <span>操作</span>
-        </div>
-        {props.bindings.length > 0 ? (
-          props.bindings.map((binding) => (
-            <div className="table-row" key={binding.id}>
-              <span>
-                <strong>{binding.skillName}</strong>
-                <small>{binding.skillId}</small>
-              </span>
-              <span>{targetLabels[binding.target] ?? binding.target}</span>
-              <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
-              <span>{binding.version}</span>
-              <span>
-                <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
-              </span>
-              <span className="row-actions">
-                <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
-                  <Power size={16} />
-                </button>
-                <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
-                  <BookOpen size={16} />
-                </button>
-                <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
-                  <Archive size={16} />
-                </button>
-              </span>
-            </div>
-          ))
-        ) : (
-          <div className="empty-state compact">还没有通过 Skill Hub 安装或启用的 skill。</div>
-        )}
-      </div>
-
-      {showCache ? (
-        <div className="cache-panel">
-          <div className="cache-panel-head">
-            <div>
-              <h2>本地缓存</h2>
-              <p>已下载但不一定生效的 skill 包，删除缓存不会卸载已安装目录。</p>
-            </div>
-            <Badge>{props.cachedSkills.length} 个版本</Badge>
+        {activeTab === "local" ? (
+          <div className="toolbar-actions">
+            <button className="primary-soft" onClick={props.onScan}>
+              <ShieldCheck size={17} />
+              扫描
+            </button>
           </div>
+        ) : null}
+      </div>
 
+      <div className="tab-strip" role="tablist" aria-label="本地 skill 视图">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            className={activeTab === tab.key ? "active" : ""}
+            onClick={() => setActiveTab(tab.key)}
+            role="tab"
+            aria-selected={activeTab === tab.key}
+          >
+            {tab.label}
+            <Badge>{tab.count}</Badge>
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "bindings" ? (
+        <div className="data-table">
+          <div className="table-head">
+            <span>Skill</span>
+            <span>平台</span>
+            <span>范围</span>
+            <span>版本</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          {props.bindings.length > 0 ? (
+            props.bindings.map((binding) => (
+              <div className="table-row" key={binding.id}>
+                <span>
+                  <strong>{binding.skillName}</strong>
+                  <small>{binding.skillId}</small>
+                </span>
+                <span>{targetLabels[binding.target] ?? binding.target}</span>
+                <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
+                <span>{binding.version}</span>
+                <span>
+                  <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
+                </span>
+                <span className="row-actions">
+                  <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
+                    <Power size={16} />
+                  </button>
+                  <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
+                    <BookOpen size={16} />
+                  </button>
+                  <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
+                    <Archive size={16} />
+                  </button>
+                </span>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state compact">还没有通过 Skill Hub 安装或启用的 skill。</div>
+          )}
+        </div>
+      ) : null}
+
+      {activeTab === "cache" ? (
+        <div className="cache-panel">
           {props.cachedSkills.length > 0 ? (
             <div className="cache-list">
               {props.cachedSkills.map((item) => (
@@ -998,32 +1014,33 @@ function InstalledView(props: {
         </div>
       ) : null}
 
-      <div className="local-scan">
-        <h2>本地已有 skill</h2>
-        {props.localSkills.length > 0 ? (
-          props.localSkills.map((skill) => (
-            <div className="scan-line" key={skill.id}>
-              <CheckCircle2 size={16} />
-              <span>
-                <strong>{skill.detectedManifest ?? "本地 skill"}</strong>
-                <small>
-                  {targetLabels[skill.target] ?? skill.target} / {levelLabels[skill.level] ?? skill.level}
-                  {skill.level === "project" && skill.projectPath ? ` · ${skill.projectPath}` : ""}
-                </small>
-                <small>{skill.path}</small>
-              </span>
-              <Badge strong={skill.managedBySkillhub && skill.status !== "missing"}>
-                {localSkillStatusLabel(skill)}
-              </Badge>
-              <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
-                <BookOpen size={16} />
-              </button>
-            </div>
-          ))
-        ) : (
-          <div className="empty-state compact">点击扫描后会显示个人级和项目级目录中包含 SKILL.md 的 skill。</div>
-        )}
-      </div>
+      {activeTab === "local" ? (
+        <div className="local-scan">
+          {props.localSkills.length > 0 ? (
+            props.localSkills.map((skill) => (
+              <div className="scan-line" key={skill.id}>
+                <CheckCircle2 size={16} />
+                <span>
+                  <strong>{skill.detectedManifest ?? "本地 skill"}</strong>
+                  <small>
+                    {targetLabels[skill.target] ?? skill.target} / {levelLabels[skill.level] ?? skill.level}
+                    {skill.level === "project" && skill.projectPath ? ` · ${skill.projectPath}` : ""}
+                  </small>
+                  <small>{skill.path}</small>
+                </span>
+                <Badge strong={skill.managedBySkillhub && skill.status !== "missing"}>
+                  {localSkillStatusLabel(skill)}
+                </Badge>
+                <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
+                  <BookOpen size={16} />
+                </button>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state compact">点击扫描后会显示个人级和项目级目录中包含 SKILL.md 的 skill。</div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

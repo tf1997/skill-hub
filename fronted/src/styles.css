@@ -775,15 +775,7 @@ button {
 }
 
 .installed-view {
-  grid-template-rows: auto minmax(0, 1fr) minmax(0, 0.85fr);
-}
-
-.installed-view.with-cache {
-  grid-template-rows:
-    auto
-    minmax(0, 0.9fr)
-    minmax(0, 0.65fr)
-    minmax(0, 0.75fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .projects-view,
@@ -808,6 +800,45 @@ button {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.tab-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 4px;
+  overflow: auto;
+  background: rgba(116, 138, 164, 0.1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.tab-strip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-strip button.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+}
+
+.tab-strip button.active .badge {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 .primary-soft.active {
@@ -880,25 +911,6 @@ button {
   border-radius: 16px;
   background: var(--panel);
   box-shadow: var(--shadow);
-}
-
-.cache-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px 16px 0;
-}
-
-.cache-panel-head h2,
-.cache-panel-head p {
-  margin: 0;
-}
-
-.cache-panel-head p {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .cache-list {
