@@ -615,7 +615,7 @@ namespace + skill_id + target
 - 已安装 MinIO Client `mc`。
 - 用于发布到市场的源目录必须包含 `SKILL.md`。
 - `skill.json` 可选；缺失时发布脚本从目录名、`SKILL.md` 标题、README / SKILL 正文生成发布元数据。
-- 如提供 `skill.json`，至少包含 `id`、`name`、`version`；也可通过脚本参数覆盖 `namespace`、`version`、`id`、`name`、`summary`。
+- 如提供 `skill.json`，至少包含 `id`、`name`、`version`；也可通过脚本参数覆盖 `namespace`、`version`、`id`、`name`、`summary`、`categories`。
 
 方式一，先配置 MinIO alias：
 

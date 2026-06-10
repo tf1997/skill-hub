@@ -616,6 +616,39 @@ pub async fn save_project(
 }
 
 #[tauri::command]
+pub async fn unbind_project(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<Project>> {
+    map_result((|| {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let project = list_projects_inner(&conn)?
+            .into_iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow!("未找到项目"))?;
+
+        conn.execute(
+            "DELETE FROM skill_bindings WHERE level = 'project' AND project_path = ?1",
+            params![&project.path],
+        )?;
+        conn.execute(
+            "DELETE FROM local_skills WHERE level = 'project' AND project_path = ?1",
+            params![&project.path],
+        )?;
+        conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+
+        insert_audit(
+            &conn,
+            "unbind_project",
+            None,
+            "success",
+            Some(&project.path),
+        )?;
+        list_projects_inner(&conn)
+    })())
+}
+
+#[tauri::command]
 pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<LocalSkill>> {
     map_result((|| {
         let conn = state.conn.lock().expect("db mutex poisoned");

@@ -377,6 +377,25 @@ function App() {
     }
   }
 
+  async function unbindProject(project: Project) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.unbindProject(project.id);
+      if (installProjectPath === project.path) {
+        setInstallProjectPath("");
+      }
+      await load();
+      setNotice(
+        "项目已解绑。此前安装到该项目目录的 skill 不会自动删除，请到项目的 .codex/skills 或 .claude/skills 中手动清理。"
+      );
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveTargetRoot(target: string) {
     const personalPath = targetRootDrafts[target];
     if (!personalPath?.trim()) {
@@ -525,6 +544,7 @@ function App() {
             onName={setNewProjectName}
             onPickPath={() => void chooseFolder("project")}
             onSave={saveProject}
+            onUnbind={(project) => void unbindProject(project)}
           />
         ) : null}
 
@@ -1016,6 +1036,7 @@ function ProjectsView(props: {
   onName: (value: string) => void;
   onPickPath: () => void;
   onSave: () => void;
+  onUnbind: (project: Project) => void;
 }) {
   return (
     <section className="content-stack">
@@ -1046,14 +1067,25 @@ function ProjectsView(props: {
 
       <div className="project-grid">
         {props.projects.map((project) => {
-          const count = props.bindings.filter((binding) => binding.projectPath === project.path).length;
+          const count = props.bindings.filter(
+            (binding) => binding.projectPath === project.path
+          ).length;
           return (
             <div className="project-tile" key={project.id}>
-              <div>
+              <div className="project-tile-main">
                 <strong>{project.name}</strong>
                 <span>{project.path}</span>
               </div>
-              <Badge strong>{count} skills</Badge>
+              <div className="project-tile-actions">
+                <Badge strong>{count} skills</Badge>
+                <button
+                  className="icon-button danger"
+                  onClick={() => props.onUnbind(project)}
+                  title="解绑项目"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
           );
         })}

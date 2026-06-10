@@ -987,6 +987,17 @@ button {
   padding: 16px;
 }
 
+.project-tile-main {
+  min-width: 0;
+}
+
+.project-tile-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
 .project-tile strong,
 .project-tile span,
 .target-root-row strong,

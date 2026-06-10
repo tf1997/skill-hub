@@ -31,6 +31,7 @@ Publish a skill directory without writing skill.json by hand:
   -SkillDir .\my-skill `
   -Namespace official `
   -Version 1.0.0 `
+  -Categories frontend `
   -CreateBucket
 
 .EXAMPLE
@@ -65,6 +66,9 @@ param(
     [string]$SkillName,
 
     [string]$SkillSummary,
+
+    [Alias("Categories")]
+    [string[]]$SkillCategories,
 
     [string]$Alias = "skillhub",
 
@@ -192,6 +196,11 @@ function Set-JsonProperty {
         [object]$Value
     )
 
+    if ($Object -is [System.Collections.IDictionary]) {
+        $Object[$Name] = $Value
+        return
+    }
+
     if ($Object.PSObject.Properties.Name -contains $Name) {
         $Object.$Name = $Value
     }
@@ -211,6 +220,19 @@ function Get-JsonPropertyValue {
     )
 
     if ($null -eq $Object) {
+        return $Default
+    }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        foreach ($name in $Names) {
+            if ($Object.Contains($name)) {
+                $value = $Object[$name]
+                if ($null -ne $value) {
+                    return $value
+                }
+            }
+        }
+
         return $Default
     }
 
@@ -594,7 +616,7 @@ function Convert-ToCanonicalVersionEntry {
 function Convert-ToCanonicalCategoriesDoc {
     param([Parameter(Mandatory = $true)][object]$CategoriesDoc)
 
-    $items = @(Normalize-Array $CategoriesDoc.items | ForEach-Object {
+    $items = @(Normalize-Array (Get-JsonPropertyValue -Object $CategoriesDoc -Names @("items") -Default @()) | ForEach-Object {
         [ordered]@{
             id = $_.id
             name = $_.name
@@ -622,13 +644,15 @@ function Build-CategoryIndexes {
     )
 
     $uploaded = @()
-    $skills = Normalize-Array $Catalog.skills
-    $categoryIds = Normalize-Array $CategoriesDoc.items | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    $skills = Normalize-Array (Get-JsonPropertyValue -Object $Catalog -Names @("skills") -Default @())
+    $categoryIds = Normalize-Array (Get-JsonPropertyValue -Object $CategoriesDoc -Names @("items") -Default @()) | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
 
     foreach ($categoryId in $categoryIds) {
         Assert-SafeObjectSegment -Name "category id" -Value $categoryId
 
-        $items = @($skills | Where-Object { (Normalize-Array $_.categories) -contains $categoryId })
+        $items = @($skills | Where-Object {
+            (Normalize-Array (Get-JsonPropertyValue -Object $_ -Names @("categories") -Default @())) -contains $categoryId
+        })
         $doc = [ordered]@{
             schema = "skillhub.index.category.v1"
             generatedAt = $script:Now
@@ -656,18 +680,20 @@ function Build-SearchLiteIndex {
         [string]$WorkDir
     )
 
-    $skills = Normalize-Array $Catalog.skills
+    $skills = Normalize-Array (Get-JsonPropertyValue -Object $Catalog -Names @("skills") -Default @())
     $items = @($skills | ForEach-Object {
+        $namespace = Get-JsonPropertyValue -Object $_ -Names @("namespace")
+        $skillId = Get-JsonPropertyValue -Object $_ -Names @("id")
         [ordered]@{
-            key = "$($_.namespace)/$($_.id)"
-            namespace = $_.namespace
-            id = $_.id
-            name = $_.name
-            summary = $_.summary
-            latestVersion = $_.latestVersion
-            categories = @(Normalize-Array $_.categories)
-            tags = @(Normalize-Array $_.tags)
-            manifestPath = $_.manifestPath
+            key = "$namespace/$skillId"
+            namespace = $namespace
+            id = $skillId
+            name = Get-JsonPropertyValue -Object $_ -Names @("name")
+            summary = Get-JsonPropertyValue -Object $_ -Names @("summary")
+            latestVersion = Get-JsonPropertyValue -Object $_ -Names @("latestVersion", "latest_version")
+            categories = @(Normalize-Array (Get-JsonPropertyValue -Object $_ -Names @("categories") -Default @()))
+            tags = @(Normalize-Array (Get-JsonPropertyValue -Object $_ -Names @("tags") -Default @()))
+            manifestPath = Get-JsonPropertyValue -Object $_ -Names @("manifestPath", "manifest_path")
         }
     })
 
@@ -697,7 +723,7 @@ function Assert-SkillCategoriesDefined {
         [string]$CategoriesPath
     )
 
-    $items = @(Normalize-Array $CategoriesDoc.items)
+    $items = @(Normalize-Array (Get-JsonPropertyValue -Object $CategoriesDoc -Names @("items") -Default @()))
     $definedIds = @($items | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     foreach ($categoryId in $SkillCategories) {
@@ -842,7 +868,12 @@ try {
         $summary = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("summary") -Default ""
     }
 
-    $categories = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("categories") -Default @("public")))
+    $categorySource = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("categories") -Default @("public")
+    if ($null -ne $SkillCategories -and $SkillCategories.Count -gt 0) {
+        $categorySource = $SkillCategories
+    }
+
+    $categories = @(Normalize-Array $categorySource)
     $tags = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("tags") -Default @()))
     $levels = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("levels") -Default @("personal", "project")))
 
@@ -1040,12 +1071,12 @@ try {
         -Levels $levels `
         -ManifestPath $manifestObject
 
-    $catalogSkills = @(Normalize-Array $remoteCatalog.skills | ForEach-Object {
+    $catalogSkills = @(Normalize-Array (Get-JsonPropertyValue -Object $remoteCatalog -Names @("skills") -Default @()) | ForEach-Object {
         Convert-ToCanonicalSkillEntry -Entry $_
     } | Where-Object { -not ($_.namespace -eq $Namespace -and $_.id -eq $skillId) })
     $catalogSkills += $skillEntry
 
-    $categoryIds = @(Normalize-Array $categoriesDoc.items | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $categoryIds = @(Normalize-Array (Get-JsonPropertyValue -Object $categoriesDoc -Names @("items") -Default @()) | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
 
     $catalog = New-CatalogDefault
     Set-JsonProperty -Object $catalog -Name "categories" -Value @($categoryIds)

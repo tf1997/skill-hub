@@ -27,6 +27,7 @@ fn main() {
             commands::uninstall_binding,
             commands::list_projects,
             commands::save_project,
+            commands::unbind_project,
             commands::scan_local_skills,
             commands::preview_skill,
             commands::list_update_candidates

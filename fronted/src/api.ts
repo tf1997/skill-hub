@@ -39,6 +39,8 @@ export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
   saveProject: (name: string, path: string, id?: string) =>
     invoke<Project>("save_project", { request: { id, name, path } }),
+  unbindProject: (projectId: string) =>
+    invoke<Project[]>("unbind_project", { projectId }),
   scanLocalSkills: () => invoke<LocalSkill[]>("scan_local_skills"),
   previewSkill: (request: SkillPreviewRequest) =>
     invoke<SkillPreview>("preview_skill", { request }),

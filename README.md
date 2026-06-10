@@ -93,6 +93,7 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
   -SkillDir .\my-skill `
   -Namespace official `
   -Version 1.0.0 `
+  -Categories frontend `
   -CreateBucket
 ```
 
