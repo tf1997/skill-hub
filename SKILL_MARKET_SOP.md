@@ -187,7 +187,7 @@ skill-market/
 ```json
 {
   "schema": "skillhub.catalog.v1",
-  "generated_at": "2026-06-09T00:00:00Z",
+  "generatedAt": "2026-06-09T00:00:00Z",
   "categories": ["public", "frontend", "backend", "product"],
   "skills": [
     {
@@ -195,9 +195,9 @@ skill-market/
       "id": "react-component-reviewer",
       "name": "React Component Reviewer",
       "summary": "Review React components.",
-      "latest_version": "1.1.0",
+      "latestVersion": "1.1.0",
       "categories": ["frontend"],
-      "manifest_path": "skills/official/react-component-reviewer/manifest.json"
+      "manifestPath": "skills/official/react-component-reviewer/manifest.json"
     }
   ]
 }
@@ -211,6 +211,7 @@ skill-market/
 ```json
 {
   "schema": "skillhub.categories.v1",
+  "generatedAt": "2026-06-09T00:00:00Z",
   "items": [
     {
       "id": "public",
@@ -612,8 +613,9 @@ namespace + skill_id + target
 前置条件：
 
 - 已安装 MinIO Client `mc`。
-- 用于发布到市场的源目录包含 `skill.json` 和 `SKILL.md`。
-- `skill.json` 至少包含 `id`、`name`、`version`。
+- 用于发布到市场的源目录必须包含 `SKILL.md`。
+- `skill.json` 可选；缺失时发布脚本从目录名、`SKILL.md` 标题、README / SKILL 正文生成发布元数据。
+- 如提供 `skill.json`，至少包含 `id`、`name`、`version`；也可通过脚本参数覆盖 `namespace`、`version`、`id`、`name`、`summary`。
 
 方式一，先配置 MinIO alias：
 
@@ -642,10 +644,10 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 
 脚本会自动执行：
 
-1. 读取 `skill.json`。
+1. 读取 `skill.json`；如不存在，则自动生成发布元数据。
 2. 复制运行文件到临时目录，排除所有 `.json` 文件。
 3. 读取并校验外部 `categories.v1.json`。
-4. 校验 `skill.json` 中的分类均已在 `categories.v1.json` 中定义。
+4. 校验发布元数据中的分类均已在 `categories.v1.json` 中定义。
 5. 压缩临时运行目录为 `package.zip`。
 6. 计算 `package.sha256`。
 7. 上传版本文件到 `skills/{namespace}/{skill_id}/versions/{version}/`。
@@ -661,7 +663,7 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 
 1. 用户选择 skill 源目录。
 2. 选择分类配置文件；默认使用仓库根目录 `categories.v1.json`，也可传入 `-CategoriesPath`。
-3. 校验 `skill.json`、`SKILL.md` 和 `categories.v1.json`。
+3. 校验 `SKILL.md`、可选 `skill.json` 和 `categories.v1.json`。
 4. 校验 skill 分类已在 `categories.v1.json` 中声明。
 5. 过滤 `.json` 文件后生成运行压缩包。
 6. 计算 SHA-256。

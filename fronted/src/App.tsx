@@ -173,7 +173,7 @@ function App() {
     try {
       const next = await api.refreshCatalog();
       setData(next);
-      setNotice(next.skills.length > 0 ? "市场元数据已从 MinIO 同步" : "MinIO catalog 为空，暂无市场 skill");
+      setNotice("市场元数据已从 MinIO 同步");
     } catch (err) {
       setError(`市场索引刷新失败：${readError(err)}`);
     } finally {
@@ -900,7 +900,7 @@ function InstalledView(props: {
             <div className="table-row" key={binding.id}>
               <span>
                 <strong>{binding.skillName}</strong>
-                <small>{binding.namespace}/{binding.skillId}</small>
+                <small>{binding.skillId}</small>
               </span>
               <span>{targetLabels[binding.target] ?? binding.target}</span>
               <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
@@ -945,9 +945,7 @@ function InstalledView(props: {
                   </div>
                   <div className="cache-main">
                     <strong>{item.package.skillName}</strong>
-                    <small>
-                      {item.package.namespace}/{item.package.skillId}
-                    </small>
+                    <small>{item.package.skillId}</small>
                   </div>
                   <div className="cache-meta">
                     <Badge strong={item.marketSkill ? item.package.version === item.marketSkill.latestVersion : false}>
@@ -1084,7 +1082,7 @@ function UpdatesView(props: { updates: UpdateCandidate[] }) {
           <div className="table-row updates-row" key={update.bindingId}>
             <span>
               <strong>{update.skillName}</strong>
-              <small>{update.namespace}/{update.skillId}</small>
+              <small>{update.skillId}</small>
             </span>
             <span>
               {targetLabels[update.target] ?? update.target} /{" "}

@@ -401,7 +401,8 @@ async fn prepare_package(
     }
 
     let source = source.ok_or_else(|| anyhow!("缺少 MinIO 源，无法下载 skill 包"))?;
-    let version_info = version_info.ok_or_else(|| anyhow!("缺少远端版本信息，无法下载 skill 包"))?;
+    let version_info =
+        version_info.ok_or_else(|| anyhow!("缺少远端版本信息，无法下载 skill 包"))?;
 
     let package_url = object_url(source, &version_info.package_path)?;
     let bytes = reqwest::Client::new()
@@ -639,7 +640,7 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
                     binding.level,
                     binding.project_path,
                     binding.install_path,
-                    format!("{}/{}@{}", binding.namespace, binding.skill_id, binding.version),
+                    format!("{}@{}", binding.skill_name, binding.version),
                     if exists { "managed" } else { "missing" },
                     scanned_at
                 ],
@@ -972,11 +973,77 @@ fn detect_local_skill_label(path: &Path) -> Option<String> {
         return None;
     }
 
-    read_skill_markdown_title(&skill_md).or_else(|| Some(display_skill_name_from_path(path)))
+    skill_name_from_dir(path)
+        .or_else(|| read_skill_markdown_name(&skill_md))
+        .or_else(|| read_skill_markdown_title(&skill_md))
+        .or_else(|| Some("local-skill".to_string()))
+}
+
+fn skill_name_from_dir(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
+fn read_skill_markdown_name(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    parse_skill_markdown_name(&content)
 }
 
 fn read_skill_markdown_title(path: &Path) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
+    parse_skill_markdown_title(&content)
+}
+
+fn parse_skill_markdown_name(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    for line in lines.take(80) {
+        let trimmed = line.trim();
+        if trimmed == "---" || trimmed == "..." {
+            break;
+        }
+
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+
+        if key.trim().eq_ignore_ascii_case("name") {
+            return clean_frontmatter_value(value);
+        }
+    }
+
+    None
+}
+
+fn clean_frontmatter_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let unquoted = if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0] as char;
+        let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+
+    let name = unquoted.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn parse_skill_markdown_title(content: &str) -> Option<String> {
     for line in content.lines().take(80) {
         let trimmed = line.trim();
         if !trimmed.starts_with('#') {
@@ -1021,11 +1088,7 @@ async fn preview_skill_inner(
         let root_path = PathBuf::from(path);
         let title = detect_local_skill_label(&root_path)
             .unwrap_or_else(|| display_skill_name_from_path(&root_path));
-        (
-            title,
-            "本地目录".to_string(),
-            root_path,
-        )
+        (title, "本地目录".to_string(), root_path)
     } else {
         let namespace = request
             .namespace
@@ -1390,7 +1453,7 @@ fn build_install_path(
     target: &str,
     level: &str,
     project_path: Option<&str>,
-    namespace: &str,
+    _namespace: &str,
     skill_id: &str,
 ) -> Result<PathBuf> {
     let root = if level == "personal" {
@@ -1405,7 +1468,7 @@ fn build_install_path(
         resolve_project_skill_root(target, Path::new(project))
     };
 
-    Ok(root.join(format!("{}.{}", namespace, skill_id)))
+    Ok(root.join(skill_id))
 }
 
 fn copy_package_to_install(package_path: &Path, install_path: &Path) -> Result<()> {
@@ -1461,8 +1524,87 @@ fn is_sqlite_managed_install_path(binding: &SkillBinding, path: &Path) -> bool {
         return false;
     }
 
-    let expected_leaf = format!("{}.{}", binding.namespace, binding.skill_id);
-    path.file_name().and_then(|name| name.to_str()) == Some(expected_leaf.as_str())
+    let legacy_leaf = format!("{}.{}", binding.namespace, binding.skill_id);
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|leaf| leaf == binding.skill_id || leaf == legacy_leaf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_skill_name_from_frontmatter() {
+        let content = r#"---
+name: api-conventions
+description: API design patterns for this codebase
+---
+
+When writing API endpoints:
+- Use RESTful naming conventions
+"#;
+
+        assert_eq!(
+            parse_skill_markdown_name(content).as_deref(),
+            Some("api-conventions")
+        );
+    }
+
+    #[test]
+    fn parses_quoted_skill_name_from_frontmatter() {
+        let content = r#"---
+name: "API Conventions"
+---
+
+# Fallback title
+"#;
+
+        assert_eq!(
+            parse_skill_markdown_name(content).as_deref(),
+            Some("API Conventions")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_markdown_title_when_frontmatter_name_is_missing() {
+        let content = r#"---
+description: API design patterns for this codebase
+---
+
+# API Conventions
+"#;
+
+        assert_eq!(parse_skill_markdown_name(content), None);
+        assert_eq!(
+            parse_skill_markdown_title(content).as_deref(),
+            Some("API Conventions")
+        );
+    }
+
+    #[test]
+    fn local_skill_label_prefers_directory_name() {
+        let root = std::env::temp_dir().join(format!("skillhub-test-{}", new_id()));
+        let skill_dir = root.join("api-conventions");
+        fs::create_dir_all(&skill_dir).expect("create temp skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: frontmatter-name
+---
+
+# Heading Name
+"#,
+        )
+        .expect("write temp SKILL.md");
+
+        assert_eq!(
+            detect_local_skill_label(&skill_dir).as_deref(),
+            Some("api-conventions")
+        );
+
+        fs::remove_dir_all(root).expect("remove temp skill dir");
+    }
 }
 
 fn map_result<T>(result: Result<T>) -> CommandResult<T> {

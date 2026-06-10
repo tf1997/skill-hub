@@ -86,9 +86,34 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
   -CreateBucket
 ```
 
-脚本会读取源目录 `skill.json` 作为发布元数据，上传不含 `.json` 的 `package.zip` 运行包，读取 `categories.v1.json` 作为分类配置，更新 manifest、重建分类索引、search-lite，并最后上传 `catalog.v1.json`。
+如果目录里没有 `skill.json`，脚本会自动用目录名、`SKILL.md` 标题和 README / SKILL 正文生成发布元数据：
+
+```powershell
+.\publish-skill.ps1 `
+  -SkillDir .\my-skill `
+  -Namespace official `
+  -Version 1.0.0 `
+  -CreateBucket
+```
+
+脚本会读取或生成发布元数据，上传不含 `.json` 的 `package.zip` 运行包，读取 `categories.v1.json` 作为分类配置，更新 manifest、重建分类索引、search-lite，并最后上传 `catalog.v1.json`。
 
 分类配置默认来自仓库根目录 `categories.v1.json`，也可以通过 `-CategoriesPath .\path\to\categories.v1.json` 指定外部文件。`skill.json` 中的 `categories` 必须已经在该文件的 `items` 中定义；新增分类时先改分类 JSON，再发布 skill。
+
+MinIO 上供客户端读取的元数据统一使用 camelCase。客户端实际依赖的最小字段：
+
+```text
+catalog.v1.json
+  schema, generatedAt, skills[].namespace, skills[].id, skills[].name,
+  skills[].summary, skills[].latestVersion, skills[].manifestPath
+
+categories.v1.json
+  schema, generatedAt, items[].id, items[].name, items[].order
+
+skills/{namespace}/{skill_id}/manifest.json
+  schema, namespace, id, name, summary, latestVersion,
+  versions[].version, versions[].packagePath, versions[].sha256Path
+```
 
 ## 作用域规则
 

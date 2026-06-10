@@ -65,7 +65,9 @@ pub struct Category {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogDoc {
     pub schema: String,
+    #[serde(alias = "generated_at")]
     pub generated_at: Option<String>,
+    #[serde(default)]
     pub categories: Vec<String>,
     pub skills: Vec<MarketSkill>,
 }
@@ -74,6 +76,7 @@ pub struct CatalogDoc {
 #[serde(rename_all = "camelCase")]
 pub struct CategoriesDoc {
     pub schema: String,
+    #[serde(alias = "generated_at")]
     pub generated_at: Option<String>,
     pub items: Vec<Category>,
 }
@@ -85,6 +88,7 @@ pub struct MarketSkill {
     pub id: String,
     pub name: String,
     pub summary: String,
+    #[serde(alias = "latest_version")]
     pub latest_version: String,
     #[serde(default)]
     pub categories: Vec<String>,
@@ -94,9 +98,11 @@ pub struct MarketSkill {
     pub targets: Vec<String>,
     #[serde(default)]
     pub levels: Vec<String>,
+    #[serde(alias = "manifest_path")]
     pub manifest_path: String,
+    #[serde(alias = "updated_at")]
     pub updated_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "source_id")]
     pub source_id: Option<String>,
     #[serde(default)]
     pub installed_bindings: Vec<SkillBinding>,
@@ -120,9 +126,11 @@ pub struct SkillManifest {
     pub targets: Vec<String>,
     #[serde(default)]
     pub levels: Vec<String>,
+    #[serde(alias = "latest_version")]
     pub latest_version: String,
     #[serde(default)]
     pub versions: Vec<SkillVersion>,
+    #[serde(alias = "updated_at")]
     pub updated_at: Option<String>,
 }
 
@@ -130,11 +138,17 @@ pub struct SkillManifest {
 #[serde(rename_all = "camelCase")]
 pub struct SkillVersion {
     pub version: String,
+    #[serde(alias = "skill_path")]
     pub skill_path: String,
+    #[serde(alias = "package_path")]
     pub package_path: String,
+    #[serde(alias = "sha256_path")]
     pub sha256_path: String,
+    #[serde(alias = "changelog_path")]
     pub changelog_path: Option<String>,
+    #[serde(alias = "signature_path")]
     pub signature_path: Option<String>,
+    #[serde(alias = "created_at")]
     pub created_at: Option<String>,
     pub package: Option<PackageInfo>,
 }
@@ -303,5 +317,108 @@ impl CommandError {
             code: code.into(),
             message: message.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_camel_case_minio_metadata() {
+        let catalog: CatalogDoc = serde_json::from_str(
+            r#"{
+              "schema": "skillhub.catalog.v1",
+              "generatedAt": "2026-06-10T00:00:00Z",
+              "skills": [{
+                "namespace": "validation",
+                "id": "metadata-probe",
+                "name": "Metadata Probe",
+                "summary": "Validate metadata.",
+                "latestVersion": "1.0.0",
+                "manifestPath": "skills/validation/metadata-probe/manifest.json",
+                "updatedAt": "2026-06-10T00:00:00Z"
+              }]
+            }"#,
+        )
+        .expect("catalog should parse");
+
+        assert_eq!(catalog.skills[0].latest_version, "1.0.0");
+        assert_eq!(
+            catalog.skills[0].manifest_path,
+            "skills/validation/metadata-probe/manifest.json"
+        );
+
+        let manifest: SkillManifest = serde_json::from_str(
+            r#"{
+              "schema": "skillhub.skill-manifest.v1",
+              "namespace": "validation",
+              "id": "metadata-probe",
+              "name": "Metadata Probe",
+              "summary": "Validate metadata.",
+              "latestVersion": "1.0.0",
+              "versions": [{
+                "version": "1.0.0",
+                "skillPath": "skills/validation/metadata-probe/versions/1.0.0/skill.json",
+                "packagePath": "skills/validation/metadata-probe/versions/1.0.0/package.zip",
+                "sha256Path": "skills/validation/metadata-probe/versions/1.0.0/package.sha256"
+              }]
+            }"#,
+        )
+        .expect("manifest should parse");
+
+        assert_eq!(manifest.latest_version, "1.0.0");
+        assert_eq!(
+            manifest.versions[0].package_path,
+            "skills/validation/metadata-probe/versions/1.0.0/package.zip"
+        );
+    }
+
+    #[test]
+    fn parses_legacy_snake_case_minio_metadata() {
+        let catalog: CatalogDoc = serde_json::from_str(
+            r#"{
+              "schema": "skillhub.catalog.v1",
+              "generated_at": "2026-06-10T00:00:00Z",
+              "categories": ["frontend"],
+              "skills": [{
+                "namespace": "validation",
+                "id": "metadata-probe",
+                "name": "Metadata Probe",
+                "summary": "Validate metadata.",
+                "latest_version": "1.0.0",
+                "manifest_path": "skills/validation/metadata-probe/manifest.json",
+                "updated_at": "2026-06-10T00:00:00Z"
+              }]
+            }"#,
+        )
+        .expect("legacy catalog should parse");
+
+        assert_eq!(catalog.skills[0].latest_version, "1.0.0");
+
+        let manifest: SkillManifest = serde_json::from_str(
+            r#"{
+              "schema": "skillhub.skill-manifest.v1",
+              "namespace": "validation",
+              "id": "metadata-probe",
+              "name": "Metadata Probe",
+              "summary": "Validate metadata.",
+              "latest_version": "1.0.0",
+              "versions": [{
+                "version": "1.0.0",
+                "skill_path": "skills/validation/metadata-probe/versions/1.0.0/skill.json",
+                "package_path": "skills/validation/metadata-probe/versions/1.0.0/package.zip",
+                "sha256_path": "skills/validation/metadata-probe/versions/1.0.0/package.sha256",
+                "created_at": "2026-06-10T00:00:00Z"
+              }],
+              "updated_at": "2026-06-10T00:00:00Z"
+            }"#,
+        )
+        .expect("legacy manifest should parse");
+
+        assert_eq!(
+            manifest.versions[0].sha256_path,
+            "skills/validation/metadata-probe/versions/1.0.0/package.sha256"
+        );
     }
 }

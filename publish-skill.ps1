@@ -6,7 +6,8 @@ Publishes one Skill Hub skill version to a full MinIO-backed marketplace.
 This script packages a local skill directory, calculates SHA-256, uploads the
 version files, updates the per-skill manifest, reads categories from an external
 categories.v1.json file, rebuilds category/search indexes, and uploads
-catalog.v1.json last.
+catalog.v1.json last. If skill.json is missing, publish metadata is generated
+from SKILL.md, README.md, and the directory name.
 
 Requires MinIO Client:
   https://min.io/docs/minio/windows/reference/minio-mc.html
@@ -22,6 +23,15 @@ Or pass -Endpoint, -AccessKey, and -SecretKey to this script.
   -Namespace official `
   -Alias skillhub `
   -Bucket skill-market
+
+.EXAMPLE
+Publish a skill directory without writing skill.json by hand:
+
+.\publish-skill.ps1 `
+  -SkillDir .\my-skill `
+  -Namespace official `
+  -Version 1.0.0 `
+  -CreateBucket
 
 .EXAMPLE
 .\publish-skill.ps1 `
@@ -49,6 +59,12 @@ param(
     [string]$Namespace,
 
     [string]$Version,
+
+    [string]$SkillId,
+
+    [string]$SkillName,
+
+    [string]$SkillSummary,
 
     [string]$Alias = "skillhub",
 
@@ -184,6 +200,33 @@ function Set-JsonProperty {
     }
 }
 
+function Get-JsonPropertyValue {
+    param(
+        [object]$Object,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Names,
+
+        [object]$Default = $null
+    )
+
+    if ($null -eq $Object) {
+        return $Default
+    }
+
+    $propertyNames = @($Object.PSObject.Properties.Name)
+    foreach ($name in $Names) {
+        if ($propertyNames -contains $name) {
+            $value = $Object.PSObject.Properties[$name].Value
+            if ($null -ne $value) {
+                return $value
+            }
+        }
+    }
+
+    return $Default
+}
+
 function Join-ObjectPath {
     param(
         [Parameter(ValueFromRemainingArguments = $true)]
@@ -227,7 +270,7 @@ function Copy-PackagePayload {
         $_.Name -ne ".DS_Store" -and
         $_.Name -ne $SignatureFileName
     } | ForEach-Object {
-        $relative = $_.FullName.Substring($sourceRoot.Length).TrimStart("\", "/")
+        $relative = $_.FullName.Substring($sourceRoot.Length) -replace "^[\\/]+", ""
         $target = Join-Path $DestinationDir $relative
         $parent = Split-Path -Parent $target
         if (-not (Test-Path -LiteralPath $parent)) {
@@ -332,10 +375,86 @@ function Find-DefaultSignature {
     return $null
 }
 
+function Convert-ToSafeObjectSegment {
+    param(
+        [string]$Value,
+        [string]$Fallback = "skill"
+    )
+
+    $text = $Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        $text = $Fallback
+    }
+
+    $slug = $text.ToLowerInvariant()
+    $slug = $slug -replace "[^a-z0-9._-]+", "-"
+    $slug = $slug -replace "^[._-]+", ""
+    $slug = $slug -replace "[._-]+$", ""
+
+    if ([string]::IsNullOrWhiteSpace($slug)) {
+        $slug = $Fallback
+    }
+
+    if ($slug -notmatch "^[a-z0-9]") {
+        $slug = "skill-$slug"
+    }
+
+    return $slug
+}
+
+function Get-MarkdownTitle {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    $content = Read-Utf8Text -Path $Path
+    foreach ($line in $content -split "`r?`n") {
+        $trimmed = $line.Trim()
+        if (-not $trimmed.StartsWith("#")) {
+            continue
+        }
+
+        $title = ($trimmed -replace "^#+", "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($title)) {
+            return $title
+        }
+    }
+
+    return $null
+}
+
+function Get-MarkdownSummary {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    $content = Read-Utf8Text -Path $Path
+    foreach ($line in $content -split "`r?`n") {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or
+            $trimmed.StartsWith("#") -or
+            $trimmed.StartsWith("```")) {
+            continue
+        }
+
+        if ($trimmed.Length -gt 240) {
+            return $trimmed.Substring(0, 240)
+        }
+
+        return $trimmed
+    }
+
+    return $null
+}
+
 function New-CatalogDefault {
     return [ordered]@{
         schema = "skillhub.catalog.v1"
-        generated_at = $script:Now
+        generatedAt = $script:Now
         categories = @()
         skills = @()
     }
@@ -361,9 +480,9 @@ function New-ManifestDefault {
         categories = @($Categories)
         tags = @($Tags)
         levels = @($Levels)
-        latest_version = $script:Version
+        latestVersion = $script:Version
         versions = @()
-        updated_at = $script:Now
+        updatedAt = $script:Now
     }
 }
 
@@ -385,12 +504,108 @@ function New-SkillEntry {
         id = $SkillId
         name = $Name
         summary = $Summary
-        latest_version = $Version
+        latestVersion = $Version
         categories = @($Categories)
         tags = @($Tags)
         levels = @($Levels)
-        manifest_path = $ManifestPath
-        updated_at = $script:Now
+        manifestPath = $ManifestPath
+        updatedAt = $script:Now
+    }
+}
+
+function Convert-ToCanonicalSkillEntry {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+
+    $namespace = Get-JsonPropertyValue -Object $Entry -Names @("namespace")
+    $skillId = Get-JsonPropertyValue -Object $Entry -Names @("id")
+    $latestVersion = Get-JsonPropertyValue -Object $Entry -Names @("latestVersion", "latest_version")
+    $manifestPath = Get-JsonPropertyValue -Object $Entry -Names @("manifestPath", "manifest_path")
+
+    if ([string]::IsNullOrWhiteSpace($namespace) -or
+        [string]::IsNullOrWhiteSpace($skillId) -or
+        [string]::IsNullOrWhiteSpace($latestVersion) -or
+        [string]::IsNullOrWhiteSpace($manifestPath)) {
+        throw "Remote catalog contains a skill entry missing namespace, id, latestVersion, or manifestPath."
+    }
+
+    return [ordered]@{
+        namespace = $namespace
+        id = $skillId
+        name = Get-JsonPropertyValue -Object $Entry -Names @("name") -Default $skillId
+        summary = Get-JsonPropertyValue -Object $Entry -Names @("summary") -Default ""
+        latestVersion = $latestVersion
+        categories = @(Normalize-Array (Get-JsonPropertyValue -Object $Entry -Names @("categories") -Default @()))
+        tags = @(Normalize-Array (Get-JsonPropertyValue -Object $Entry -Names @("tags") -Default @()))
+        levels = @(Normalize-Array (Get-JsonPropertyValue -Object $Entry -Names @("levels") -Default @("personal", "project")))
+        manifestPath = $manifestPath
+        updatedAt = Get-JsonPropertyValue -Object $Entry -Names @("updatedAt", "updated_at") -Default $script:Now
+    }
+}
+
+function Convert-ToCanonicalVersionEntry {
+    param([Parameter(Mandatory = $true)][object]$Entry)
+
+    $version = Get-JsonPropertyValue -Object $Entry -Names @("version")
+    $skillPath = Get-JsonPropertyValue -Object $Entry -Names @("skillPath", "skill_path")
+    $packagePath = Get-JsonPropertyValue -Object $Entry -Names @("packagePath", "package_path")
+    $sha256Path = Get-JsonPropertyValue -Object $Entry -Names @("sha256Path", "sha256_path")
+
+    if ([string]::IsNullOrWhiteSpace($version) -or
+        [string]::IsNullOrWhiteSpace($skillPath) -or
+        [string]::IsNullOrWhiteSpace($packagePath) -or
+        [string]::IsNullOrWhiteSpace($sha256Path)) {
+        throw "Remote manifest contains a version entry missing version, skillPath, packagePath, or sha256Path."
+    }
+
+    $canonical = [ordered]@{
+        version = $version
+        skillPath = $skillPath
+        packagePath = $packagePath
+        sha256Path = $sha256Path
+    }
+
+    $changelogPath = Get-JsonPropertyValue -Object $Entry -Names @("changelogPath", "changelog_path")
+    if (-not [string]::IsNullOrWhiteSpace($changelogPath)) {
+        $canonical["changelogPath"] = $changelogPath
+    }
+
+    $signaturePath = Get-JsonPropertyValue -Object $Entry -Names @("signaturePath", "signature_path")
+    if (-not [string]::IsNullOrWhiteSpace($signaturePath)) {
+        $canonical["signaturePath"] = $signaturePath
+    }
+
+    $createdAt = Get-JsonPropertyValue -Object $Entry -Names @("createdAt", "created_at")
+    if (-not [string]::IsNullOrWhiteSpace($createdAt)) {
+        $canonical["createdAt"] = $createdAt
+    }
+
+    $package = Get-JsonPropertyValue -Object $Entry -Names @("package")
+    if ($null -ne $package) {
+        $canonical["package"] = [ordered]@{
+            file = Get-JsonPropertyValue -Object $package -Names @("file") -Default $PackageFileName
+            sha256 = Get-JsonPropertyValue -Object $package -Names @("sha256") -Default ""
+            size = Get-JsonPropertyValue -Object $package -Names @("size") -Default 0
+        }
+    }
+
+    return $canonical
+}
+
+function Convert-ToCanonicalCategoriesDoc {
+    param([Parameter(Mandatory = $true)][object]$CategoriesDoc)
+
+    $items = @(Normalize-Array $CategoriesDoc.items | ForEach-Object {
+        [ordered]@{
+            id = $_.id
+            name = $_.name
+            order = $_.order
+        }
+    })
+
+    return [ordered]@{
+        schema = "skillhub.categories.v1"
+        generatedAt = $script:Now
+        items = @($items)
     }
 }
 
@@ -416,7 +631,7 @@ function Build-CategoryIndexes {
         $items = @($skills | Where-Object { (Normalize-Array $_.categories) -contains $categoryId })
         $doc = [ordered]@{
             schema = "skillhub.index.category.v1"
-            generated_at = $script:Now
+            generatedAt = $script:Now
             category = $categoryId
             skills = @($items)
         }
@@ -449,16 +664,16 @@ function Build-SearchLiteIndex {
             id = $_.id
             name = $_.name
             summary = $_.summary
-            latest_version = $_.latest_version
+            latestVersion = $_.latestVersion
             categories = @(Normalize-Array $_.categories)
             tags = @(Normalize-Array $_.tags)
-            manifest_path = $_.manifest_path
+            manifestPath = $_.manifestPath
         }
     })
 
     $doc = [ordered]@{
         schema = "skillhub.search-lite.v1"
-        generated_at = $script:Now
+        generatedAt = $script:Now
         skills = @($items)
     }
 
@@ -494,7 +709,7 @@ function Assert-SkillCategoriesDefined {
     }
 
     Set-JsonProperty -Object $CategoriesDoc -Name "schema" -Value "skillhub.categories.v1"
-    Set-JsonProperty -Object $CategoriesDoc -Name "generated_at" -Value $script:Now
+    Set-JsonProperty -Object $CategoriesDoc -Name "generatedAt" -Value $script:Now
 }
 
 function Read-CategoriesDoc {
@@ -557,32 +772,79 @@ try {
     }
     $CategoriesPath = Resolve-FullPath -Path $CategoriesPath
 
-    $sourceSkillJsonPath = Join-Path $skillDirFull $VersionSkillFileName
-
-    if (-not (Test-Path -LiteralPath $sourceSkillJsonPath)) {
-        throw "Missing required file: $sourceSkillJsonPath"
+    $skillMdPath = Join-Path $skillDirFull "SKILL.md"
+    if (-not (Test-Path -LiteralPath $skillMdPath)) {
+        throw "Missing required file: $skillMdPath"
     }
+
+    $readmePath = Join-Path $skillDirFull "README.md"
+    $sourceSkillJsonPath = Join-Path $skillDirFull $VersionSkillFileName
 
     New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
-    $sourceSkillJson = Read-JsonFile -Path $sourceSkillJsonPath
+    if (Test-Path -LiteralPath $sourceSkillJsonPath) {
+        $sourceSkillJson = Read-JsonFile -Path $sourceSkillJsonPath
+    }
+    else {
+        Write-Step "No skill.json found; generating publish metadata from SKILL.md and directory name."
+        $directoryName = Split-Path -Leaf $skillDirFull
+        $detectedName = Get-MarkdownTitle -Path $skillMdPath
+        if ([string]::IsNullOrWhiteSpace($detectedName)) {
+            $detectedName = $directoryName
+        }
+
+        $detectedSummary = Get-MarkdownSummary -Path $readmePath
+        if ([string]::IsNullOrWhiteSpace($detectedSummary)) {
+            $detectedSummary = Get-MarkdownSummary -Path $skillMdPath
+        }
+        if ([string]::IsNullOrWhiteSpace($detectedSummary)) {
+            $detectedSummary = "Skill published by Skill Hub."
+        }
+
+        $sourceSkillJson = [pscustomobject][ordered]@{
+            schema = "skillhub.skill.v1"
+            namespace = "local"
+            id = Convert-ToSafeObjectSegment -Value $directoryName -Fallback "skill"
+            name = $detectedName
+            version = "1.0.0"
+            summary = $detectedSummary
+            categories = @("public")
+            tags = @()
+            levels = @("personal", "project")
+        }
+    }
 
     if ([string]::IsNullOrWhiteSpace($Namespace)) {
-        $Namespace = $sourceSkillJson.namespace
+        $Namespace = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("namespace") -Default "local"
     }
 
     if ([string]::IsNullOrWhiteSpace($Version)) {
-        $Version = $sourceSkillJson.version
+        $Version = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("version") -Default "1.0.0"
     }
 
     $script:Version = $Version
 
-    $skillId = $sourceSkillJson.id
-    $skillName = $sourceSkillJson.name
-    $summary = $sourceSkillJson.summary
-    $categories = @(Normalize-Array $sourceSkillJson.categories)
-    $tags = @(Normalize-Array $sourceSkillJson.tags)
-    $levels = @(Normalize-Array $sourceSkillJson.levels)
+    $skillId = $SkillId
+    if ([string]::IsNullOrWhiteSpace($skillId)) {
+        $skillId = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("id")
+    }
+    if ([string]::IsNullOrWhiteSpace($skillId)) {
+        $skillId = Convert-ToSafeObjectSegment -Value (Split-Path -Leaf $skillDirFull) -Fallback "skill"
+    }
+
+    $skillName = $SkillName
+    if ([string]::IsNullOrWhiteSpace($skillName)) {
+        $skillName = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("name") -Default $skillId
+    }
+
+    $summary = $SkillSummary
+    if ([string]::IsNullOrWhiteSpace($summary)) {
+        $summary = Get-JsonPropertyValue -Object $sourceSkillJson -Names @("summary") -Default ""
+    }
+
+    $categories = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("categories") -Default @("public")))
+    $tags = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("tags") -Default @()))
+    $levels = @(Normalize-Array (Get-JsonPropertyValue -Object $sourceSkillJson -Names @("levels") -Default @("personal", "project")))
 
     if ([string]::IsNullOrWhiteSpace($Namespace)) {
         throw "Namespace is required. Pass -Namespace or set namespace in skill.json."
@@ -637,6 +899,8 @@ try {
     if ($CreateBucket) {
         Write-Step "Ensuring bucket '$Bucket' exists."
         Invoke-Mc -McArgs @("mb", "--ignore-existing", "$Alias/$Bucket")
+        Write-Step "Ensuring bucket '$Bucket' allows anonymous downloads."
+        Invoke-Mc -McArgs @("anonymous", "set", "download", "$Alias/$Bucket")
     }
 
     $skillBaseObject = Join-ObjectPath "skills" $Namespace $skillId
@@ -683,7 +947,7 @@ try {
         file = $PackageFileName
         path = $packageObject
         sha256 = $packageHash
-        sha256_path = $hashObject
+        sha256Path = $hashObject
         size = $packageSize
     })
 
@@ -716,12 +980,14 @@ try {
     }
 
     Write-Step "Loading remote manifest, catalog, and categories from '$CategoriesPath'."
-    $manifest = Get-RemoteJson `
+    $remoteManifest = Get-RemoteJson `
         -ObjectPath $manifestObject `
         -DefaultObject (New-ManifestDefault -Namespace $Namespace -SkillId $skillId -Name $skillName -Summary $summary -Categories $categories -Tags $tags -Levels $levels) `
         -WorkDir $workDir
 
-    $existingVersions = @(Normalize-Array $manifest.versions)
+    $existingVersions = @(Normalize-Array $remoteManifest.versions | ForEach-Object {
+        Convert-ToCanonicalVersionEntry -Entry $_
+    })
     $existingVersionCount = @($existingVersions | Where-Object { $_.version -eq $Version }).Count
     if ($existingVersionCount -gt 0 -and -not $AllowOverwrite) {
         throw "Version already exists in manifest: $Namespace/$skillId@$Version. Use -AllowOverwrite to replace it."
@@ -729,11 +995,11 @@ try {
 
     $versionEntry = [ordered]@{
         version = $Version
-        skill_path = $versionSkillObject
-        package_path = $packageObject
-        sha256_path = $hashObject
-        changelog_path = $changelogObject
-        created_at = $script:Now
+        skillPath = $versionSkillObject
+        packagePath = $packageObject
+        sha256Path = $hashObject
+        changelogPath = $changelogObject
+        createdAt = $script:Now
         package = [ordered]@{
             file = $PackageFileName
             sha256 = $packageHash
@@ -742,31 +1008,23 @@ try {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($SignaturePath)) {
-        $versionEntry["signature_path"] = $signatureObject
+        $versionEntry["signaturePath"] = $signatureObject
     }
 
     $updatedVersions = @($existingVersions | Where-Object { $_.version -ne $Version })
     $updatedVersions += $versionEntry
 
-    Set-JsonProperty -Object $manifest -Name "schema" -Value "skillhub.skill-manifest.v1"
-    Set-JsonProperty -Object $manifest -Name "namespace" -Value $Namespace
-    Set-JsonProperty -Object $manifest -Name "id" -Value $skillId
-    Set-JsonProperty -Object $manifest -Name "name" -Value $skillName
-    Set-JsonProperty -Object $manifest -Name "summary" -Value $summary
-    Set-JsonProperty -Object $manifest -Name "categories" -Value @($categories)
-    Set-JsonProperty -Object $manifest -Name "tags" -Value @($tags)
-    Set-JsonProperty -Object $manifest -Name "levels" -Value @($levels)
-    Set-JsonProperty -Object $manifest -Name "latest_version" -Value $Version
+    $manifest = New-ManifestDefault -Namespace $Namespace -SkillId $skillId -Name $skillName -Summary $summary -Categories $categories -Tags $tags -Levels $levels
     Set-JsonProperty -Object $manifest -Name "versions" -Value @($updatedVersions)
-    Set-JsonProperty -Object $manifest -Name "updated_at" -Value $script:Now
 
     $manifestPath = Join-Path $workDir "manifest.json"
     Save-Json -Path $manifestPath -Object $manifest
 
     $categoriesDoc = Read-CategoriesDoc -Path $CategoriesPath
     Assert-SkillCategoriesDefined -CategoriesDoc $categoriesDoc -SkillCategories $categories -CategoriesPath $CategoriesPath
+    $categoriesDoc = Convert-ToCanonicalCategoriesDoc -CategoriesDoc $categoriesDoc
 
-    $catalog = Get-RemoteJson `
+    $remoteCatalog = Get-RemoteJson `
         -ObjectPath "catalog.v1.json" `
         -DefaultObject (New-CatalogDefault) `
         -WorkDir $workDir
@@ -782,13 +1040,14 @@ try {
         -Levels $levels `
         -ManifestPath $manifestObject
 
-    $catalogSkills = @(Normalize-Array $catalog.skills | Where-Object { -not ($_.namespace -eq $Namespace -and $_.id -eq $skillId) })
+    $catalogSkills = @(Normalize-Array $remoteCatalog.skills | ForEach-Object {
+        Convert-ToCanonicalSkillEntry -Entry $_
+    } | Where-Object { -not ($_.namespace -eq $Namespace -and $_.id -eq $skillId) })
     $catalogSkills += $skillEntry
 
     $categoryIds = @(Normalize-Array $categoriesDoc.items | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
 
-    Set-JsonProperty -Object $catalog -Name "schema" -Value "skillhub.catalog.v1"
-    Set-JsonProperty -Object $catalog -Name "generated_at" -Value $script:Now
+    $catalog = New-CatalogDefault
     Set-JsonProperty -Object $catalog -Name "categories" -Value @($categoryIds)
     Set-JsonProperty -Object $catalog -Name "skills" -Value @($catalogSkills)
 

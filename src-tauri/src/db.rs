@@ -237,7 +237,10 @@ pub fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-pub fn app_bootstrap(state: &AppState, metadata_sync_error: Option<String>) -> Result<AppBootstrap> {
+pub fn app_bootstrap(
+    state: &AppState,
+    metadata_sync_error: Option<String>,
+) -> Result<AppBootstrap> {
     let conn = state.conn.lock().expect("db mutex poisoned");
     let sources = list_sources_inner(&conn)?;
     let categories = list_categories_inner(&conn)?;
