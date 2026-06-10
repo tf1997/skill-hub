@@ -884,7 +884,7 @@ function InstalledView(props: {
   const [showCache, setShowCache] = useState(false);
 
   return (
-    <section className="content-stack">
+    <section className={`content-stack installed-view ${showCache ? "with-cache" : ""}`}>
       <div className="section-toolbar">
         <div>
           <h2>生效矩阵</h2>
@@ -1039,7 +1039,7 @@ function ProjectsView(props: {
   onUnbind: (project: Project) => void;
 }) {
   return (
-    <section className="content-stack">
+    <section className="content-stack projects-view">
       <div className="project-form">
         <label className="text-field">
           <span>项目名</span>
@@ -1096,7 +1096,7 @@ function ProjectsView(props: {
 
 function UpdatesView(props: { updates: UpdateCandidate[] }) {
   return (
-    <section className="content-stack">
+    <section className="content-stack updates-view">
       <div className="section-toolbar">
         <div>
           <h2>更新中心</h2>
