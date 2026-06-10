@@ -49,9 +49,11 @@ const emptyBootstrap: AppBootstrap = {
   skills: [],
   bindings: [],
   cachedPackages: [],
+  localSkills: [],
   projects: [],
   targetRoots: [],
-  updates: []
+  updates: [],
+  metadataSyncError: null
 };
 
 const targetLabels: Record<string, string> = {
@@ -78,7 +80,6 @@ function App() {
   const [newProjectPath, setNewProjectPath] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [targetRootDrafts, setTargetRootDrafts] = useState<Record<string, string>>({});
-  const [localSkills, setLocalSkills] = useState<LocalSkill[]>([]);
   const [preview, setPreview] = useState<SkillPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
@@ -152,7 +153,12 @@ function App() {
     try {
       const next = await api.bootstrap();
       setData(next);
-      setNotice("已载入本地状态");
+      if (next.metadataSyncError) {
+        setError(`市场元数据同步失败，显示本地缓存：${next.metadataSyncError}`);
+        setNotice("已载入本地缓存");
+      } else {
+        setNotice("市场元数据已从 MinIO 同步");
+      }
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -163,14 +169,22 @@ function App() {
   async function refreshCatalog() {
     setBusy(true);
     setError(null);
+    setNotice("正在从 MinIO 拉取市场元数据...");
     try {
-      await api.refreshCatalog();
-      await load();
-      setNotice("市场索引已刷新");
+      const next = await api.refreshCatalog();
+      setData(next);
+      setNotice(next.skills.length > 0 ? "市场元数据已从 MinIO 同步" : "MinIO catalog 为空，暂无市场 skill");
     } catch (err) {
-      setError(readError(err));
+      setError(`市场索引刷新失败：${readError(err)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function openView(nextView: ViewKey) {
+    setView(nextView);
+    if (nextView === "market") {
+      await refreshCatalog();
     }
   }
 
@@ -211,7 +225,7 @@ function App() {
         sourceId: selectedSkill.sourceId,
         namespace: selectedSkill.namespace,
         skillId: selectedSkill.id,
-        version: selectedSkill.latestVersion,
+        version: null,
         target: installTarget,
         level: installLevel === "download" ? "personal" : installLevel,
         projectPath: installLevel === "project" ? installProjectPath : null,
@@ -237,7 +251,7 @@ function App() {
         sourceId: skill.sourceId,
         namespace: skill.namespace,
         skillId: skill.id,
-        version: skill.latestVersion
+        version: null
       });
       setPreview(result);
       setNotice(`正在预览 ${skill.name}`);
@@ -388,7 +402,7 @@ function App() {
     setError(null);
     try {
       const rows = await api.scanLocalSkills();
-      setLocalSkills(rows);
+      setData((current) => ({ ...current, localSkills: rows }));
       setNotice("本地 skill 已扫描");
     } catch (err) {
       setError(readError(err));
@@ -397,9 +411,10 @@ function App() {
     }
   }
 
+  const localNavCount = Math.max(data.bindings.length, data.localSkills.length);
   const navItems = [
     { key: "market" as const, label: "市场", icon: Blocks, count: data.skills.length },
-    { key: "installed" as const, label: "本地", icon: PackageCheck, count: data.bindings.length },
+    { key: "installed" as const, label: "本地", icon: PackageCheck, count: localNavCount },
     { key: "projects" as const, label: "项目", icon: FolderGit2, count: data.projects.length },
     { key: "updates" as const, label: "更新", icon: RefreshCw, count: data.updates.length },
     { key: "settings" as const, label: "设置", icon: Settings, count: data.targetRoots.length }
@@ -425,7 +440,7 @@ function App() {
               <button
                 key={item.key}
                 className={`nav-item ${view === item.key ? "active" : ""}`}
-                onClick={() => setView(item.key)}
+                onClick={() => void openView(item.key)}
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
@@ -466,6 +481,7 @@ function App() {
             query={query}
             onQuery={setQuery}
             skills={filteredSkills}
+            marketSkillCount={data.skills.length}
             bindingsBySkill={bindingsBySkill}
             selectedSkill={selectedSkill}
             onSelectSkill={setSelectedSkillKey}
@@ -491,7 +507,7 @@ function App() {
             cachedSkills={cachedSkills}
             onToggle={toggleBinding}
             onUninstall={uninstallBinding}
-            localSkills={localSkills}
+            localSkills={data.localSkills}
             onScan={scanLocal}
             onPreviewBinding={previewBinding}
             onPreviewLocal={previewLocalSkill}
@@ -538,6 +554,7 @@ function MarketView(props: {
   query: string;
   onQuery: (value: string) => void;
   skills: MarketSkill[];
+  marketSkillCount: number;
   bindingsBySkill: Map<string, SkillBinding[]>;
   selectedSkill?: MarketSkill;
   onSelectSkill: (key: string) => void;
@@ -620,33 +637,41 @@ function MarketView(props: {
         </div>
 
         <div className="skill-list">
-          {props.skills.map((skill) => {
-            const bindings = props.bindingsBySkill.get(`${skill.namespace}/${skill.id}`) ?? [];
-            return (
-              <button
-                key={skillKey(skill)}
-                className={`skill-row ${
-                  props.selectedSkill && skillKey(props.selectedSkill) === skillKey(skill)
-                    ? "active"
-                    : ""
-                }`}
-                onClick={() => props.onSelectSkill(skillKey(skill))}
-              >
-                <div className="skill-row-main">
-                  <strong>{skill.name}</strong>
-                  <span>{skill.summary}</span>
-                </div>
-                <div className="row-meta">
-                  <Badge>{skill.latestVersion}</Badge>
-                  <Badge strong={isInstalledSkill(skill, bindings)}>
-                    {marketStatusLabel(skill, bindings)}
-                  </Badge>
-                  <BindingDots bindings={bindings} />
-                  <ChevronRight size={17} />
-                </div>
-              </button>
-            );
-          })}
+          {props.skills.length > 0 ? (
+            props.skills.map((skill) => {
+              const bindings = props.bindingsBySkill.get(`${skill.namespace}/${skill.id}`) ?? [];
+              return (
+                <button
+                  key={skillKey(skill)}
+                  className={`skill-row ${
+                    props.selectedSkill && skillKey(props.selectedSkill) === skillKey(skill)
+                      ? "active"
+                      : ""
+                  }`}
+                  onClick={() => props.onSelectSkill(skillKey(skill))}
+                >
+                  <div className="skill-row-main">
+                    <strong>{skill.name}</strong>
+                    <span>{skill.summary}</span>
+                  </div>
+                  <div className="row-meta">
+                    <Badge>{skill.latestVersion}</Badge>
+                    <Badge strong={isInstalledSkill(skill, bindings)}>
+                      {marketStatusLabel(skill, bindings)}
+                    </Badge>
+                    <BindingDots bindings={bindings} />
+                    <ChevronRight size={17} />
+                  </div>
+                </button>
+              );
+            })
+          ) : (
+            <div className="empty-state compact">
+              {props.marketSkillCount === 0
+                ? "还没有从 MinIO 同步到 skill。请确认 MinIO 可连接，并已上传 catalog.v1.json。"
+                : "没有匹配当前筛选条件的 skill。"}
+            </div>
+          )}
         </div>
       </div>
 
@@ -813,7 +838,11 @@ function MarketView(props: {
             </div>
           </>
         ) : (
-          <div className="empty-state">没有可显示的 skill。</div>
+          <div className="empty-state">
+            {props.marketSkillCount === 0
+              ? "市场暂无 skill。刷新失败时请查看上方 MinIO 提示。"
+              : "没有可显示的 skill。"}
+          </div>
         )}
       </aside>
     </section>
@@ -866,31 +895,35 @@ function InstalledView(props: {
           <span>状态</span>
           <span>操作</span>
         </div>
-        {props.bindings.map((binding) => (
-          <div className="table-row" key={binding.id}>
-            <span>
-              <strong>{binding.skillName}</strong>
-              <small>{binding.namespace}/{binding.skillId}</small>
-            </span>
-            <span>{targetLabels[binding.target] ?? binding.target}</span>
-            <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
-            <span>{binding.version}</span>
-            <span>
-              <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
-            </span>
-            <span className="row-actions">
-              <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
-                <Power size={16} />
-              </button>
-              <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
-                <BookOpen size={16} />
-              </button>
-              <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
-                <Archive size={16} />
-              </button>
-            </span>
-          </div>
-        ))}
+        {props.bindings.length > 0 ? (
+          props.bindings.map((binding) => (
+            <div className="table-row" key={binding.id}>
+              <span>
+                <strong>{binding.skillName}</strong>
+                <small>{binding.namespace}/{binding.skillId}</small>
+              </span>
+              <span>{targetLabels[binding.target] ?? binding.target}</span>
+              <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
+              <span>{binding.version}</span>
+              <span>
+                <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
+              </span>
+              <span className="row-actions">
+                <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
+                  <Power size={16} />
+                </button>
+                <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
+                  <BookOpen size={16} />
+                </button>
+                <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
+                  <Archive size={16} />
+                </button>
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="empty-state compact">还没有通过 Skill Hub 安装或启用的 skill。</div>
+        )}
       </div>
 
       {showCache ? (
@@ -947,24 +980,32 @@ function InstalledView(props: {
         </div>
       ) : null}
 
-      {props.localSkills.length > 0 ? (
-        <div className="local-scan">
-          <h2>最近扫描</h2>
-          {props.localSkills.map((skill) => (
+      <div className="local-scan">
+        <h2>本地已有 skill</h2>
+        {props.localSkills.length > 0 ? (
+          props.localSkills.map((skill) => (
             <div className="scan-line" key={skill.id}>
               <CheckCircle2 size={16} />
               <span>
                 <strong>{skill.detectedManifest ?? "本地 skill"}</strong>
+                <small>
+                  {targetLabels[skill.target] ?? skill.target} / {levelLabels[skill.level] ?? skill.level}
+                  {skill.level === "project" && skill.projectPath ? ` · ${skill.projectPath}` : ""}
+                </small>
                 <small>{skill.path}</small>
               </span>
-              <Badge>{skill.status}</Badge>
+              <Badge strong={skill.managedBySkillhub && skill.status !== "missing"}>
+                {localSkillStatusLabel(skill)}
+              </Badge>
               <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
                 <BookOpen size={16} />
               </button>
             </div>
-          ))}
-        </div>
-      ) : null}
+          ))
+        ) : (
+          <div className="empty-state compact">点击扫描后会显示个人级和项目级目录中包含 SKILL.md 的 skill。</div>
+        )}
+      </div>
     </section>
   );
 }
@@ -1205,6 +1246,13 @@ function marketStatusLabel(skill: MarketSkill, bindings: SkillBinding[]) {
   if (related.length > 0) return "已安装";
   if (skill.cachedVersions.includes(skill.latestVersion)) return "已缓存";
   return "未安装";
+}
+
+function localSkillStatusLabel(skill: LocalSkill) {
+  if (skill.status === "missing") return "缺失";
+  if (skill.managedBySkillhub) return "Skill Hub";
+  if (skill.status === "unmanaged") return "用户自建";
+  return skill.status;
 }
 
 function getInstallState(

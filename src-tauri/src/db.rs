@@ -45,6 +45,7 @@ pub fn init_state(app: &AppHandle) -> Result<AppState> {
     let conn = Connection::open(db_path)?;
     migrate(&conn)?;
     enforce_compiled_source(&conn)?;
+    remove_legacy_sample_skills(&conn)?;
     seed_if_empty(&conn)?;
 
     Ok(AppState {
@@ -194,53 +195,6 @@ pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
 }
 
 fn seed_if_empty(conn: &Connection) -> Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))?;
-    if count == 0 {
-        let defaults = [
-            ("public", "公共", 10_i64),
-            ("frontend", "前端", 20_i64),
-            ("backend", "后端", 30_i64),
-            ("product", "产品", 40_i64),
-        ];
-
-        for (id, name, order) in defaults {
-            conn.execute(
-                "INSERT INTO categories (id, name, ordering) VALUES (?1, ?2, ?3)",
-                params![id, name, order],
-            )?;
-        }
-    }
-
-    let skill_count: i64 =
-        conn.query_row("SELECT COUNT(*) FROM catalog_cache", [], |row| row.get(0))?;
-    if skill_count == 0 {
-        let now = now();
-        let samples = sample_skills();
-        for skill in samples {
-            conn.execute(
-                "INSERT INTO catalog_cache
-                 (source_id, namespace, skill_id, latest_version, name, summary, categories_json,
-                  tags_json, targets_json, levels_json, manifest_path, raw_manifest, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13)",
-                params![
-                    COMPILED_SOURCE_ID,
-                    skill.namespace,
-                    skill.id,
-                    skill.latest_version,
-                    skill.name,
-                    skill.summary,
-                    serde_json::to_string(&skill.categories)?,
-                    serde_json::to_string(&skill.tags)?,
-                    serde_json::to_string(&skill.targets)?,
-                    serde_json::to_string(&skill.levels)?,
-                    skill.manifest_path,
-                    serde_json::to_string(&skill)?,
-                    now
-                ],
-            )?;
-        }
-    }
-
     let root_count: i64 =
         conn.query_row("SELECT COUNT(*) FROM target_roots", [], |row| row.get(0))?;
     if root_count == 0 {
@@ -256,6 +210,25 @@ fn seed_if_empty(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn remove_legacy_sample_skills(conn: &Connection) -> Result<()> {
+    for (namespace, skill_id, name) in [
+        ("official", "frontend-reviewer", "前端审查员"),
+        ("official", "api-contract-writer", "接口契约助手"),
+        ("community", "prd-shaper", "PRD 打磨器"),
+    ] {
+        conn.execute(
+            "DELETE FROM catalog_cache
+             WHERE source_id = ?1
+               AND namespace = ?2
+               AND skill_id = ?3
+               AND name = ?4",
+            params![COMPILED_SOURCE_ID, namespace, skill_id, name],
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -264,7 +237,7 @@ pub fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-pub fn app_bootstrap(state: &AppState) -> Result<AppBootstrap> {
+pub fn app_bootstrap(state: &AppState, metadata_sync_error: Option<String>) -> Result<AppBootstrap> {
     let conn = state.conn.lock().expect("db mutex poisoned");
     let sources = list_sources_inner(&conn)?;
     let categories = list_categories_inner(&conn)?;
@@ -273,6 +246,7 @@ pub fn app_bootstrap(state: &AppState) -> Result<AppBootstrap> {
     let target_roots = list_target_roots_inner(&conn)?;
     let mut skills = list_market_skills_inner(&conn)?;
     let cached_packages = list_cached_packages_inner(&conn)?;
+    let local_skills = list_local_skills_inner(&conn)?;
 
     for skill in &mut skills {
         skill.installed_bindings = bindings
@@ -296,9 +270,11 @@ pub fn app_bootstrap(state: &AppState) -> Result<AppBootstrap> {
         skills,
         bindings,
         cached_packages,
+        local_skills,
         projects,
         target_roots,
         updates,
+        metadata_sync_error,
     })
 }
 
@@ -594,61 +570,4 @@ pub fn insert_audit(
 
 pub fn canonical_display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
-}
-
-fn sample_skills() -> Vec<MarketSkill> {
-    vec![
-        MarketSkill {
-            namespace: "official".to_string(),
-            id: "frontend-reviewer".to_string(),
-            name: "前端审查员".to_string(),
-            summary: "检查 React 页面的一致性、可访问性和交互缺陷。".to_string(),
-            latest_version: "1.0.0".to_string(),
-            categories: vec!["frontend".to_string()],
-            tags: vec![
-                "react".to_string(),
-                "review".to_string(),
-                "a11y".to_string(),
-            ],
-            targets: Vec::new(),
-            levels: vec!["personal".to_string(), "project".to_string()],
-            manifest_path: "skills/official/frontend-reviewer/manifest.json".to_string(),
-            updated_at: Some(now()),
-            source_id: Some(COMPILED_SOURCE_ID.to_string()),
-            installed_bindings: Vec::new(),
-            cached_versions: Vec::new(),
-        },
-        MarketSkill {
-            namespace: "official".to_string(),
-            id: "api-contract-writer".to_string(),
-            name: "接口契约助手".to_string(),
-            summary: "为后端接口整理 OpenAPI、边界条件和测试样例。".to_string(),
-            latest_version: "1.2.0".to_string(),
-            categories: vec!["backend".to_string()],
-            tags: vec!["openapi".to_string(), "testing".to_string()],
-            targets: Vec::new(),
-            levels: vec!["personal".to_string(), "project".to_string()],
-            manifest_path: "skills/official/api-contract-writer/manifest.json".to_string(),
-            updated_at: Some(now()),
-            source_id: Some(COMPILED_SOURCE_ID.to_string()),
-            installed_bindings: Vec::new(),
-            cached_versions: Vec::new(),
-        },
-        MarketSkill {
-            namespace: "community".to_string(),
-            id: "prd-shaper".to_string(),
-            name: "PRD 打磨器".to_string(),
-            summary: "把需求草稿整理成可评审的产品文档和验收口径。".to_string(),
-            latest_version: "0.9.3".to_string(),
-            categories: vec!["product".to_string()],
-            tags: vec!["prd".to_string(), "planning".to_string()],
-            targets: Vec::new(),
-            levels: vec!["personal".to_string(), "project".to_string()],
-            manifest_path: "skills/community/prd-shaper/manifest.json".to_string(),
-            updated_at: Some(now()),
-            source_id: Some(COMPILED_SOURCE_ID.to_string()),
-            installed_bindings: Vec::new(),
-            cached_versions: Vec::new(),
-        },
-    ]
 }

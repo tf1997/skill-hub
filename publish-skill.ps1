@@ -4,8 +4,9 @@ Publishes one Skill Hub skill version to a full MinIO-backed marketplace.
 
 .DESCRIPTION
 This script packages a local skill directory, calculates SHA-256, uploads the
-version files, updates the per-skill manifest, rebuilds category/search indexes,
-and uploads catalog.v1.json last.
+version files, updates the per-skill manifest, reads categories from an external
+categories.v1.json file, rebuilds category/search indexes, and uploads
+catalog.v1.json last.
 
 Requires MinIO Client:
   https://min.io/docs/minio/windows/reference/minio-mc.html
@@ -17,19 +18,27 @@ Or pass -Endpoint, -AccessKey, and -SecretKey to this script.
 
 .EXAMPLE
 .\publish-skill.ps1 `
-  -SkillDir .\examples\react-reviewer `
+  -SkillDir .\examples\frontend-reviewer `
   -Namespace official `
   -Alias skillhub `
   -Bucket skill-market
 
 .EXAMPLE
 .\publish-skill.ps1 `
-  -SkillDir .\examples\react-reviewer `
+  -SkillDir .\examples\frontend-reviewer `
   -Namespace official `
   -Endpoint http://127.0.0.1:9000 `
   -AccessKey minioadmin `
   -SecretKey minioadmin `
   -CreateBucket
+
+.EXAMPLE
+.\publish-skill.ps1 `
+  -SkillDir .\examples\frontend-reviewer `
+  -Namespace official `
+  -Alias skillhub `
+  -Bucket skill-market `
+  -CategoriesPath .\categories.v1.json
 #>
 
 [CmdletBinding()]
@@ -57,6 +66,9 @@ param(
 
     [string]$SignaturePath,
 
+    # Categories source JSON. Defaults to categories.v1.json next to this script.
+    [string]$CategoriesPath,
+
     [switch]$CreateBucket,
 
     [switch]$AllowOverwrite,
@@ -74,6 +86,7 @@ $HashFileName = "package.sha256"
 $VersionSkillFileName = "skill.json"
 $SignatureFileName = "signature.minisig"
 $ChangelogFileName = "changelog.md"
+$DefaultCategoriesFileName = "categories.v1.json"
 
 function Write-Step {
     param([string]$Message)
@@ -89,8 +102,32 @@ function Write-Utf8NoBom {
         [string]$Text
     )
 
-    $encoding = New-Object System.Text.UTF8Encoding $false
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
     [System.IO.File]::WriteAllText($Path, $Text, $encoding)
+}
+
+function Read-Utf8Text {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)
+    return [System.IO.File]::ReadAllText($Path, $encoding)
+}
+
+function Read-JsonFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $raw = Read-Utf8Text -Path $Path
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "JSON file is empty: $Path"
+    }
+
+    return ($raw | ConvertFrom-Json)
 }
 
 function Save-Json {
@@ -246,7 +283,7 @@ function Get-RemoteJson {
     if (-not $DryRun) {
         & mc cp "$Alias/$Bucket/$ObjectPath" $localPath | Out-Null
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $localPath)) {
-            $raw = Get-Content -LiteralPath $localPath -Raw
+            $raw = Read-Utf8Text -Path $localPath
             if (-not [string]::IsNullOrWhiteSpace($raw)) {
                 return ($raw | ConvertFrom-Json)
             }
@@ -301,19 +338,6 @@ function New-CatalogDefault {
         generated_at = $script:Now
         categories = @()
         skills = @()
-    }
-}
-
-function New-CategoriesDefault {
-    return [ordered]@{
-        schema = "skillhub.categories.v1"
-        generated_at = $script:Now
-        items = @(
-            [ordered]@{ id = "public"; name = "公共"; order = 10 },
-            [ordered]@{ id = "frontend"; name = "前端"; order = 20 },
-            [ordered]@{ id = "backend"; name = "后端"; order = 30 },
-            [ordered]@{ id = "product"; name = "产品"; order = 40 }
-        )
     }
 }
 
@@ -446,43 +470,69 @@ function Build-SearchLiteIndex {
     return $objectPath
 }
 
-function Ensure-CategoryItems {
+function Assert-SkillCategoriesDefined {
     param(
         [Parameter(Mandatory = $true)]
         [object]$CategoriesDoc,
 
         [Parameter(Mandatory = $true)]
-        [object[]]$SkillCategories
+        [object[]]$SkillCategories,
+
+        [Parameter(Mandatory = $true)]
+        [string]$CategoriesPath
     )
 
     $items = @(Normalize-Array $CategoriesDoc.items)
-    $maxOrder = 0
-
-    foreach ($item in $items) {
-        if ($null -ne $item.order) {
-            $order = [int]$item.order
-            if ($order -gt $maxOrder) {
-                $maxOrder = $order
-            }
-        }
-    }
+    $definedIds = @($items | ForEach-Object { $_.id } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     foreach ($categoryId in $SkillCategories) {
         Assert-SafeObjectSegment -Name "category id" -Value $categoryId
-        $exists = @($items | Where-Object { $_.id -eq $categoryId }).Count -gt 0
+        $exists = @($definedIds | Where-Object { $_ -eq $categoryId }).Count -gt 0
         if (-not $exists) {
-            $maxOrder += 10
-            $items += [ordered]@{
-                id = $categoryId
-                name = $categoryId
-                order = $maxOrder
-            }
+            throw "Category '$categoryId' is used by skill.json but is not defined in $CategoriesPath."
         }
     }
 
     Set-JsonProperty -Object $CategoriesDoc -Name "schema" -Value "skillhub.categories.v1"
     Set-JsonProperty -Object $CategoriesDoc -Name "generated_at" -Value $script:Now
-    Set-JsonProperty -Object $CategoriesDoc -Name "items" -Value @($items)
+}
+
+function Read-CategoriesDoc {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Categories file not found: $Path"
+    }
+
+    $doc = Read-JsonFile -Path $Path
+    if ($doc.schema -ne "skillhub.categories.v1") {
+        throw "Categories file schema must be skillhub.categories.v1: $Path"
+    }
+
+    if ($null -eq $doc.items) {
+        throw "Categories file must contain an items array: $Path"
+    }
+
+    $seenIds = @{}
+    foreach ($item in @(Normalize-Array $doc.items)) {
+        if ([string]::IsNullOrWhiteSpace($item.id)) {
+            throw "Category item in $Path must contain id."
+        }
+        Assert-SafeObjectSegment -Name "category id" -Value $item.id
+        if ($seenIds.ContainsKey($item.id)) {
+            throw "Duplicate category id '$($item.id)' in $Path."
+        }
+        $seenIds[$item.id] = $true
+
+        if ([string]::IsNullOrWhiteSpace($item.name)) {
+            throw "Category '$($item.id)' in $Path must contain name."
+        }
+    }
+
+    return $doc
 }
 
 function Resolve-FullPath {
@@ -499,6 +549,14 @@ try {
     }
 
     $skillDirFull = Resolve-FullPath -Path $SkillDir
+    if ([string]::IsNullOrWhiteSpace($CategoriesPath)) {
+        $CategoriesPath = Join-Path $PSScriptRoot $DefaultCategoriesFileName
+    }
+    if (-not (Test-Path -LiteralPath $CategoriesPath)) {
+        throw "Categories JSON file not found: $CategoriesPath"
+    }
+    $CategoriesPath = Resolve-FullPath -Path $CategoriesPath
+
     $sourceSkillJsonPath = Join-Path $skillDirFull $VersionSkillFileName
 
     if (-not (Test-Path -LiteralPath $sourceSkillJsonPath)) {
@@ -507,7 +565,7 @@ try {
 
     New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
-    $sourceSkillJson = Get-Content -LiteralPath $sourceSkillJsonPath -Raw | ConvertFrom-Json
+    $sourceSkillJson = Read-JsonFile -Path $sourceSkillJsonPath
 
     if ([string]::IsNullOrWhiteSpace($Namespace)) {
         $Namespace = $sourceSkillJson.namespace
@@ -657,7 +715,7 @@ try {
         $SignaturePath = Resolve-FullPath -Path $SignaturePath
     }
 
-    Write-Step "Loading remote manifest and catalog."
+    Write-Step "Loading remote manifest, catalog, and categories from '$CategoriesPath'."
     $manifest = Get-RemoteJson `
         -ObjectPath $manifestObject `
         -DefaultObject (New-ManifestDefault -Namespace $Namespace -SkillId $skillId -Name $skillName -Summary $summary -Categories $categories -Tags $tags -Levels $levels) `
@@ -705,11 +763,8 @@ try {
     $manifestPath = Join-Path $workDir "manifest.json"
     Save-Json -Path $manifestPath -Object $manifest
 
-    $categoriesDoc = Get-RemoteJson `
-        -ObjectPath "categories.v1.json" `
-        -DefaultObject (New-CategoriesDefault) `
-        -WorkDir $workDir
-    Ensure-CategoryItems -CategoriesDoc $categoriesDoc -SkillCategories $categories
+    $categoriesDoc = Read-CategoriesDoc -Path $CategoriesPath
+    Assert-SkillCategoriesDefined -CategoriesDoc $categoriesDoc -SkillCategories $categories -CategoriesPath $CategoriesPath
 
     $catalog = Get-RemoteJson `
         -ObjectPath "catalog.v1.json" `
@@ -737,9 +792,9 @@ try {
     Set-JsonProperty -Object $catalog -Name "categories" -Value @($categoryIds)
     Set-JsonProperty -Object $catalog -Name "skills" -Value @($catalogSkills)
 
-    $categoriesPath = Join-Path $workDir "categories.v1.json"
+    $generatedCategoriesPath = Join-Path $workDir "categories.v1.json"
     $catalogPath = Join-Path $workDir "catalog.v1.json"
-    Save-Json -Path $categoriesPath -Object $categoriesDoc
+    Save-Json -Path $generatedCategoriesPath -Object $categoriesDoc
     Save-Json -Path $catalogPath -Object $catalog
 
     Write-Step "Uploading version files."
@@ -756,7 +811,7 @@ try {
     Invoke-Mc -McArgs @("cp", $manifestPath, "$Alias/$Bucket/$manifestObject")
 
     Write-Step "Uploading categories and indexes."
-    Invoke-Mc -McArgs @("cp", $categoriesPath, "$Alias/$Bucket/categories.v1.json")
+    Invoke-Mc -McArgs @("cp", $generatedCategoriesPath, "$Alias/$Bucket/categories.v1.json")
     $categoryIndexObjects = Build-CategoryIndexes -Catalog $catalog -CategoriesDoc $categoriesDoc -WorkDir $workDir
     $searchIndexObject = Build-SearchLiteIndex -Catalog $catalog -WorkDir $workDir
     Invoke-Mc -McArgs @("rm", "--recursive", "--force", "$Alias/$Bucket/indexes/target")

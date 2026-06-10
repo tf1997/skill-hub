@@ -8,9 +8,11 @@ pub struct AppBootstrap {
     pub skills: Vec<MarketSkill>,
     pub bindings: Vec<SkillBinding>,
     pub cached_packages: Vec<CachedSkillPackage>,
+    pub local_skills: Vec<LocalSkill>,
     pub projects: Vec<Project>,
     pub target_roots: Vec<TargetRoot>,
     pub updates: Vec<UpdateCandidate>,
+    pub metadata_sync_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

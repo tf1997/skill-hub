@@ -206,6 +206,7 @@ skill-market/
 ### 5.3 categories.v1.json
 
 分类必须可配置，不允许写死在客户端代码中。
+仓库根目录提供默认 `categories.v1.json`，发布脚本默认读取该文件；也可以通过 `-CategoriesPath` 指定外部分类 JSON。`skill.json` 中引用的分类必须先在 `categories.v1.json` 的 `items` 中定义。
 
 ```json
 {
@@ -445,7 +446,7 @@ namespace + skill_id + target
 1. 读取用户配置的 Claude / Codex 根目录。
 2. 自动发现常见个人级目录。
 3. 扫描用户绑定的项目目录。
-4. 识别 `SKILL.md`、`skill.json`、manifest 等文件。
+4. 在个人级 / 项目级 skill 目录下识别包含 `SKILL.md` 的子目录；`skill.json` 和 manifest 只属于市场发布 / 同步链路，不作为本地运行目录要求。
 5. 标记是否由 Skill Hub 管理。
 6. 写入 `local_skills`。
 
@@ -566,7 +567,7 @@ namespace + skill_id + target
 2. 后端加载 Claude / Codex adapter。
 3. 扫描个人级目录。
 4. 扫描已绑定项目目录。
-5. 识别 skill 元数据。
+5. 识别本地 skill 结构，未托管目录只要求存在 `SKILL.md`，显示名可从 `SKILL.md` 标题或目录名推断。
 6. 与 `installed_skills` 对比。
 7. 显示托管、未托管、缺失、漂移四种状态。
 
@@ -581,13 +582,13 @@ namespace + skill_id + target
 
 - `skill_packages`：市场 skill 已下载到本地包缓存，前端显示“已缓存”。
 - `skill_bindings`：skill 已安装到个人或项目目录，前端显示“已安装 / 已启用”。
-- `local_skills`：扫描到的本地已有 skill，未托管项只展示和预览，不自动接管。
+- `local_skills`：扫描到的本地已有 skill，用户自建项只展示和预览，不自动接管。
 - 本地包缓存可删除，删除时只删除 `skill_packages` 记录和缓存包目录，不影响已经安装到 Codex / Claude 的目标目录。
 
 预览要求：
 
 - 市场 skill 可从包缓存或临时下载后的包目录读取 `SKILL.md`、`README.md` 等文本内容预览。
-- 本地已有 skill 可从扫描到的目录直接预览。
+- 本地已有 skill 可从扫描到的目录直接预览；本地运行目录不要求 `skill.json`。
 - 预览动作不得改变安装状态；是否缓存以 `skill_packages` 记录为准。
 
 ### 13.2 导入本地 skill
@@ -611,7 +612,7 @@ namespace + skill_id + target
 前置条件：
 
 - 已安装 MinIO Client `mc`。
-- 本地 skill 目录包含 `skill.json` 和 `SKILL.md`。
+- 用于发布到市场的源目录包含 `skill.json` 和 `SKILL.md`。
 - `skill.json` 至少包含 `id`、`name`、`version`。
 
 方式一，先配置 MinIO alias：
@@ -619,7 +620,7 @@ namespace + skill_id + target
 ```powershell
 mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 .\publish-skill.ps1 `
-  -SkillDir .\examples\react-reviewer `
+  -SkillDir .\examples\frontend-reviewer `
   -Namespace official `
   -Alias skillhub `
   -Bucket skill-market `
@@ -630,7 +631,7 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 
 ```powershell
 .\publish-skill.ps1 `
-  -SkillDir .\examples\react-reviewer `
+  -SkillDir .\examples\frontend-reviewer `
   -Namespace official `
   -Endpoint http://127.0.0.1:9000 `
   -AccessKey minioadmin `
@@ -643,35 +644,40 @@ mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 
 1. 读取 `skill.json`。
 2. 复制运行文件到临时目录，排除所有 `.json` 文件。
-3. 压缩临时运行目录为 `package.zip`。
-4. 计算 `package.sha256`。
-5. 上传版本文件到 `skills/{namespace}/{skill_id}/versions/{version}/`。
-6. 更新 `skills/{namespace}/{skill_id}/manifest.json`。
-7. 更新 `categories.v1.json`。
-8. 重建 `indexes/category/*.json`。
-9. 重建 `indexes/search-lite.json`。
-10. 最后上传 `catalog.v1.json`。
+3. 读取并校验外部 `categories.v1.json`。
+4. 校验 `skill.json` 中的分类均已在 `categories.v1.json` 中定义。
+5. 压缩临时运行目录为 `package.zip`。
+6. 计算 `package.sha256`。
+7. 上传版本文件到 `skills/{namespace}/{skill_id}/versions/{version}/`。
+8. 更新 `skills/{namespace}/{skill_id}/manifest.json`。
+9. 上传 `categories.v1.json`。
+10. 重建 `indexes/category/*.json`。
+11. 重建 `indexes/search-lite.json`。
+12. 最后上传 `catalog.v1.json`。
 
 注意：`catalog.v1.json` 必须最后上传，避免客户端看到尚未完整上传的版本。
 
 操作步骤：
 
 1. 用户选择 skill 源目录。
-2. 校验 `skill.json` 和 `SKILL.md`。
-3. 过滤 `.json` 文件后生成运行压缩包。
-4. 计算 SHA-256。
-5. 生成 `package.sha256`。
-6. 可选生成签名。
-7. 上传到 MinIO：
+2. 选择分类配置文件；默认使用仓库根目录 `categories.v1.json`，也可传入 `-CategoriesPath`。
+3. 校验 `skill.json`、`SKILL.md` 和 `categories.v1.json`。
+4. 校验 skill 分类已在 `categories.v1.json` 中声明。
+5. 过滤 `.json` 文件后生成运行压缩包。
+6. 计算 SHA-256。
+7. 生成 `package.sha256`。
+8. 可选生成签名。
+9. 上传到 MinIO：
 
 ```text
 skills/{namespace}/{skill_id}/versions/{version}/
 ```
 
-8. 更新该 skill 的 `manifest.json`。
-9. 重新生成 `catalog.v1.json`。
-10. 重新生成分类索引。
-11. 上传索引文件。
+10. 更新该 skill 的 `manifest.json`。
+11. 上传 `categories.v1.json`。
+12. 重新生成 `catalog.v1.json`。
+13. 重新生成分类索引。
+14. 上传索引文件。
 
 验收标准：
 

@@ -32,11 +32,13 @@ type CommandResult<T> = std::result::Result<T, CommandError>;
 
 #[tauri::command]
 pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<AppBootstrap> {
-    map_result(app_bootstrap(&state))
+    let metadata_sync_error = refresh_catalog_best_effort(&state).await;
+    map_result(app_bootstrap(&state, metadata_sync_error))
 }
 
 #[tauri::command]
 pub async fn list_market_skills(state: State<'_, AppState>) -> CommandResult<Vec<MarketSkill>> {
+    let _metadata_sync_error = refresh_catalog_best_effort(&state).await;
     map_result((|| {
         let conn = state.conn.lock().expect("db mutex poisoned");
         let bindings = list_bindings_inner(&conn)?;
@@ -118,8 +120,12 @@ pub async fn save_target_root(
 }
 
 #[tauri::command]
-pub async fn refresh_catalog(state: State<'_, AppState>) -> CommandResult<Vec<MarketSkill>> {
-    map_result(refresh_catalog_inner(&state).await)
+pub async fn refresh_catalog(state: State<'_, AppState>) -> CommandResult<AppBootstrap> {
+    let result = match refresh_catalog_inner(&state).await {
+        Ok(_) => app_bootstrap(&state, None),
+        Err(err) => Err(err),
+    };
+    map_result(result)
 }
 
 #[tauri::command]
@@ -144,6 +150,7 @@ async fn install_skill_inner(
 ) -> Result<SkillBinding> {
     validate_target(&request.target)?;
     validate_level(&request.level)?;
+    let _metadata_sync_error = refresh_catalog_best_effort(state).await;
 
     if request.level == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
         return Err(anyhow!("项目级启用必须选择项目目录"));
@@ -393,18 +400,8 @@ async fn prepare_package(
         return Ok(package_dir);
     }
 
-    fs::create_dir_all(&package_dir)?;
-    remove_json_files_recursive(&package_dir)?;
-
-    let Some(source) = source else {
-        write_demo_package(&package_dir, skill, version)?;
-        return Ok(package_dir);
-    };
-
-    let Some(version_info) = version_info else {
-        write_demo_package(&package_dir, skill, version)?;
-        return Ok(package_dir);
-    };
+    let source = source.ok_or_else(|| anyhow!("缺少 MinIO 源，无法下载 skill 包"))?;
+    let version_info = version_info.ok_or_else(|| anyhow!("缺少远端版本信息，无法下载 skill 包"))?;
 
     let package_url = object_url(source, &version_info.package_path)?;
     let bytes = reqwest::Client::new()
@@ -440,6 +437,8 @@ async fn prepare_package(
         verify_sha256(&bytes, expected.trim())?;
     }
 
+    fs::create_dir_all(&package_dir)?;
+    remove_json_files_recursive(&package_dir)?;
     extract_zip_safely(&bytes, &package_dir)?;
     Ok(package_dir)
 }
@@ -504,21 +503,6 @@ fn remove_json_files_recursive(root: &Path) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-fn write_demo_package(package_dir: &Path, skill: &MarketSkill, version: &str) -> Result<()> {
-    fs::write(
-        package_dir.join("SKILL.md"),
-        format!("# {}\n\n{}\n", skill.name, skill.summary),
-    )?;
-    fs::write(
-        package_dir.join("README.md"),
-        format!(
-            "# {}\n\nVersion: {}\n\n{}\n",
-            skill.name, version, skill.summary
-        ),
-    )?;
     Ok(())
 }
 
@@ -705,10 +689,18 @@ pub async fn preview_skill(
 pub async fn list_update_candidates(
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<UpdateCandidate>> {
+    let _metadata_sync_error = refresh_catalog_best_effort(&state).await;
     map_result((|| {
         let conn = state.conn.lock().expect("db mutex poisoned");
         list_update_candidates_inner(&conn)
     })())
+}
+
+async fn refresh_catalog_best_effort(state: &AppState) -> Option<String> {
+    match refresh_catalog_inner(state).await {
+        Ok(_) => None,
+        Err(err) => Some(err.to_string()),
+    }
 }
 
 async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
@@ -726,16 +718,24 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
         let catalog_url = object_url(&source, "catalog.v1.json")?;
         let categories_url = object_url(&source, "categories.v1.json")?;
 
-        let catalog: CatalogDoc = client
+        let catalog_response = client
             .get(catalog_url)
             .send()
             .await
-            .context("请求 catalog 失败")?
+            .with_context(|| format!("无法连接 MinIO 源 {}", source.endpoint))?;
+        let catalog_status = catalog_response.status();
+        if catalog_status == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!(
+                "MinIO bucket 中未找到 catalog.v1.json，请先发布 skill 或上传市场索引"
+            ));
+        }
+
+        let catalog: CatalogDoc = catalog_response
             .error_for_status()
-            .context("catalog 响应失败")?
+            .with_context(|| format!("读取 catalog.v1.json 失败: HTTP {catalog_status}"))?
             .json()
             .await
-            .context("解析 catalog 失败")?;
+            .context("解析 catalog.v1.json 失败")?;
 
         let categories_doc: Option<CategoriesDoc> = match client.get(categories_url).send().await {
             Ok(response) => match response.error_for_status() {
@@ -749,6 +749,11 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
         if let Some(doc) = categories_doc {
             upsert_categories(&conn, doc.items)?;
         }
+
+        conn.execute(
+            "DELETE FROM catalog_cache WHERE source_id = ?1",
+            params![source.id.as_str()],
+        )?;
 
         for mut skill in catalog.skills {
             skill.source_id = Some(source.id.clone());
@@ -770,7 +775,7 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
                    raw_manifest = excluded.raw_manifest,
                    updated_at = excluded.updated_at",
                 params![
-                    source.id,
+                    source.id.as_str(),
                     skill.namespace,
                     skill.id,
                     skill.latest_version,
@@ -789,7 +794,7 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
 
         conn.execute(
             "UPDATE sources SET last_sync_at = ?1 WHERE id = ?2",
-            params![now(), source.id],
+            params![now(), source.id.as_str()],
         )?;
     }
 
@@ -938,10 +943,9 @@ fn scan_skill_root(
             continue;
         }
 
-        let detected = detect_skill_manifest(&path);
-        if detected.is_none() && !looks_like_skill_dir(&path) {
+        let Some(detected) = detect_local_skill_label(&path) else {
             continue;
-        }
+        };
 
         conn.execute(
             "INSERT INTO local_skills
@@ -953,7 +957,7 @@ fn scan_skill_root(
                 level,
                 project_path,
                 display_path,
-                detected.unwrap_or_else(|| display_skill_name_from_path(&path)),
+                detected,
                 scanned_at
             ],
         )?;
@@ -962,40 +966,30 @@ fn scan_skill_root(
     Ok(())
 }
 
-fn looks_like_skill_dir(path: &Path) -> bool {
-    path.join("SKILL.md").exists()
-        || path.join("README.md").exists()
-        || path.join("skill.json").exists()
+fn detect_local_skill_label(path: &Path) -> Option<String> {
+    let skill_md = path.join("SKILL.md");
+    if !skill_md.is_file() {
+        return None;
+    }
+
+    read_skill_markdown_title(&skill_md).or_else(|| Some(display_skill_name_from_path(path)))
 }
 
-fn detect_skill_manifest(path: &Path) -> Option<String> {
-    let skill_json = path.join("skill.json");
-    if skill_json.exists() {
-        if let Ok(content) = fs::read_to_string(skill_json) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-                let namespace = value
-                    .get("namespace")
-                    .and_then(|item| item.as_str())
-                    .unwrap_or("local");
-                let id = value
-                    .get("id")
-                    .and_then(|item| item.as_str())
-                    .or_else(|| value.get("name").and_then(|item| item.as_str()))
-                    .unwrap_or("unknown");
-                let version = value
-                    .get("version")
-                    .and_then(|item| item.as_str())
-                    .unwrap_or("unknown");
-                return Some(format!("{namespace}/{id}@{version}"));
-            }
+fn read_skill_markdown_title(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    for line in content.lines().take(80) {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+
+        let title = trimmed.trim_start_matches('#').trim();
+        if !title.is_empty() {
+            return Some(title.to_string());
         }
     }
 
-    if path.join("SKILL.md").exists() || path.join("README.md").exists() {
-        Some(display_skill_name_from_path(path))
-    } else {
-        None
-    }
+    None
 }
 
 fn display_skill_name_from_path(path: &Path) -> String {
@@ -1009,6 +1003,12 @@ async fn preview_skill_inner(
     request: SkillPreviewRequest,
     state: &AppState,
 ) -> Result<SkillPreview> {
+    let should_refresh_market_metadata =
+        request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
+    if should_refresh_market_metadata {
+        let _metadata_sync_error = refresh_catalog_best_effort(state).await;
+    }
+
     let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
         let conn = state.conn.lock().expect("db mutex poisoned");
         let binding = find_binding(&conn, binding_id)?;
@@ -1018,10 +1018,13 @@ async fn preview_skill_inner(
             PathBuf::from(binding.install_path),
         )
     } else if let Some(path) = request.path.as_deref() {
+        let root_path = PathBuf::from(path);
+        let title = detect_local_skill_label(&root_path)
+            .unwrap_or_else(|| display_skill_name_from_path(&root_path));
         (
-            display_skill_name_from_path(Path::new(path)),
+            title,
             "本地目录".to_string(),
-            PathBuf::from(path),
+            root_path,
         )
     } else {
         let namespace = request

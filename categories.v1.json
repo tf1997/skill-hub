@@ -1,0 +1,25 @@
+{
+  "schema": "skillhub.categories.v1",
+  "items": [
+    {
+      "id": "public",
+      "name": "公共",
+      "order": 10
+    },
+    {
+      "id": "frontend",
+      "name": "前端",
+      "order": 20
+    },
+    {
+      "id": "backend",
+      "name": "后端",
+      "order": 30
+    },
+    {
+      "id": "product",
+      "name": "产品",
+      "order": 40
+    }
+  ]
+}

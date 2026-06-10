@@ -108,9 +108,11 @@ export type AppBootstrap = {
   skills: MarketSkill[];
   bindings: SkillBinding[];
   cachedPackages: CachedSkillPackage[];
+  localSkills: LocalSkill[];
   projects: Project[];
   targetRoots: TargetRoot[];
   updates: UpdateCandidate[];
+  metadataSyncError?: string | null;
 };
 
 export type SaveSourceRequest = {

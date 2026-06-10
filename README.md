@@ -79,14 +79,16 @@ cargo run
 mc alias set skillhub http://127.0.0.1:9000 minioadmin minioadmin
 
 .\publish-skill.ps1 `
-  -SkillDir .\examples\react-reviewer `
+  -SkillDir .\examples\frontend-reviewer `
   -Namespace official `
   -Alias skillhub `
   -Bucket skill-market `
   -CreateBucket
 ```
 
-脚本会读取源目录 `skill.json` 作为发布元数据，上传不含 `.json` 的 `package.zip` 运行包，更新 manifest、重建分类索引、search-lite，并最后上传 `catalog.v1.json`。
+脚本会读取源目录 `skill.json` 作为发布元数据，上传不含 `.json` 的 `package.zip` 运行包，读取 `categories.v1.json` 作为分类配置，更新 manifest、重建分类索引、search-lite，并最后上传 `catalog.v1.json`。
+
+分类配置默认来自仓库根目录 `categories.v1.json`，也可以通过 `-CategoriesPath .\path\to\categories.v1.json` 指定外部文件。`skill.json` 中的 `categories` 必须已经在该文件的 `items` 中定义；新增分类时先改分类 JSON，再发布 skill。
 
 ## 作用域规则
 
@@ -105,7 +107,9 @@ Claude / project  -> 项目根目录/.claude/skills
 
 Skill Hub 只在本地 SQLite 中记录 skill 与个人 / 项目 / 平台的关系。下载到本地包缓存和写入 Codex / Claude 目标 skill 目录时都会过滤 `*.json` 文件，不在 skill 目录放 `skillhub-binding.json`、`skill.json`、`skillhub-package.json` 等关系或元数据文件。
 
-市场状态分三层判断：`skill_packages` 表示已下载到本地包缓存，`skill_bindings` 表示已安装或已启用，`local_skills` 表示扫描到的本地已有 skill。扫描到但不是 Skill Hub 安装的目录会显示为未托管，不会自动接管。
+市场状态分三层判断：`skill_packages` 表示已下载到本地包缓存，`skill_bindings` 表示已安装或已启用，`local_skills` 表示扫描到的本地已有 skill。扫描到但不是 Skill Hub 安装的目录会显示为用户自建，不会自动接管。
+
+本地已有 skill 按 Codex / Claude 的实际运行目录识别：个人级或项目级 skill 目录下，只要子目录包含 `SKILL.md`，就会作为本地 skill 扫描出来，并优先使用 `SKILL.md` 的标题作为显示名。`skill.json` 只用于发布到 MinIO 市场时的元数据，不是本地运行目录的要求。
 
 同一个 skill 在同一个目标平台上，个人级和项目级不能同时生效。
 

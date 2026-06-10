@@ -25,7 +25,7 @@ export const api = {
     invoke<TargetRoot>("save_target_root", {
       request: { target, personalPath }
     }),
-  refreshCatalog: () => invoke<MarketSkill[]>("refresh_catalog"),
+  refreshCatalog: () => invoke<AppBootstrap>("refresh_catalog"),
   installSkill: (request: InstallSkillRequest) =>
     invoke<SkillBinding>("install_skill", { request }),
   deleteCachedSkill: (request: DeleteCachedSkillRequest) =>
