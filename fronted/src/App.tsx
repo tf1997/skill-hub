@@ -4,9 +4,11 @@ import {
   Blocks,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Download,
   FileText,
+  Folder,
   FolderGit2,
   FolderOpen,
   KeyRound,
@@ -26,7 +28,7 @@ import {
   X
 } from "lucide-react";
 import { open } from "@tauri-apps/api/dialog";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type {
   AdminDraftPreviewRequest,
@@ -182,11 +184,7 @@ function App() {
     [data.categories]
   );
 
-  useEffect(() => {
-    if (marketMode === "project" && !selectedMarketProjectSlug && data.marketProjects.length > 0) {
-      setSelectedMarketProjectSlug(data.marketProjects[0].slug);
-    }
-  }, [data.marketProjects, marketMode, selectedMarketProjectSlug]);
+  // 默认显示"全部"项目，不自动选择第一个项目
 
   const filteredSkills = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -194,8 +192,9 @@ function App() {
       const publicScopeOk = !isProjectMarketSkill(skill);
       const categoryOk =
         marketMode === "project"
-          ? Boolean(selectedMarketProjectSlug) &&
-            skill.categories.includes(`project:${selectedMarketProjectSlug}`)
+          ? selectedMarketProjectSlug === ""
+            ? isProjectMarketSkill(skill) // "全部"：显示所有项目 skill
+            : skill.categories.includes(`project:${selectedMarketProjectSlug}`)
           : publicScopeOk &&
             (selectedCategory === "all" ||
               skill.categories.includes(selectedCategory) ||
@@ -385,6 +384,20 @@ function App() {
       await api.installSkill(request);
       await load();
       setNotice(`${selectedSkill.name} 已${installLevel === "download" ? "缓存" : "启用"}`);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUpgradeBinding(bindingId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.upgradeSkillBinding(bindingId);
+      setData(result);
+      setNotice("Skill 已升级到最新版本");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1003,8 +1016,6 @@ function App() {
             onInstallProjectPath={setInstallProjectPath}
             targetRoots={data.targetRoots}
             projects={data.projects}
-            updatePolicy={updatePolicy}
-            onUpdatePolicy={setUpdatePolicy}
             onInstall={installSelectedSkill}
             onPreview={previewMarketSkill}
           />
@@ -1038,7 +1049,7 @@ function App() {
           />
         ) : null}
 
-        {view === "updates" ? <UpdatesView updates={data.updates} /> : null}
+        {view === "updates" ? <UpdatesView updates={data.updates} onUpgrade={handleUpgradeBinding} busy={busy} /> : null}
 
         {view === "settings" ? (
           <SettingsView
@@ -1144,8 +1155,6 @@ function MarketView(props: {
   onInstallProjectPath: (value: string) => void;
   targetRoots: TargetRoot[];
   projects: Project[];
-  updatePolicy: string;
-  onUpdatePolicy: (value: string) => void;
   onInstall: () => void;
   onPreview: (skill: MarketSkill) => void;
 }) {
@@ -1196,7 +1205,7 @@ function MarketView(props: {
           <span>{props.mode === "project" ? "项目" : "分类"}</span>
           <b>
             {props.mode === "project"
-              ? props.marketProjects.length
+              ? props.marketProjects.length + 1
               : props.categories.length + 1}
           </b>
         </div>
@@ -1222,6 +1231,14 @@ function MarketView(props: {
           </>
         ) : (
           <>
+            <button
+              className={`category-button ${
+                props.selectedMarketProjectSlug === "" ? "active" : ""
+              }`}
+              onClick={() => props.onSelectedMarketProjectSlug("")}
+            >
+              全部
+            </button>
             {props.marketProjects.map((project) => (
               <button
                 key={project.slug}
@@ -1272,7 +1289,6 @@ function MarketView(props: {
                 >
                   <div className="skill-row-main">
                     <strong>{skill.name}</strong>
-                    <span>{skill.summary}</span>
                   </div>
                   <div className="row-meta">
                     <Badge>{skill.latestVersion}</Badge>
@@ -1411,24 +1427,6 @@ function MarketView(props: {
                   <strong>下载到 Skill Hub 本地包仓库，不写入 Codex 或 Claude 目录。</strong>
                 </div>
               )}
-
-              <div className="field-row">
-                <span>更新</span>
-                <div className="segmented">
-                  <button
-                    className={props.updatePolicy === "follow_latest" ? "active" : ""}
-                    onClick={() => props.onUpdatePolicy("follow_latest")}
-                  >
-                    跟随
-                  </button>
-                  <button
-                    className={props.updatePolicy === "pinned" ? "active" : ""}
-                    onClick={() => props.onUpdatePolicy("pinned")}
-                  >
-                    锁定
-                  </button>
-                </div>
-              </div>
 
               {conflict ? (
                 <div className="conflict-note">
@@ -1711,43 +1709,61 @@ function ProjectsView(props: {
   );
 }
 
-function UpdatesView(props: { updates: UpdateCandidate[] }) {
+function UpdatesView(props: {
+  updates: UpdateCandidate[];
+  onUpgrade: (bindingId: string) => void;
+  busy: boolean;
+}) {
   return (
     <section className="content-stack updates-view">
       <div className="section-toolbar">
         <div>
           <h2>更新中心</h2>
-          <p>锁定版本不会自动升级，跟随版本会进入更新队列。</p>
+          <p>有新版本可用时会在此显示，点击升级按钮即可更新到最新版本。</p>
         </div>
       </div>
+
       <div className="data-table">
-        <div className="table-head updates-head">
+        <div className="table-head">
           <span>Skill</span>
-          <span>当前位置</span>
+          <span>平台</span>
+          <span>范围</span>
           <span>版本</span>
-          <span>策略</span>
+          <span>状态</span>
+          <span>操作</span>
         </div>
-        {props.updates.map((update) => (
-          <div className="table-row updates-row" key={update.bindingId}>
-            <span>
-              <strong>{update.skillName}</strong>
-              <small>{update.skillId}</small>
-            </span>
-            <span>
-              {targetLabels[update.target] ?? update.target} /{" "}
-              {update.level === "project" ? update.projectPath : "个人级"}
-            </span>
-            <span>
-              {update.currentVersion} → {update.latestVersion}
-            </span>
-            <span>
-              <Badge strong={!update.blockedReason}>
-                {update.blockedReason ?? "可更新"}
-              </Badge>
-            </span>
-          </div>
-        ))}
-        {props.updates.length === 0 ? <div className="empty-state">当前没有可更新项。</div> : null}
+        {props.updates.length > 0 ? (
+          props.updates.map((update) => (
+            <div className="table-row" key={update.bindingId}>
+              <span>
+                <strong>{update.skillName}</strong>
+                {update.skillName !== update.skillId ? <small>{update.skillId}</small> : null}
+              </span>
+              <span>{targetLabels[update.target] ?? update.target}</span>
+              <span>{update.level === "project" ? update.projectPath : "个人级"}</span>
+              <span className="version-upgrade">
+                {update.currentVersion} → {update.latestVersion}
+              </span>
+              <span>
+                <Badge strong={!update.blockedReason}>
+                  {update.blockedReason ?? "可更新"}
+                </Badge>
+              </span>
+              <span className="row-actions">
+                <button
+                  className="icon-button"
+                  disabled={!!update.blockedReason || props.busy}
+                  onClick={() => props.onUpgrade(update.bindingId)}
+                  title="升级到最新版本"
+                >
+                  <Rocket size={16} />
+                </button>
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="empty-state compact">当前没有可更新项。</div>
+        )}
       </div>
     </section>
   );
@@ -2642,6 +2658,51 @@ function PreviewPanel(props: { preview: SkillPreview; onSelectFile: (filePath: s
   );
   const defaultPath = props.preview.files[0]?.path ?? entries[0]?.path ?? "";
   const [selectedPath, setSelectedPath] = useState(defaultPath);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+  // 构建文件夹树：提取所有唯一的文件夹
+  const folders = useMemo(() => {
+    const folderSet = new Set<string>();
+    entries.forEach((entry) => {
+      const parts = entry.path.split("/");
+      if (parts.length > 1) {
+        // 添加所有父文件夹路径
+        for (let i = 1; i < parts.length; i++) {
+          folderSet.add(parts.slice(0, i).join("/"));
+        }
+      }
+    });
+    return Array.from(folderSet).sort();
+  }, [entries]);
+
+  // 获取文件夹的直接子文件夹
+  function getChildFolders(parentPath: string): string[] {
+    const prefix = parentPath ? parentPath + "/" : "";
+    const depth = parentPath ? parentPath.split("/").length : 0;
+    return folders.filter((f) => {
+      if (parentPath && !f.startsWith(prefix)) return false;
+      if (!parentPath && f.includes("/")) return false;
+      const parts = f.split("/");
+      return parts.length === depth + 1;
+    });
+  }
+
+  // 获取文件夹的直接子文件
+  function getChildFiles(parentPath: string): typeof entries {
+    const prefix = parentPath ? parentPath + "/" : "";
+    return entries.filter((entry) => {
+      if (parentPath) {
+        // 必须以父路径开头
+        if (!entry.path.startsWith(prefix)) return false;
+        // 去掉前缀后不能包含 /（即是直接子文件）
+        const relativePath = entry.path.substring(prefix.length);
+        return !relativePath.includes("/");
+      } else {
+        // 根目录：不包含 / 的文件
+        return !entry.path.includes("/");
+      }
+    });
+  }
 
   useEffect(() => {
     if (!selectedPath || !entries.some((entry) => entry.path === selectedPath)) {
@@ -2657,6 +2718,63 @@ function PreviewPanel(props: { preview: SkillPreview; onSelectFile: (filePath: s
     if (previewable && !loadedFiles.has(path)) {
       props.onSelectFile(path);
     }
+  }
+
+  function toggleFolder(folderPath: string) {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderPath)) {
+        next.delete(folderPath);
+      } else {
+        next.add(folderPath);
+      }
+      return next;
+    });
+  }
+
+  function renderTree(folderPath: string, depth: number): React.ReactNode {
+    const childFolders = getChildFolders(folderPath);
+    const childFiles = getChildFiles(folderPath);
+    const isExpanded = expandedFolders.has(folderPath) || !folderPath; // 根目录默认展开
+    const folderName = folderPath ? folderPath.split("/").pop() : "";
+
+    return (
+      <React.Fragment key={folderPath || "root"}>
+        {folderPath && (
+          <button
+            className="preview-tree-folder"
+            style={{ paddingLeft: `${12 + depth * 14}px` }}
+            onClick={() => toggleFolder(folderPath)}
+          >
+            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {isExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}
+            <span>{folderName}</span>
+            <small className="muted">{childFiles.length} 个</small>
+          </button>
+        )}
+        {isExpanded && (
+          <>
+            {childFolders.map((childFolder) => renderTree(childFolder, depth + 1))}
+            {childFiles.map((entry) => {
+              const name = entry.path.split("/").pop() || entry.path;
+              return (
+                <button
+                  key={entry.path}
+                  className={`preview-tree-item ${selectedEntry?.path === entry.path ? "active" : ""}`}
+                  style={{ paddingLeft: `${26 + (depth + 1) * 14}px` }}
+                  onClick={() => selectEntry(entry.path, entry.previewable)}
+                  title={entry.path}
+                >
+                  <FileText size={15} />
+                  <span>{name}</span>
+                  <Badge>{entry.previewable ? entry.language : "file"}</Badge>
+                </button>
+              );
+            })}
+          </>
+        )}
+      </React.Fragment>
+    );
   }
 
   return (
@@ -2683,28 +2801,7 @@ function PreviewPanel(props: { preview: SkillPreview; onSelectFile: (filePath: s
                 <strong>{entries.length} 个文件</strong>
               </div>
               <div className="preview-tree-list">
-                {entries.map((entry) => {
-                  const parts = entry.path.split("/");
-                  const name = parts[parts.length - 1] || entry.path;
-                  const parent = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
-                  const depth = Math.max(parts.length - 1, 0);
-                  return (
-                    <button
-                      key={entry.path}
-                      className={`preview-tree-item ${selectedEntry?.path === entry.path ? "active" : ""}`}
-                      style={{ paddingLeft: `${12 + depth * 14}px` }}
-                      onClick={() => selectEntry(entry.path, entry.previewable)}
-                      title={entry.path}
-                    >
-                      <FileText size={15} />
-                      <span>
-                        <strong>{name}</strong>
-                        {parent ? <small>{parent}</small> : null}
-                      </span>
-                      <Badge>{entry.previewable ? entry.language : "file"}</Badge>
-                    </button>
-                  );
-                })}
+                {renderTree("", 0)}
               </div>
             </aside>
 

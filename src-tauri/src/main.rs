@@ -36,6 +36,7 @@ fn main() {
             commands::install_skill,
             commands::delete_cached_skill,
             commands::set_binding_enabled,
+            commands::upgrade_skill_binding,
             commands::uninstall_binding,
             commands::list_projects,
             commands::save_project,

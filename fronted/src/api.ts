@@ -190,6 +190,7 @@ const browserMockApi = {
   deleteCachedSkill: async (_request: DeleteCachedSkillRequest) => undefined,
   setBindingEnabled: async (_bindingId: string, _enabled: boolean) => browserMockApi.installSkill({} as InstallSkillRequest),
   uninstallBinding: async (_bindingId: string) => [],
+  upgradeSkillBinding: async (_bindingId: string) => mockBootstrap,
   listProjects: async () => [],
   saveProject: async (name: string, path: string, id?: string) => ({
     id: id ?? "mock-project",
@@ -265,6 +266,10 @@ const tauriApi = {
     }),
   uninstallBinding: (bindingId: string) =>
     invoke<SkillBinding[]>("uninstall_binding", { bindingId }),
+  upgradeSkillBinding: (bindingId: string) =>
+    invoke<AppBootstrap>("upgrade_skill_binding", {
+      request: { bindingId }
+    }),
   listProjects: () => invoke<Project[]>("list_projects"),
   saveProject: (name: string, path: string, id?: string) =>
     invoke<Project>("save_project", { request: { id, name, path } }),

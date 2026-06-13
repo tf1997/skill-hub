@@ -32,7 +32,7 @@ use crate::{
         SaveProjectRequest, SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
         SetBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
         SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion, Source,
-        TargetRoot, UpdateCandidate,
+        TargetRoot, UpdateCandidate, UpgradeBindingRequest,
     },
 };
 
@@ -1644,6 +1644,108 @@ pub async fn set_binding_enabled(
         insert_audit(&conn, action, Some(&skill_ref), "success", None)?;
         Ok(updated)
     })())
+}
+
+#[tauri::command]
+pub async fn upgrade_skill_binding(
+    request: UpgradeBindingRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AppBootstrap> {
+    let result = async {
+        upgrade_skill_binding_inner(request, state.inner()).await?;
+        app_bootstrap(state.inner(), None)
+    }
+    .await;
+    map_result(result)
+}
+
+async fn upgrade_skill_binding_inner(
+    request: UpgradeBindingRequest,
+    state: &AppState,
+) -> Result<()> {
+    // 1. 获取绑定信息
+    let binding = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        find_binding(&conn, &request.binding_id)?
+    };
+
+    // 2. 获取市场 skill 信息
+    let (skill, source) = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let skills = list_market_skills_inner(&conn)?;
+        let skill = skills
+            .into_iter()
+            .find(|s| s.namespace == binding.namespace && s.id == binding.skill_id)
+            .ok_or_else(|| anyhow!("市场中未找到该 skill"))?;
+
+        let source = binding.source_id.as_ref().and_then(|id| {
+            list_sources_inner(&conn)
+                .ok()?
+                .into_iter()
+                .find(|item| item.id == *id)
+        });
+
+        (skill, source)
+    };
+
+    // 3. 检查是否需要升级
+    if binding.version == skill.latest_version {
+        return Err(anyhow!("已是最新版本"));
+    }
+
+    // 4. 获取新版本信息
+    let version = &skill.latest_version;
+    let version_info = match source.as_ref() {
+        Some(src) => Some(fetch_manifest_version(src, &skill.manifest_path, version).await?),
+        None => None,
+    };
+
+    // 5. 下载新版本到缓存
+    let package_path = prepare_package(
+        state,
+        source.as_ref(),
+        &skill,
+        version,
+        version_info.as_ref(),
+    )
+    .await?;
+
+    // 6. 更新缓存记录
+    let package_id = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        ensure_package_record(
+            &conn,
+            binding.source_id.as_deref(),
+            &binding.namespace,
+            &binding.skill_id,
+            version,
+            &package_path,
+            version_info
+                .as_ref()
+                .and_then(|info| info.package.as_ref().map(|package| package.sha256.as_str())),
+        )?
+    };
+
+    // 7. 如果已启用，更新安装目录
+    if binding.enabled {
+        let install_path = PathBuf::from(&binding.install_path);
+        fs::create_dir_all(&install_path).context("创建安装目录失败")?;
+        copy_package_to_install(&package_path, &install_path)?;
+    }
+
+    // 8. 更新数据库记录
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    conn.execute(
+        "UPDATE skill_bindings
+         SET version = ?1, package_id = ?2, updated_at = ?3
+         WHERE id = ?4",
+        params![version, package_id, now(), request.binding_id],
+    )?;
+
+    let skill_ref = format!("{}/{}@{}", binding.namespace, binding.skill_id, version);
+    insert_audit(&conn, "upgrade", Some(&skill_ref), "success", None)?;
+
+    Ok(())
 }
 
 #[tauri::command]

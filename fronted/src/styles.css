@@ -1030,6 +1030,31 @@ button:focus-visible {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.table-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-secondary);
+  background: rgba(116, 138, 164, 0.08);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.table-row strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.version-upgrade {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-primary);
+}
+
 .section-toolbar {
   display: flex;
   align-items: center;
@@ -2334,6 +2359,40 @@ button:focus-visible {
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.preview-tree-folder {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 38px;
+  padding-top: 6px;
+  padding-right: 8px;
+  padding-bottom: 6px;
+  color: var(--text-primary);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.preview-tree-folder:hover {
+  background: rgba(116, 138, 164, 0.08);
+}
+
+.preview-tree-folder span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-tree-folder small {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .preview-tree-item:hover,
