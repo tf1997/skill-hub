@@ -13,6 +13,7 @@ import {
   FolderOpen,
   KeyRound,
   Layers3,
+  Moon,
   PackageCheck,
   Pencil,
   Plus,
@@ -24,6 +25,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   Trash2,
   X
 } from "lucide-react";
@@ -967,6 +969,7 @@ function App() {
           })}
         </nav>
 
+        <ThemeSwitch theme={theme} onTheme={setTheme} />
       </aside>
 
       <main className="workspace">
@@ -1057,8 +1060,6 @@ function App() {
             targetRootDrafts={targetRootDrafts}
             onPickTargetRoot={(target) => void chooseFolder("root", target)}
             onSaveTargetRoot={(target) => void saveTargetRoot(target)}
-            theme={theme}
-            onTheme={setTheme}
           />
         ) : null}
 
@@ -1127,6 +1128,27 @@ function App() {
         ) : null}
       </main>
     </div>
+  );
+}
+
+function ThemeSwitch(props: {
+  theme: "light" | "dark";
+  onTheme: (theme: "light" | "dark") => void;
+}) {
+  const isLight = props.theme === "light";
+  const Icon = isLight ? Sun : Moon;
+  const nextTheme = isLight ? "dark" : "light";
+
+  return (
+    <button
+      className="sidebar-theme-switch"
+      onClick={() => props.onTheme(nextTheme)}
+      title={isLight ? "切换到深色" : "切换到白色"}
+      aria-label={isLight ? "切换到深色" : "切换到白色"}
+      type="button"
+    >
+      <Icon size={17} />
+    </button>
   );
 }
 
@@ -1773,32 +1795,9 @@ function SettingsView(props: {
   targetRootDrafts: Record<string, string>;
   onPickTargetRoot: (target: string) => void;
   onSaveTargetRoot: (target: string) => void;
-  theme: "light" | "dark";
-  onTheme: (theme: "light" | "dark") => void;
 }) {
   return (
     <section className="settings-grid">
-      <div className="settings-form">
-        <h2>界面</h2>
-        <div className="field-row">
-          <span>主题</span>
-          <div className="segmented">
-            <button
-              className={props.theme === "light" ? "active" : ""}
-              onClick={() => props.onTheme("light")}
-            >
-              白色
-            </button>
-            <button
-              className={props.theme === "dark" ? "active" : ""}
-              onClick={() => props.onTheme("dark")}
-            >
-              深色
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div className="settings-stack">
         <div className="target-root-list">
           <h2>目标平台目录</h2>

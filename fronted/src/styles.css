@@ -314,6 +314,34 @@ button:focus-visible {
   text-align: center;
 }
 
+.sidebar-theme-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 38px;
+  min-height: 38px;
+  margin-top: auto;
+  color: var(--accent-primary);
+  background: var(--panel-2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-theme-switch:hover {
+  background: var(--surface);
+  border-color: var(--accent-primary);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.sidebar-theme-switch svg {
+  flex: 0 0 auto;
+  stroke-width: 2.2;
+}
+
 .workspace {
   display: flex;
   flex-direction: column;
@@ -1396,7 +1424,7 @@ button:focus-visible {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   flex: 1 1 auto;
   gap: 14px;
   min-height: 0;
