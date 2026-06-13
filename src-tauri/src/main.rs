@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod admin_config;
 mod db;
 mod models;
 
@@ -18,6 +19,16 @@ fn main() {
             commands::list_market_skills,
             commands::list_sources,
             commands::save_source,
+            commands::unlock_admin_mode,
+            commands::list_admin_drafts,
+            commands::preview_admin_draft,
+            commands::save_publish_meta,
+            commands::save_market_project_remote,
+            commands::delete_market_project_remote,
+            commands::save_market_category_remote,
+            commands::delete_market_category_remote,
+            commands::archive_market_skill,
+            commands::publish_draft,
             commands::list_target_roots,
             commands::save_target_root,
             commands::refresh_catalog,

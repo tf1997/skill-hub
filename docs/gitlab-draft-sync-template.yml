@@ -1,0 +1,67 @@
+# Copy this file into a skill source repository as .gitlab-ci.yml.
+# It syncs only native skill files into the Skill Hub draft prefix:
+# draft/gitlab/skills/{GITLAB_CATEGORY_CODE}/{DRAFT_SLUG}/
+#
+# Required CI variables:
+# - MINIO_ENDPOINT       example: http://minio.internal:9000
+# - MINIO_ACCESS_KEY     draft-writer access key
+# - MINIO_SECRET_KEY     draft-writer secret key
+# - GITLAB_CATEGORY_CODE example: product
+# - DRAFT_SLUG           example: prd-shaper
+#
+# Optional CI variables:
+# - SKILL_DIR            default: .
+# - SKILL_MARKET_BUCKET  default: skill-market
+
+stages:
+  - validate
+  - sync
+
+variables:
+  SKILL_DIR: "."
+  SKILL_MARKET_BUCKET: "skill-market"
+
+validate_skill_draft:
+  stage: validate
+  image: alpine:3.20
+  script:
+    - test -f "$SKILL_DIR/SKILL.md"
+    - grep -Eq '^version:[[:space:]]*.+' "$SKILL_DIR/SKILL.md"
+    - grep -Eq '^author:[[:space:]]*.+' "$SKILL_DIR/SKILL.md"
+    - mkdir -p .skillhub-validation
+    - |
+      cat > .skillhub-validation/validation.json <<EOF
+      {
+        "schema": "skillhub.draft-validation.v1",
+        "status": "passed",
+        "commitSha": "${CI_COMMIT_SHA}",
+        "commitRef": "${CI_COMMIT_REF_NAME}",
+        "pipelineId": "${CI_PIPELINE_ID}",
+        "validatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      }
+      EOF
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - .skillhub-validation/validation.json
+
+sync_skill_draft_to_minio:
+  stage: sync
+  image:
+    name: minio/mc:latest
+    entrypoint: [""]
+  needs:
+    - job: validate_skill_draft
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - test -n "$MINIO_ENDPOINT"
+    - test -n "$MINIO_ACCESS_KEY"
+    - test -n "$MINIO_SECRET_KEY"
+    - test -n "$GITLAB_CATEGORY_CODE"
+    - test -n "$DRAFT_SLUG"
+    - mc alias set skillhub "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+    - DRAFT_TARGET="skillhub/$SKILL_MARKET_BUCKET/draft/gitlab/skills/$GITLAB_CATEGORY_CODE/$DRAFT_SLUG"
+    - mc mirror --overwrite --remove --exclude ".git/*" --exclude "node_modules/*" --exclude "target/*" "$SKILL_DIR" "$DRAFT_TARGET"
+    - mc cp .skillhub-validation/validation.json "$DRAFT_TARGET/validation.json"

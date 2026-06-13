@@ -37,6 +37,16 @@ export type MarketSkill = {
   cachedVersions: string[];
 };
 
+export type MarketProject = {
+  slug: string;
+  name: string;
+  description: string;
+  status: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+};
+
 export type SkillBinding = {
   id: string;
   packageId: string;
@@ -106,6 +116,7 @@ export type AppBootstrap = {
   sources: Source[];
   categories: Category[];
   skills: MarketSkill[];
+  marketProjects: MarketProject[];
   bindings: SkillBinding[];
   cachedPackages: CachedSkillPackage[];
   localSkills: LocalSkill[];
@@ -122,6 +133,17 @@ export type SaveSourceRequest = {
   bucket: string;
   region?: string | null;
   enabled: boolean;
+};
+
+export type AdminSession = {
+  enabled: boolean;
+  endpoint: string;
+  bucket: string;
+  region?: string | null;
+  role: "system" | "project" | string;
+  projects: string[];
+  macAddress: string;
+  name?: string | null;
 };
 
 export type InstallSkillRequest = {
@@ -156,6 +178,13 @@ export type SkillPreviewRequest = {
   version?: string | null;
   bindingId?: string | null;
   path?: string | null;
+  filePath?: string | null;
+};
+
+export type AdminDraftPreviewRequest = {
+  adminKey: string;
+  gitlabSourcePath: string;
+  filePath?: string | null;
 };
 
 export type SkillPreview = {
@@ -163,6 +192,7 @@ export type SkillPreview = {
   rootPath: string;
   origin: string;
   files: SkillPreviewFile[];
+  fileList: SkillPreviewFileEntry[];
 };
 
 export type SkillPreviewFile = {
@@ -170,4 +200,40 @@ export type SkillPreviewFile = {
   language: string;
   content: string;
   truncated: boolean;
+};
+
+export type SkillPreviewFileEntry = {
+  path: string;
+  language: string;
+  previewable: boolean;
+};
+
+export type PublishMeta = {
+  namespace: string;
+  skillId: string;
+  name: string;
+  summary: string;
+  tags: string[];
+  targets: string[];
+  levels: string[];
+  publishScope: "public" | "project" | string;
+  publishCategorySlug?: string | null;
+  publishProjectSlug?: string | null;
+  changelog: string;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+};
+
+export type AdminDraftSkill = {
+  gitlabSourcePath: string;
+  draftSlug?: string | null;
+  gitlabCategoryCode?: string | null;
+  sourceAvailable: boolean;
+  version?: string | null;
+  author?: string | null;
+  status: string;
+  validationStatus?: string | null;
+  publishMeta?: PublishMeta | null;
+  publishedVersion?: string | null;
+  updatedAt?: string | null;
 };

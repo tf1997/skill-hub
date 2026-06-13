@@ -11,13 +11,13 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::models::{
-    AppBootstrap, CachedSkillPackage, Category, LocalSkill, MarketSkill, Project, SkillBinding,
-    Source, TargetRoot, UpdateCandidate,
+    AppBootstrap, CachedSkillPackage, Category, LocalSkill, MarketProject, MarketSkill, Project,
+    SkillBinding, Source, TargetRoot, UpdateCandidate,
 };
 
 pub const COMPILED_SOURCE_ID: &str = "compiled-source";
 pub const COMPILED_SOURCE_NAME: &str = "本地 MinIO";
-pub const COMPILED_SOURCE_ENDPOINT: &str = "http://127.0.0.1:9000";
+pub const COMPILED_SOURCE_ENDPOINT: &str = "http://192.168.1.4:9000";
 pub const COMPILED_SOURCE_BUCKET: &str = "skill-market";
 pub const COMPILED_SOURCE_REGION: Option<&str> = None;
 
@@ -174,7 +174,7 @@ pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
         "DELETE FROM catalog_cache WHERE source_id <> ?1",
         params![COMPILED_SOURCE_ID],
     )?;
-    conn.execute(
+        conn.execute(
         "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)
          ON CONFLICT(id) DO UPDATE SET
@@ -192,6 +192,13 @@ pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+pub fn market_project_cache_path(app_dir: &Path) -> PathBuf {
+    app_dir
+        .join("cache")
+        .join("catalog")
+        .join("projects.v1.json")
 }
 
 fn seed_if_empty(conn: &Connection) -> Result<()> {
@@ -246,6 +253,7 @@ pub fn app_bootstrap(
     let categories = list_categories_inner(&conn)?;
     let bindings = list_bindings_inner(&conn)?;
     let projects = list_projects_inner(&conn)?;
+    let market_projects = list_market_projects_cached(&state.app_dir)?;
     let target_roots = list_target_roots_inner(&conn)?;
     let mut skills = list_market_skills_inner(&conn)?;
     let cached_packages = list_cached_packages_inner(&conn)?;
@@ -271,6 +279,7 @@ pub fn app_bootstrap(
         sources,
         categories,
         skills,
+        market_projects,
         bindings,
         cached_packages,
         local_skills,
@@ -279,6 +288,17 @@ pub fn app_bootstrap(
         updates,
         metadata_sync_error,
     })
+}
+
+pub fn list_market_projects_cached(app_dir: &Path) -> Result<Vec<MarketProject>> {
+    let path = market_project_cache_path(app_dir);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(path)?;
+    let doc: crate::models::ProjectsDoc = serde_json::from_str(&raw)?;
+    Ok(doc.into_projects())
 }
 
 pub fn list_sources_inner(conn: &Connection) -> Result<Vec<Source>> {

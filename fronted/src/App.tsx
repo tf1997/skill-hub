@@ -6,37 +6,63 @@ import {
   CheckCircle2,
   ChevronRight,
   Download,
+  FileText,
   FolderGit2,
   FolderOpen,
+  KeyRound,
   Layers3,
   PackageCheck,
+  Pencil,
+  Plus,
   Power,
   RefreshCw,
+  Rocket,
+  Save,
   Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
   X
 } from "lucide-react";
 import { open } from "@tauri-apps/api/dialog";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type {
+  AdminDraftPreviewRequest,
+  AdminDraftSkill,
+  AdminSession,
   AppBootstrap,
   CachedSkillPackage,
   Category,
   InstallSkillRequest,
   LocalSkill,
+  MarketProject,
   MarketSkill,
   Project,
+  PublishMeta,
   SkillBinding,
   TargetRoot,
   UpdateCandidate,
-  SkillPreview
+  SkillPreview,
+  SkillPreviewRequest
 } from "./types";
 
-type ViewKey = "market" | "installed" | "projects" | "updates" | "settings";
+type ViewKey = "market" | "installed" | "projects" | "updates" | "settings" | "admin";
 type LevelChoice = "personal" | "project" | "download";
+type MarketMode = "public" | "project";
+type AdminTab = "projects" | "drafts" | "archive";
+type GovernanceTab = "project" | "general";
+type GovernanceDialog =
+  | { kind: "project-create" }
+  | { kind: "project-edit"; project: MarketProject }
+  | { kind: "project-delete"; project: MarketProject }
+  | { kind: "category-create" }
+  | { kind: "category-edit"; category: Category }
+  | { kind: "category-delete"; category: Category };
+type PreviewContext =
+  | { kind: "skill"; request: SkillPreviewRequest }
+  | { kind: "adminDraft"; request: AdminDraftPreviewRequest };
 type CachedSkillItem = {
   key: string;
   package: CachedSkillPackage;
@@ -47,6 +73,7 @@ const emptyBootstrap: AppBootstrap = {
   sources: [],
   categories: [],
   skills: [],
+  marketProjects: [],
   bindings: [],
   cachedPackages: [],
   localSkills: [],
@@ -66,9 +93,55 @@ const levelLabels: Record<string, string> = {
   project: "项目"
 };
 
+const isProjectMarketSkill = (skill: MarketSkill) =>
+  skill.categories.some((category) => category.startsWith("project:"));
+
+const isPublishedDraft = (draft?: AdminDraftSkill | null) => draft?.status.trim() === "已发布";
+
+function normalizeCategoryList(categories: Category[]) {
+  const byId = new Map<string, Category>();
+  for (const category of categories) {
+    const id = category.id.trim();
+    if (!id || id.startsWith("project:")) continue;
+    const name =
+      id === "public"
+        ? "公共"
+        : category.name.trim() || (id === "general" ? "通用" : id);
+    byId.set(id, {
+      id,
+      name,
+      order: Number.isFinite(category.order) ? category.order : 0
+    });
+  }
+
+  const normalized = [...byId.values()].sort((a, b) => {
+    const priority = categorySortPriority(a.id) - categorySortPriority(b.id);
+    if (priority !== 0) return priority;
+    if (a.order !== b.order) return a.order - b.order;
+    return a.id.localeCompare(b.id, "en");
+  });
+
+  let nextOrder = 10;
+  return normalized.map((category) => {
+    const order = category.order >= nextOrder ? category.order : nextOrder;
+    nextOrder = order + 10;
+    return { ...category, order };
+  });
+}
+
+function categorySortPriority(id: string) {
+  return id === "public" || id === "general" ? 0 : 1;
+}
+
+function nextCategoryOrder(categories: Category[]) {
+  return categories.reduce((max, category) => Math.max(max, category.order), 0) + 10;
+}
+
 function App() {
   const [view, setView] = useState<ViewKey>("market");
   const [data, setData] = useState<AppBootstrap>(emptyBootstrap);
+  const [marketMode, setMarketMode] = useState<MarketMode>("public");
+  const [selectedMarketProjectSlug, setSelectedMarketProjectSlug] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null);
@@ -81,6 +154,21 @@ function App() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [targetRootDrafts, setTargetRootDrafts] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<SkillPreview | null>(null);
+  const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
+  const [adminVisible, setAdminVisible] = useState(false);
+  const [adminUnlockOpen, setAdminUnlockOpen] = useState(false);
+  const [adminKey, setAdminKey] = useState("");
+  const [adminSession, setAdminSession] = useState<AdminSession | null>(null);
+  const [adminDrafts, setAdminDrafts] = useState<AdminDraftSkill[]>([]);
+  const [adminTab, setAdminTab] = useState<AdminTab>("projects");
+  const [governanceTab, setGovernanceTab] = useState<GovernanceTab>("project");
+  const [governanceDialog, setGovernanceDialog] = useState<GovernanceDialog | null>(null);
+  const [governanceDialogError, setGovernanceDialogError] = useState<string | null>(null);
+  const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
+  const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
+  const [remoteProjectDraft, setRemoteProjectDraft] = useState<MarketProject>(emptyMarketProject());
+  const [marketCategoryDraft, setMarketCategoryDraft] = useState<Category>(emptyMarketCategory());
+  const [archiveReason, setArchiveReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
   const [error, setError] = useState<string | null>(null);
@@ -89,21 +177,29 @@ function App() {
     void load();
   }, []);
 
-  const selectedSkill = useMemo(() => {
-    return data.skills.find((skill) => skillKey(skill) === selectedSkillKey) ?? data.skills[0];
-  }, [data.skills, selectedSkillKey]);
+  const publicCategories = useMemo(
+    () => normalizeCategoryList(data.categories),
+    [data.categories]
+  );
 
   useEffect(() => {
-    if (!selectedSkillKey && data.skills.length > 0) {
-      setSelectedSkillKey(skillKey(data.skills[0]));
+    if (marketMode === "project" && !selectedMarketProjectSlug && data.marketProjects.length > 0) {
+      setSelectedMarketProjectSlug(data.marketProjects[0].slug);
     }
-  }, [data.skills, selectedSkillKey]);
+  }, [data.marketProjects, marketMode, selectedMarketProjectSlug]);
 
   const filteredSkills = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return data.skills.filter((skill) => {
+      const publicScopeOk = !isProjectMarketSkill(skill);
       const categoryOk =
-        selectedCategory === "all" || skill.categories.includes(selectedCategory);
+        marketMode === "project"
+          ? Boolean(selectedMarketProjectSlug) &&
+            skill.categories.includes(`project:${selectedMarketProjectSlug}`)
+          : publicScopeOk &&
+            (selectedCategory === "all" ||
+              skill.categories.includes(selectedCategory) ||
+              (selectedCategory === "general" && skill.categories.includes("public")));
       const queryOk =
         normalized.length === 0 ||
         [skill.name, skill.id, skill.namespace, skill.summary, ...skill.tags]
@@ -113,7 +209,30 @@ function App() {
 
       return categoryOk && queryOk;
     });
-  }, [data.skills, query, selectedCategory]);
+  }, [data.skills, marketMode, query, selectedCategory, selectedMarketProjectSlug]);
+
+  const selectedSkill = useMemo(() => {
+    if (filteredSkills.length === 0) {
+      return undefined;
+    }
+    return filteredSkills.find((skill) => skillKey(skill) === selectedSkillKey) ?? filteredSkills[0];
+  }, [filteredSkills, selectedSkillKey]);
+
+  useEffect(() => {
+    if (filteredSkills.length === 0) {
+      if (selectedSkillKey !== null) {
+        setSelectedSkillKey(null);
+      }
+      return;
+    }
+
+    const selectedSkillVisible =
+      selectedSkillKey !== null &&
+      filteredSkills.some((skill) => skillKey(skill) === selectedSkillKey);
+    if (!selectedSkillVisible) {
+      setSelectedSkillKey(skillKey(filteredSkills[0]));
+    }
+  }, [filteredSkills, selectedSkillKey]);
 
   const bindingsBySkill = useMemo(() => {
     const map = new Map<string, SkillBinding[]>();
@@ -140,6 +259,25 @@ function App() {
       };
     });
   }, [data.cachedPackages, data.skills]);
+
+  const isSystemAdmin = adminSession?.role === "system";
+
+  const canManageProject = (slug: string) =>
+    Boolean(
+      adminSession &&
+        (adminSession.role === "system" ||
+          adminSession.projects.includes("*") ||
+          adminSession.projects.some((project) => project.toLowerCase() === slug.toLowerCase()))
+    );
+
+  const canManageSkill = (skill: MarketSkill) =>
+    Boolean(
+      adminSession &&
+        skill.categories.every((category) => {
+          const projectSlug = category.startsWith("project:") ? category.slice("project:".length) : null;
+          return projectSlug ? canManageProject(projectSlug) : isSystemAdmin;
+        })
+    );
 
   useEffect(() => {
     setTargetRootDrafts(
@@ -182,10 +320,21 @@ function App() {
   }
 
   async function openView(nextView: ViewKey) {
+    if (nextView === "admin") {
+      if (!adminSession) {
+        setAdminUnlockOpen(true);
+        return;
+      }
+      setAdminVisible(true);
+    }
     setView(nextView);
     if (nextView === "market") {
       await refreshCatalog();
     }
+  }
+
+  function revealAdminEntry() {
+    setAdminUnlockOpen(true);
   }
 
   async function chooseFolder(target: "project" | "root", rootTarget?: string) {
@@ -247,13 +396,15 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.previewSkill({
+      const request: SkillPreviewRequest = {
         sourceId: skill.sourceId,
         namespace: skill.namespace,
         skillId: skill.id,
         version: null
-      });
+      };
+      const result = await api.previewSkill(request);
       setPreview(result);
+      setPreviewContext({ kind: "skill", request });
       setNotice(`正在预览 ${skill.name}`);
     } catch (err) {
       setError(readError(err));
@@ -285,13 +436,15 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.previewSkill({
+      const request: SkillPreviewRequest = {
         sourceId: item.package.sourceId,
         namespace: item.package.namespace,
         skillId: item.package.skillId,
         version: item.package.version
-      });
+      };
+      const result = await api.previewSkill(request);
       setPreview(result);
+      setPreviewContext({ kind: "skill", request });
       setNotice(`正在预览 ${item.package.skillName} ${item.package.version}`);
     } catch (err) {
       setError(readError(err));
@@ -304,8 +457,10 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.previewSkill({ bindingId: binding.id });
+      const request: SkillPreviewRequest = { bindingId: binding.id };
+      const result = await api.previewSkill(request);
       setPreview(result);
+      setPreviewContext({ kind: "skill", request });
       setNotice(`正在预览 ${binding.skillName}`);
     } catch (err) {
       setError(readError(err));
@@ -318,8 +473,10 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.previewSkill({ path: skill.path });
+      const request: SkillPreviewRequest = { path: skill.path };
+      const result = await api.previewSkill(request);
       setPreview(result);
+      setPreviewContext({ kind: "skill", request });
       setNotice(`正在预览 ${skill.detectedManifest ?? skill.path}`);
     } catch (err) {
       setError(readError(err));
@@ -430,19 +587,252 @@ function App() {
     }
   }
 
+  async function unlockAdmin() {
+    setBusy(true);
+    setError(null);
+    try {
+      const session = await api.unlockAdminMode(adminKey);
+      setAdminSession(session);
+      setAdminVisible(true);
+      setAdminUnlockOpen(false);
+      setView("admin");
+      setNotice("管理员模式已解锁");
+      await refreshAdminDrafts();
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAdminDrafts() {
+    if (!adminKey.trim()) {
+      setError("请先输入管理员密钥");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const drafts = await api.listAdminDrafts(adminKey);
+      setAdminDrafts(drafts);
+      if (!selectedDraftPath && drafts.length > 0) {
+        selectDraft(drafts[0]);
+      }
+      setNotice("草稿区已刷新");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function selectDraft(draft: AdminDraftSkill) {
+    setSelectedDraftPath(draft.gitlabSourcePath);
+    const nextMeta = draft.publishMeta ?? defaultMetaFromDraft(draft);
+    if (adminSession?.role === "project" && nextMeta.publishScope !== "project") {
+      setDraftMeta({
+        ...nextMeta,
+        publishScope: "project",
+        publishCategorySlug: null,
+        publishProjectSlug: adminSession.projects.find((project) => project !== "*") ?? null
+      });
+      return;
+    }
+    setDraftMeta(nextMeta);
+  }
+
+  async function saveDraftMeta() {
+    if (!selectedDraftPath) {
+      setError("请先选择草稿");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await api.savePublishMeta(adminKey, selectedDraftPath, normalizeMetaForSave(draftMeta));
+      setDraftMeta(saved);
+      await refreshAdminDrafts();
+      setNotice("发布元数据已保存");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewSelectedDraft() {
+    if (!selectedDraftPath) {
+      setError("Select a draft first");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const request: AdminDraftPreviewRequest = {
+        adminKey,
+        gitlabSourcePath: selectedDraftPath
+      };
+      const result = await api.previewAdminDraft(request);
+      setPreview(result);
+      setPreviewContext({ kind: "adminDraft", request });
+      setNotice("Draft preview generated");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadPreviewFile(filePath: string) {
+    if (!previewContext) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (previewContext.kind === "adminDraft") {
+        const request = { ...previewContext.request, filePath };
+        const result = await api.previewAdminDraft(request);
+        setPreview(result);
+        setPreviewContext({ kind: "adminDraft", request });
+      } else {
+        const request = { ...previewContext.request, filePath };
+        const result = await api.previewSkill(request);
+        setPreview(result);
+        setPreviewContext({ kind: "skill", request });
+      }
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function publishSelectedDraft() {
+    if (!selectedDraftPath) {
+      setError("请先选择草稿");
+      return;
+    }
+    const selectedDraft = adminDrafts.find((draft) => draft.gitlabSourcePath === selectedDraftPath);
+    if (isPublishedDraft(selectedDraft)) {
+      setError("该草稿当前版本已发布，不能重复发布到市场");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.publishDraft(adminKey, selectedDraftPath);
+      setData(next);
+      await refreshAdminDrafts();
+      setNotice("草稿已发布到市场");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRemoteProject() {
+    setBusy(true);
+    setError(null);
+    setGovernanceDialogError(null);
+    try {
+      const projects = await api.saveMarketProjectRemote(adminKey, remoteProjectDraft);
+      setData((current) => ({ ...current, marketProjects: projects }));
+      setRemoteProjectDraft(emptyMarketProject());
+      setGovernanceDialog(null);
+      setNotice("市场项目已保存");
+    } catch (err) {
+      setGovernanceDialogError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRemoteProject(project: MarketProject) {
+    setBusy(true);
+    setError(null);
+    setGovernanceDialogError(null);
+    try {
+      const next = await api.deleteMarketProjectRemote(adminKey, project.slug);
+      setData(next);
+      if (selectedMarketProjectSlug === project.slug) {
+        setSelectedMarketProjectSlug("");
+      }
+      setGovernanceDialog(null);
+      setNotice(`${project.name} 已从远程市场项目中删除`);
+    } catch (err) {
+      setGovernanceDialogError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveMarketCategory() {
+    setBusy(true);
+    setError(null);
+    setGovernanceDialogError(null);
+    try {
+      const categories = await api.saveMarketCategoryRemote(adminKey, marketCategoryDraft);
+      setData((current) => ({ ...current, categories: normalizeCategoryList(categories) }));
+      setMarketCategoryDraft(emptyMarketCategory());
+      setGovernanceDialog(null);
+      setNotice("公共分类已保存");
+    } catch (err) {
+      setGovernanceDialogError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMarketCategory(category: Category) {
+    setBusy(true);
+    setError(null);
+    setGovernanceDialogError(null);
+    try {
+      const next = await api.deleteMarketCategoryRemote(adminKey, category.id);
+      setData(next);
+      setGovernanceDialog(null);
+      setNotice(`${category.name} 已删除`);
+    } catch (err) {
+      setGovernanceDialogError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function archiveMarketSkill(skill: MarketSkill) {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.archiveMarketSkill(adminKey, skill.namespace, skill.id, archiveReason);
+      setData(next);
+      setArchiveReason("");
+      await refreshAdminDrafts();
+      setNotice(`${skill.name} 已下架并回到草稿区`);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const localNavCount = Math.max(data.bindings.length, data.localSkills.length);
   const navItems = [
     { key: "market" as const, label: "市场", icon: Blocks, count: data.skills.length },
     { key: "installed" as const, label: "本地", icon: PackageCheck, count: localNavCount },
     { key: "projects" as const, label: "项目", icon: FolderGit2, count: data.projects.length },
     { key: "updates" as const, label: "更新", icon: RefreshCw, count: data.updates.length },
-    { key: "settings" as const, label: "设置", icon: Settings, count: data.targetRoots.length }
+    { key: "settings" as const, label: "设置", icon: Settings, count: data.targetRoots.length },
+    ...(adminVisible || adminSession
+      ? [{ key: "admin" as const, label: "管理", icon: ShieldCheck, count: adminDrafts.length }]
+      : [])
   ];
 
   return (
     <div className="app-shell" data-theme={theme}>
       <aside className="sidebar">
-        <div className="brand-block">
+        <button className="brand-block" onClick={revealAdminEntry} type="button" title="Skill Hub">
           <div className="brand-mark">
             <Layers3 size={22} />
           </div>
@@ -450,7 +840,7 @@ function App() {
             <strong>Skill Hub</strong>
             <span>Skill Switchboard</span>
           </div>
-        </div>
+        </button>
 
         <nav className="nav-stack">
           {navItems.map((item) => {
@@ -485,7 +875,7 @@ function App() {
           </div>
         </header>
 
-        {error ? (
+        {error && !governanceDialog ? (
           <div className="error-strip">
             <AlertCircle size={18} />
             <span>{error}</span>
@@ -494,7 +884,12 @@ function App() {
 
         {view === "market" ? (
           <MarketView
-            categories={data.categories}
+            mode={marketMode}
+            onMode={setMarketMode}
+            marketProjects={data.marketProjects}
+            selectedMarketProjectSlug={selectedMarketProjectSlug}
+            onSelectedMarketProjectSlug={setSelectedMarketProjectSlug}
+            categories={publicCategories}
             selectedCategory={selectedCategory}
             onSelectCategory={setSelectedCategory}
             query={query}
@@ -561,13 +956,79 @@ function App() {
           />
         ) : null}
 
-        {preview ? <PreviewPanel preview={preview} onClose={() => setPreview(null)} /> : null}
+        {view === "admin" && adminSession ? (
+          <AdminView
+            session={adminSession}
+            activeTab={adminTab}
+            onActiveTab={setAdminTab}
+            governanceTab={governanceTab}
+            onGovernanceTab={setGovernanceTab}
+            governanceDialog={governanceDialog}
+            governanceDialogError={governanceDialogError}
+            busy={busy}
+            onGovernanceDialog={(dialog) => {
+              setGovernanceDialogError(null);
+              setGovernanceDialog(dialog);
+            }}
+            drafts={adminDrafts}
+            selectedDraftPath={selectedDraftPath}
+            onRefreshDrafts={() => void refreshAdminDrafts()}
+            onSelectDraft={selectDraft}
+            meta={draftMeta}
+            onMeta={setDraftMeta}
+            onSaveMeta={() => void saveDraftMeta()}
+            onPreview={() => void previewSelectedDraft()}
+            onPublish={() => void publishSelectedDraft()}
+            projects={data.marketProjects}
+            projectDraft={remoteProjectDraft}
+            onProjectDraft={setRemoteProjectDraft}
+            onSaveProject={() => void saveRemoteProject()}
+            onDeleteProject={(project) => void deleteRemoteProject(project)}
+            categories={publicCategories}
+            categoryDraft={marketCategoryDraft}
+            onCategoryDraft={setMarketCategoryDraft}
+            onSaveCategory={() => void saveMarketCategory()}
+            onDeleteCategory={(category) => void deleteMarketCategory(category)}
+            skills={data.skills}
+            canManageProject={canManageProject}
+            canManageSkill={canManageSkill}
+            archiveReason={archiveReason}
+            onArchiveReason={setArchiveReason}
+            onArchiveSkill={(skill) => void archiveMarketSkill(skill)}
+          />
+        ) : null}
+
+        {adminUnlockOpen && !adminSession ? (
+          <AdminUnlockDialog
+            adminKey={adminKey}
+            onAdminKey={setAdminKey}
+            busy={busy}
+            onUnlock={() => void unlockAdmin()}
+            onClose={() => setAdminUnlockOpen(false)}
+          />
+        ) : null}
+
+        {preview ? (
+          <PreviewPanel
+            preview={preview}
+            onSelectFile={(filePath) => void loadPreviewFile(filePath)}
+            onClose={() => {
+              setPreview(null);
+              setPreviewContext(null);
+            }}
+          />
+        ) : null}
       </main>
     </div>
   );
 }
 
 function MarketView(props: {
+  mode: MarketMode;
+  onMode: (value: MarketMode) => void;
+  marketProjects: MarketProject[];
+  selectedMarketProjectSlug: string;
+  onSelectedMarketProjectSlug: (value: string) => void;
   categories: Category[];
   selectedCategory: string;
   onSelectCategory: (value: string) => void;
@@ -617,27 +1078,70 @@ function MarketView(props: {
   return (
     <section className="market-grid">
       <div className="filter-rail">
+        <div className="market-mode-panel">
+          <div className="segmented market-mode-switch" aria-label="市场范围">
+            <button
+              className={props.mode === "public" ? "active" : ""}
+              onClick={() => props.onMode("public")}
+            >
+              公共
+            </button>
+            <button
+              className={props.mode === "project" ? "active" : ""}
+              onClick={() => props.onMode("project")}
+            >
+              项目
+            </button>
+          </div>
+          <p>{props.mode === "project" ? "按项目查看专属 skill" : "按公共分类筛选市场 skill"}</p>
+        </div>
         <div className="rail-title">
           <SlidersHorizontal size={16} />
-          <span>分类</span>
+          <span>{props.mode === "project" ? "项目" : "分类"}</span>
+          <b>
+            {props.mode === "project"
+              ? props.marketProjects.length
+              : props.categories.length + 1}
+          </b>
         </div>
-        <button
-          className={`category-button ${props.selectedCategory === "all" ? "active" : ""}`}
-          onClick={() => props.onSelectCategory("all")}
-        >
-          全部
-        </button>
-        {props.categories.map((category) => (
-          <button
-            key={category.id}
-            className={`category-button ${
-              props.selectedCategory === category.id ? "active" : ""
-            }`}
-            onClick={() => props.onSelectCategory(category.id)}
-          >
-            {category.name}
-          </button>
-        ))}
+        {props.mode === "public" ? (
+          <>
+            <button
+              className={`category-button ${props.selectedCategory === "all" ? "active" : ""}`}
+              onClick={() => props.onSelectCategory("all")}
+            >
+              全部
+            </button>
+            {props.categories.map((category) => (
+              <button
+                key={category.id}
+                className={`category-button ${
+                  props.selectedCategory === category.id ? "active" : ""
+                }`}
+                onClick={() => props.onSelectCategory(category.id)}
+              >
+                {category.id === "public" ? "通用" : category.name}
+              </button>
+            ))}
+          </>
+        ) : (
+          <>
+            {props.marketProjects.map((project) => (
+              <button
+                key={project.slug}
+                className={`category-button ${
+                  props.selectedMarketProjectSlug === project.slug ? "active" : ""
+                }`}
+                onClick={() => props.onSelectedMarketProjectSlug(project.slug)}
+              >
+                {project.name}
+              </button>
+            ))}
+            {props.marketProjects.length === 0 ? (
+              <div className="empty-state compact">暂无远程市场项目。</div>
+            ) : null}
+          </>
+        )}
       </div>
 
       <div className="list-pane">
@@ -1211,7 +1715,764 @@ function SettingsView(props: {
   );
 }
 
-function PreviewPanel(props: { preview: SkillPreview; onClose: () => void }) {
+function AdminView(props: {
+  session: AdminSession | null;
+  activeTab: AdminTab;
+  onActiveTab: (value: AdminTab) => void;
+  governanceTab: GovernanceTab;
+  onGovernanceTab: (value: GovernanceTab) => void;
+  governanceDialog: GovernanceDialog | null;
+  governanceDialogError: string | null;
+  busy: boolean;
+  onGovernanceDialog: (value: GovernanceDialog | null) => void;
+  drafts: AdminDraftSkill[];
+  selectedDraftPath: string | null;
+  onRefreshDrafts: () => void;
+  onSelectDraft: (draft: AdminDraftSkill) => void;
+  meta: PublishMeta;
+  onMeta: (value: PublishMeta) => void;
+  onSaveMeta: () => void;
+  onPreview: () => void;
+  onPublish: () => void;
+  projects: MarketProject[];
+  projectDraft: MarketProject;
+  onProjectDraft: (value: MarketProject) => void;
+  onSaveProject: () => void;
+  onDeleteProject: (project: MarketProject) => void;
+  categories: Category[];
+  categoryDraft: Category;
+  onCategoryDraft: (value: Category) => void;
+  onSaveCategory: () => void;
+  onDeleteCategory: (category: Category) => void;
+  skills: MarketSkill[];
+  canManageProject: (slug: string) => boolean;
+  canManageSkill: (skill: MarketSkill) => boolean;
+  archiveReason: string;
+  onArchiveReason: (value: string) => void;
+  onArchiveSkill: (skill: MarketSkill) => void;
+}) {
+  const selectedDraft = props.drafts.find((draft) => draft.gitlabSourcePath === props.selectedDraftPath);
+  const isSystem = props.session?.role === "system";
+  const authorizedProjects = props.session?.projects ?? [];
+  const manageableProjects = props.projects.filter((project) => props.canManageProject(project.slug));
+  const manageableSkills = props.skills.filter((skill) => props.canManageSkill(skill));
+  const updateMeta = <K extends keyof PublishMeta>(key: K, value: PublishMeta[K]) =>
+    props.onMeta({ ...props.meta, [key]: value });
+  const projectOptions = isSystem ? props.projects : manageableProjects;
+  const activeGovernanceTab: GovernanceTab = isSystem ? props.governanceTab : "project";
+  const selectedDraftPublished = isPublishedDraft(selectedDraft);
+
+  return (
+    <section className="admin-console">
+      <div className="admin-command-bar">
+        <div>
+          <p>MinIO 管理会话</p>
+          <h2>{isSystem ? "系统管理员" : "项目管理员"}</h2>
+          <span>{props.session?.endpoint}/{props.session?.bucket}</span>
+        </div>
+        <div className="admin-session-meta">
+          <Badge strong>{props.session?.role ?? "admin"}</Badge>
+          <span>{props.session?.name ?? props.session?.macAddress}</span>
+          <small>{authorizedProjects.length > 0 ? authorizedProjects.join(", ") : "全部项目"}</small>
+        </div>
+      </div>
+
+      <div className="admin-layout">
+        <aside className="admin-rail">
+          <button
+            className={props.activeTab === "projects" ? "active" : ""}
+            onClick={() => props.onActiveTab("projects")}
+          >
+            <FolderGit2 size={17} />
+            项目治理
+          </button>
+          <button
+            className={props.activeTab === "drafts" ? "active" : ""}
+            onClick={() => props.onActiveTab("drafts")}
+          >
+            <FileText size={17} />
+            草稿发布
+          </button>
+          <button
+            className={props.activeTab === "archive" ? "active" : ""}
+            onClick={() => props.onActiveTab("archive")}
+          >
+            <Archive size={17} />
+            市场下架
+          </button>
+        </aside>
+
+        <div className="admin-workspace">
+          {props.activeTab === "projects" ? (
+            <div className="admin-panels governance">
+              <section className="admin-panel governance-panel">
+                <div className="section-toolbar">
+                  <div>
+                    <h2>项目治理</h2>
+                    <p>{isSystem ? "维护市场项目和通用分类" : "仅维护 MAC 白名单授权项目"}</p>
+                  </div>
+                  <div className="segmented governance-tabs" aria-label="治理类型">
+                    <button
+                      className={activeGovernanceTab === "project" ? "active" : ""}
+                      onClick={() => props.onGovernanceTab("project")}
+                    >
+                      项目
+                    </button>
+                    {isSystem ? (
+                      <button
+                        className={activeGovernanceTab === "general" ? "active" : ""}
+                        onClick={() => props.onGovernanceTab("general")}
+                      >
+                        通用
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                {activeGovernanceTab === "project" ? (
+                  <div className="governance-board">
+                    <div className="governance-board-head">
+                      <div>
+                        <h3>项目</h3>
+                        <span>{manageableProjects.length} 个可管理项目</span>
+                      </div>
+                      <button
+                        className="primary-action compact"
+                        onClick={() => {
+                          props.onProjectDraft(emptyMarketProject());
+                          props.onGovernanceDialog({ kind: "project-create" });
+                        }}
+                      >
+                        <Plus size={17} />
+                        新增项目
+                      </button>
+                    </div>
+                    <div className="governance-list">
+                      {manageableProjects.map((project) => (
+                        <article className="governance-row project-row" key={project.slug}>
+                          <div>
+                            <strong>{project.name}</strong>
+                            <span>
+                              {project.slug} · {project.status || "active"} · {project.description || "无描述"}
+                            </span>
+                          </div>
+                          <div className="row-actions">
+                            <button
+                              className="icon-button"
+                              onClick={() => {
+                                props.onProjectDraft({ ...project });
+                                props.onGovernanceDialog({ kind: "project-edit", project });
+                              }}
+                              title="编辑项目"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              className="icon-button danger"
+                              onClick={() => props.onGovernanceDialog({ kind: "project-delete", project })}
+                              title="删除项目"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                      {manageableProjects.length === 0 ? (
+                        <div className="empty-state compact">当前角色没有可管理的项目。</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {isSystem && activeGovernanceTab === "general" ? (
+                  <div className="governance-board">
+                    <div className="governance-board-head">
+                      <div>
+                        <h3>通用分类</h3>
+                        <span>{props.categories.length} 个公共分类</span>
+                      </div>
+                      <button
+                        className="primary-action compact"
+                        onClick={() => {
+                          props.onCategoryDraft({ ...emptyMarketCategory(), order: nextCategoryOrder(props.categories) });
+                          props.onGovernanceDialog({ kind: "category-create" });
+                        }}
+                      >
+                        <Plus size={17} />
+                        新增通用
+                      </button>
+                    </div>
+                    <div className="governance-list">
+                      {props.categories.map((category, index) => {
+                        const categoryName = category.name.trim() || category.id.trim() || "未命名分类";
+                        const categoryId = category.id.trim() || "未设置 slug";
+                        return (
+                          <article className="governance-row category-row" key={category.id || `${categoryName}-${index}`}>
+                            <div>
+                              <strong>{categoryName}</strong>
+                              <span>{categoryId} · 排序 {category.order}</span>
+                            </div>
+                            <div className="row-actions">
+                              <button
+                                className="icon-button"
+                                onClick={() => {
+                                  props.onCategoryDraft({ ...category });
+                                  props.onGovernanceDialog({ kind: "category-edit", category });
+                                }}
+                                title="编辑通用分类"
+                              >
+                                <Pencil size={16} />
+                              </button>
+                              <button
+                                className="icon-button danger"
+                                onClick={() => props.onGovernanceDialog({ kind: "category-delete", category })}
+                                title="删除通用分类"
+                                disabled={category.id === "general" || category.id === "public"}
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          ) : null}
+
+          {props.activeTab === "drafts" ? (
+            <div className="admin-panels drafts">
+              <section className="admin-panel draft-browser">
+                <div className="section-toolbar">
+                  <div>
+                    <h2>草稿区</h2>
+                    <p>MinIO draft/gitlab/skills 下的 SKILL.md。</p>
+                  </div>
+                  <button className="primary-soft" onClick={props.onRefreshDrafts}>
+                    <RefreshCw size={17} />
+                    刷新
+                  </button>
+                </div>
+                <div className="draft-list">
+                  {props.drafts.map((draft) => (
+                    <button
+                      key={draft.gitlabSourcePath}
+                      className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""}`}
+                      onClick={() => props.onSelectDraft(draft)}
+                    >
+                      <FileText size={17} />
+                      <span>
+                        <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
+                        <small>{draft.gitlabSourcePath}</small>
+                      </span>
+                      <Badge strong={draft.status === "待发布"}>{draft.status}</Badge>
+                    </button>
+                  ))}
+                  {props.drafts.length === 0 ? (
+                    <div className="empty-state compact">暂无草稿。请确认 GitLab 已同步到 MinIO 草稿前缀。</div>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="admin-panel publish-editor">
+                <div className="section-toolbar">
+                  <div>
+                    <h2>{selectedDraft?.draftSlug ?? "发布元数据"}</h2>
+                    <p>{selectedDraft?.version ? `version ${selectedDraft.version}` : "选择草稿后编辑"}</p>
+                  </div>
+                  <Badge>{selectedDraft?.author ?? "author"}</Badge>
+                </div>
+
+                <div className="publish-scroll">
+                  <div className="meta-form">
+                    <label className="text-field">
+                      <span>namespace</span>
+                      <input value={props.meta.namespace} onChange={(event) => updateMeta("namespace", event.target.value)} />
+                    </label>
+                    <label className="text-field">
+                      <span>skill_id</span>
+                      <input value={props.meta.skillId} onChange={(event) => updateMeta("skillId", event.target.value)} />
+                    </label>
+                    <label className="text-field">
+                      <span>名称</span>
+                      <input value={props.meta.name} onChange={(event) => updateMeta("name", event.target.value)} />
+                    </label>
+                    <label className="text-field wide">
+                      <span>摘要</span>
+                      <input value={props.meta.summary} onChange={(event) => updateMeta("summary", event.target.value)} />
+                    </label>
+                    <label className="text-field">
+                      <span>标签，逗号分隔</span>
+                      <input
+                        value={props.meta.tags.join(", ")}
+                        onChange={(event) => updateMeta("tags", splitCsv(event.target.value))}
+                      />
+                    </label>
+                    <label className="text-field">
+                      <span>发布范围</span>
+                      <select
+                        value={props.meta.publishScope}
+                        onChange={(event) => updateMeta("publishScope", event.target.value)}
+                      >
+                        {isSystem ? <option value="public">公共</option> : null}
+                        <option value="project">项目</option>
+                      </select>
+                    </label>
+                    {props.meta.publishScope === "project" ? (
+                      <label className="text-field">
+                        <span>项目</span>
+                        <select
+                          value={props.meta.publishProjectSlug ?? ""}
+                          onChange={(event) => updateMeta("publishProjectSlug", event.target.value)}
+                        >
+                          <option value="">选择项目</option>
+                          {projectOptions.map((project) => (
+                            <option key={project.slug} value={project.slug}>
+                              {project.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <label className="text-field">
+                        <span>公共分类</span>
+                        <select
+                          value={props.meta.publishCategorySlug ?? "general"}
+                          onChange={(event) => updateMeta("publishCategorySlug", event.target.value)}
+                        >
+                          {props.categories.map((category) => (
+                            <option key={category.id} value={category.id}>
+                              {category.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label className="text-field wide">
+                      <span>变更说明</span>
+                      <input value={props.meta.changelog} onChange={(event) => updateMeta("changelog", event.target.value)} />
+                    </label>
+                  </div>
+
+                  {selectedDraft && !selectedDraft.sourceAvailable ? (
+                    <div className="conflict-note">
+                      <AlertCircle size={17} />
+                      该记录由市场下架生成，暂未关联 GitLab 草稿源；需要 GitLab 重新同步 SKILL.md 后才能预览和发布。
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="button-line publish-actions">
+                  <button className="primary-soft" onClick={props.onSaveMeta}>
+                    <Save size={17} />
+                    保存元数据
+                  </button>
+                  <button
+                    className="primary-soft"
+                    onClick={props.onPreview}
+                    disabled={Boolean(selectedDraft && !selectedDraft.sourceAvailable)}
+                  >
+                    <BookOpen size={17} />
+                    预览草稿
+                  </button>
+                  {selectedDraftPublished ? (
+                    <span className="publish-status-note">
+                      <CheckCircle2 size={16} />
+                      当前版本已发布
+                    </span>
+                  ) : (
+                    <button
+                      className="primary-action compact"
+                      onClick={props.onPublish}
+                      disabled={Boolean(selectedDraft && !selectedDraft.sourceAvailable)}
+                    >
+                      <Rocket size={17} />
+                      发布到市场
+                    </button>
+                  )}
+                </div>
+              </section>
+            </div>
+          ) : null}
+
+          {props.activeTab === "archive" ? (
+            <div className="admin-panels archive">
+              <section className="admin-panel">
+                <div className="section-toolbar">
+                  <div>
+                    <h2>市场下架</h2>
+                    <p>{isSystem ? "可下架公共和项目 skill" : "只能下架授权项目 skill"}</p>
+                  </div>
+                </div>
+                <label className="text-field">
+                  <span>下架原因</span>
+                  <input
+                    value={props.archiveReason}
+                    onChange={(event) => props.onArchiveReason(event.target.value)}
+                    placeholder="例如：版本过期、迁移到新 skill、内容需修订"
+                  />
+                </label>
+                <div className="archive-skill-list">
+                  {props.skills.map((skill) => {
+                    const allowed = props.canManageSkill(skill);
+                    return (
+                      <article className={`archive-skill-row ${allowed ? "" : "disabled"}`} key={`${skill.namespace}/${skill.id}`}>
+                        <div>
+                          <strong>{skill.name}</strong>
+                          <span>{skill.namespace}/{skill.id} · {skill.latestVersion}</span>
+                          <small>{skill.categories.join(", ") || "无分类"}</small>
+                        </div>
+                        <button
+                          className="primary-soft danger"
+                          onClick={() => props.onArchiveSkill(skill)}
+                          disabled={!allowed}
+                        >
+                          <Archive size={16} />
+                          下架
+                        </button>
+                      </article>
+                    );
+                  })}
+                  {manageableSkills.length === 0 ? (
+                    <div className="empty-state compact">当前角色没有可下架的市场 skill。</div>
+                  ) : null}
+                </div>
+              </section>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {props.governanceDialog ? (
+        <GovernanceDialogView
+          dialog={props.governanceDialog}
+          projectDraft={props.projectDraft}
+          onProjectDraft={props.onProjectDraft}
+          onSaveProject={props.onSaveProject}
+          categoryDraft={props.categoryDraft}
+          onCategoryDraft={props.onCategoryDraft}
+          onSaveCategory={props.onSaveCategory}
+          onDeleteProject={props.onDeleteProject}
+          onDeleteCategory={props.onDeleteCategory}
+          busy={props.busy}
+          error={props.governanceDialogError}
+          onClose={() => props.onGovernanceDialog(null)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function GovernanceDialogView(props: {
+  dialog: GovernanceDialog;
+  projectDraft: MarketProject;
+  onProjectDraft: (value: MarketProject) => void;
+  onSaveProject: () => void;
+  categoryDraft: Category;
+  onCategoryDraft: (value: Category) => void;
+  onSaveCategory: () => void;
+  onDeleteProject: (project: MarketProject) => void;
+  onDeleteCategory: (category: Category) => void;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
+  const updateProject = <K extends keyof MarketProject>(key: K, value: MarketProject[K]) =>
+    props.onProjectDraft({ ...props.projectDraft, [key]: value });
+  const updateCategory = <K extends keyof Category>(key: K, value: Category[K]) =>
+    props.onCategoryDraft({ ...props.categoryDraft, [key]: value });
+  const editingProject = props.dialog.kind === "project-edit";
+  const editingCategory = props.dialog.kind === "category-edit";
+  const projectForm = props.dialog.kind === "project-create" || editingProject;
+
+  if (props.dialog.kind === "project-delete") {
+    const project = props.dialog.project;
+    return (
+      <div className="modal-backdrop" role="presentation">
+        <section className="admin-unlock-dialog governance-dialog" role="dialog" aria-modal="true">
+          <div className="preview-head">
+            <div>
+              <p>Project</p>
+              <h2>删除项目</h2>
+              <span>{project.slug}</span>
+            </div>
+            <button className="icon-button" onClick={props.onClose} title="关闭">
+              <X size={17} />
+            </button>
+          </div>
+          <div className="admin-unlock-body">
+            {props.error ? (
+              <div className="dialog-error">
+                <AlertCircle size={17} />
+                <span>{props.error}</span>
+              </div>
+            ) : null}
+            <div className="delete-summary">
+              <strong>{project.name}</strong>
+              <span>删除前必须先下架该项目下所有 skill。</span>
+            </div>
+            <div className="button-line">
+              <button className="primary-soft danger" onClick={() => props.onDeleteProject(project)} disabled={props.busy}>
+                <Trash2 size={17} />
+                确认删除
+              </button>
+              <button className="primary-soft" onClick={props.onClose}>
+                取消
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (props.dialog.kind === "category-delete") {
+    const category = props.dialog.category;
+    return (
+      <div className="modal-backdrop" role="presentation">
+        <section className="admin-unlock-dialog governance-dialog" role="dialog" aria-modal="true">
+          <div className="preview-head">
+            <div>
+              <p>General</p>
+              <h2>删除通用分类</h2>
+              <span>{category.id}</span>
+            </div>
+            <button className="icon-button" onClick={props.onClose} title="关闭">
+              <X size={17} />
+            </button>
+          </div>
+          <div className="admin-unlock-body">
+            {props.error ? (
+              <div className="dialog-error">
+                <AlertCircle size={17} />
+                <span>{props.error}</span>
+              </div>
+            ) : null}
+            <div className="delete-summary">
+              <strong>{category.name}</strong>
+              <span>删除前必须先下架该分类下所有 skill。</span>
+            </div>
+            <div className="button-line">
+              <button className="primary-soft danger" onClick={() => props.onDeleteCategory(category)} disabled={props.busy}>
+                <Trash2 size={17} />
+                确认删除
+              </button>
+              <button className="primary-soft" onClick={props.onClose}>
+                取消
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="admin-unlock-dialog governance-dialog" role="dialog" aria-modal="true">
+        <div className="preview-head">
+          <div>
+            <p>{projectForm ? "Project" : "General"}</p>
+            <h2>
+              {projectForm
+                ? editingProject
+                  ? "编辑项目"
+                  : "新增项目"
+                : editingCategory
+                  ? "编辑通用分类"
+                  : "新增通用分类"}
+            </h2>
+            <span>
+              {projectForm
+                ? editingProject
+                  ? "更新项目名称、描述和状态"
+                  : "创建市场项目入口"
+                : editingCategory
+                  ? "更新公共市场分类"
+                  : "创建公共市场分类"}
+            </span>
+          </div>
+          <button className="icon-button" onClick={props.onClose} title="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="admin-unlock-body">
+          {props.error ? (
+            <div className="dialog-error">
+              <AlertCircle size={17} />
+              <span>{props.error}</span>
+            </div>
+          ) : null}
+          {projectForm ? (
+            <div className="meta-form single">
+              <label className="text-field">
+                <span>slug</span>
+                <input
+                  autoFocus
+                  value={props.projectDraft.slug}
+                  onChange={(event) => updateProject("slug", event.target.value)}
+                  placeholder="project-a"
+                  readOnly={editingProject}
+                />
+              </label>
+              <label className="text-field">
+                <span>名称</span>
+                <input
+                  value={props.projectDraft.name}
+                  onChange={(event) => updateProject("name", event.target.value)}
+                  placeholder="项目 A"
+                />
+              </label>
+              <label className="text-field">
+                <span>描述</span>
+                <input
+                  value={props.projectDraft.description}
+                  onChange={(event) => updateProject("description", event.target.value)}
+                  placeholder="项目市场说明"
+                />
+              </label>
+              <label className="text-field">
+                <span>状态</span>
+                <select
+                  value={props.projectDraft.status || "active"}
+                  onChange={(event) => updateProject("status", event.target.value)}
+                >
+                  <option value="active">active</option>
+                  <option value="archived">archived</option>
+                </select>
+              </label>
+              <button className="primary-action compact" onClick={props.onSaveProject} disabled={props.busy}>
+                <Save size={17} />
+                {editingProject ? "保存修改" : "保存项目"}
+              </button>
+            </div>
+          ) : (
+            <div className="meta-form single">
+              <label className="text-field">
+                <span>分类 slug</span>
+                <input
+                  autoFocus
+                  value={props.categoryDraft.id}
+                  onChange={(event) => updateCategory("id", event.target.value)}
+                  placeholder="general"
+                  readOnly={editingCategory}
+                />
+              </label>
+              <label className="text-field">
+                <span>名称</span>
+                <input
+                  value={props.categoryDraft.name}
+                  onChange={(event) => updateCategory("name", event.target.value)}
+                  placeholder="通用"
+                />
+              </label>
+              <label className="text-field">
+                <span>排序</span>
+                <input
+                  type="number"
+                  value={props.categoryDraft.order}
+                  onChange={(event) => updateCategory("order", Number(event.target.value) || 10)}
+                />
+              </label>
+              <button className="primary-action compact" onClick={props.onSaveCategory} disabled={props.busy}>
+                <Save size={17} />
+                {editingCategory ? "保存修改" : "保存分类"}
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AdminUnlockDialog(props: {
+  adminKey: string;
+  onAdminKey: (value: string) => void;
+  busy: boolean;
+  onUnlock: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="admin-unlock-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-unlock-title">
+        <div className="preview-head">
+          <div>
+            <p>Admin</p>
+            <h2 id="admin-unlock-title">管理员验证</h2>
+            <span>验证通过后才会打开管理发布页面</span>
+          </div>
+          <button className="icon-button" onClick={props.onClose} title="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="admin-unlock-body">
+          <label className="text-field">
+            <span>管理员密钥</span>
+            <input
+              autoFocus
+              type="password"
+              value={props.adminKey}
+              onChange={(event) => props.onAdminKey(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  props.onUnlock();
+                }
+              }}
+              placeholder="输入管理员密钥"
+            />
+          </label>
+          <div className="button-line">
+            <button className="primary-action compact" onClick={props.onUnlock} disabled={props.busy}>
+              <KeyRound size={17} />
+              验证并进入
+            </button>
+            <button className="primary-soft" onClick={props.onClose}>
+              取消
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PreviewPanel(props: { preview: SkillPreview; onSelectFile: (filePath: string) => void; onClose: () => void }) {
+  const entries = useMemo(
+    () =>
+      props.preview.fileList?.length
+        ? props.preview.fileList
+        : props.preview.files.map((file) => ({
+            path: file.path,
+            language: file.language,
+            previewable: true
+          })),
+    [props.preview]
+  );
+  const loadedFiles = useMemo(
+    () => new Map(props.preview.files.map((file) => [file.path, file])),
+    [props.preview.files]
+  );
+  const defaultPath = props.preview.files[0]?.path ?? entries[0]?.path ?? "";
+  const [selectedPath, setSelectedPath] = useState(defaultPath);
+
+  useEffect(() => {
+    if (!selectedPath || !entries.some((entry) => entry.path === selectedPath)) {
+      setSelectedPath(defaultPath);
+    }
+  }, [defaultPath, entries, selectedPath]);
+
+  const selectedEntry = entries.find((entry) => entry.path === selectedPath) ?? entries[0];
+  const selectedFile = selectedEntry ? loadedFiles.get(selectedEntry.path) : undefined;
+
+  function selectEntry(path: string, previewable: boolean) {
+    setSelectedPath(path);
+    if (previewable && !loadedFiles.has(path)) {
+      props.onSelectFile(path);
+    }
+  }
+
   return (
     <aside className="preview-drawer">
       <div className="preview-head">
@@ -1225,20 +2486,65 @@ function PreviewPanel(props: { preview: SkillPreview; onClose: () => void }) {
         </button>
       </div>
 
-      <div className="preview-files">
-        {props.preview.files.length === 0 ? (
-          <div className="empty-state">没有可预览的文本内容。</div>
+      <div className="preview-browser">
+        {entries.length === 0 ? (
+          <div className="empty-state">没有可预览的文件。</div>
         ) : (
-          props.preview.files.map((file) => (
-            <article className="preview-file" key={file.path}>
-              <header>
-                <strong>{file.path}</strong>
-                <Badge>{file.language}</Badge>
-              </header>
-              <pre>{file.content}</pre>
-              {file.truncated ? <small>内容过长，已截断预览。</small> : null}
+          <>
+            <aside className="preview-tree" aria-label="预览文件列表">
+              <div className="preview-tree-summary">
+                <FolderOpen size={16} />
+                <strong>{entries.length} 个文件</strong>
+              </div>
+              <div className="preview-tree-list">
+                {entries.map((entry) => {
+                  const parts = entry.path.split("/");
+                  const name = parts[parts.length - 1] || entry.path;
+                  const parent = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+                  const depth = Math.max(parts.length - 1, 0);
+                  return (
+                    <button
+                      key={entry.path}
+                      className={`preview-tree-item ${selectedEntry?.path === entry.path ? "active" : ""}`}
+                      style={{ paddingLeft: `${12 + depth * 14}px` }}
+                      onClick={() => selectEntry(entry.path, entry.previewable)}
+                      title={entry.path}
+                    >
+                      <FileText size={15} />
+                      <span>
+                        <strong>{name}</strong>
+                        {parent ? <small>{parent}</small> : null}
+                      </span>
+                      <Badge>{entry.previewable ? entry.language : "file"}</Badge>
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
+
+            <article className="preview-file">
+              {selectedEntry ? (
+                <>
+                  <header>
+                    <strong>{selectedEntry.path}</strong>
+                    <Badge>{selectedEntry.language}</Badge>
+                  </header>
+                  {selectedFile ? (
+                    <>
+                      <pre>{selectedFile.content}</pre>
+                      {selectedFile.truncated ? <small>内容过长，已截断预览。</small> : null}
+                    </>
+                  ) : (
+                    <div className="preview-file-empty">
+                      {selectedEntry.previewable ? "正在准备预览内容。" : "该文件不是文本内容。"}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="preview-file-empty">没有可预览的文本内容。</div>
+              )}
             </article>
-          ))
+          </>
         )}
       </div>
     </aside>
@@ -1373,6 +2679,64 @@ function getInstallPreview(
   return `${projectPath.replace(/\\/g, "/")}/${suffix}`;
 }
 
+function emptyPublishMeta(): PublishMeta {
+  return {
+    namespace: "community",
+    skillId: "",
+    name: "",
+    summary: "",
+    tags: [],
+    targets: [],
+    levels: ["personal", "project"],
+    publishScope: "public",
+    publishCategorySlug: "general",
+    publishProjectSlug: null,
+    changelog: ""
+  };
+}
+
+function emptyMarketProject(): MarketProject {
+  return {
+    slug: "",
+    name: "",
+    description: "",
+    status: "active"
+  };
+}
+
+function emptyMarketCategory(): Category {
+  return {
+    id: "",
+    name: "",
+    order: 10
+  };
+}
+
+function defaultMetaFromDraft(draft: AdminDraftSkill): PublishMeta {
+  const slug = draft.draftSlug ?? draft.gitlabSourcePath.split("/").pop() ?? "";
+  return {
+    ...emptyPublishMeta(),
+    skillId: slug,
+    name: slug,
+    summary: draft.author ? `由 ${draft.author} 维护的 skill` : ""
+  };
+}
+
+function normalizeMetaForSave(meta: PublishMeta): PublishMeta {
+  return {
+    ...meta,
+    publishCategorySlug: meta.publishScope === "project" ? null : meta.publishCategorySlug || "general",
+    publishProjectSlug: meta.publishScope === "project" ? meta.publishProjectSlug : null
+  };
+}
+
+function splitCsv(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function viewTitle(view: ViewKey) {
   switch (view) {
     case "market":
@@ -1385,6 +2749,8 @@ function viewTitle(view: ViewKey) {
       return "Version queue";
     case "settings":
       return "Local preferences";
+    case "admin":
+      return "Publishing control";
   }
 }
 
@@ -1400,6 +2766,8 @@ function viewHeadline(view: ViewKey) {
       return "更新中心";
     case "settings":
       return "本地设置";
+    case "admin":
+      return "管理发布";
   }
 }
 

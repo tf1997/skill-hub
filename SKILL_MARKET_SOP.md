@@ -85,7 +85,7 @@ Tauri v1 侧的约束：
 - command 返回值使用统一错误结构。
 - 长任务使用进度事件通知前端。
 - 下载、解压、安装必须放在 Rust 异步任务中执行。
-- 前端不暴露 MinIO 源配置，也不保存 MinIO secret key 的明文状态。
+- 前端不暴露 MinIO 发布凭证，也不保存 MinIO secret key 的明文状态；MVP 阶段管理员发布凭证可写死在 Rust 后端代码中，MAC 白名单放在 MinIO 管理对象中。
 
 ### 4.3 模块划分
 
@@ -323,8 +323,6 @@ CREATE TABLE sources (
   endpoint TEXT NOT NULL,
   bucket TEXT NOT NULL,
   region TEXT,
-  access_key_ref TEXT,
-  secret_key_ref TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   last_sync_at TEXT
 );
@@ -457,7 +455,7 @@ namespace + skill_id + target
 
 操作步骤：
 
-1. 安装包、本地种子或运维脚本写入 endpoint、bucket、region、access key、secret key。
+1. 安装包、本地种子或运维脚本写入 endpoint、bucket、region；MVP 阶段 Access Key / Secret Key 写在 Rust 后端管理员配置常量中。
 2. Rust 后端校验 endpoint 格式。
 3. 执行只读连通性测试。
 4. 拉取 `catalog.v1.json` 和 `categories.v1.json`。
@@ -469,7 +467,7 @@ namespace + skill_id + target
 验收标准：
 
 - 源不可用时显示明确错误。
-- secret key 不出现在前端持久状态、UI 和日志中。
+- secret key 不出现在前端持久状态、UI 和日志中；MVP 阶段只允许出现在 Rust 后端管理员配置常量中。管理员 MAC 白名单维护在 `admin/security/mac-allowlist.v1.json`。
 - catalog schema 错误时不得写入缓存。
 
 ### 9.2 刷新市场
@@ -745,7 +743,7 @@ skills/{namespace}/{skill_id}/versions/{version}/
 - 只允许写入配置过的 skill 根目录。
 - 禁止自动执行包内脚本。
 - Markdown 渲染必须 sanitize。
-- secret key 不写入普通日志。
+- secret key 不写入普通日志；MVP 阶段只允许出现在 Rust 后端管理员配置常量中。
 - 审计安装、更新、卸载、发布动作。
 
 建议执行：

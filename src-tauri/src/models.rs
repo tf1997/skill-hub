@@ -6,6 +6,7 @@ pub struct AppBootstrap {
     pub sources: Vec<Source>,
     pub categories: Vec<Category>,
     pub skills: Vec<MarketSkill>,
+    pub market_projects: Vec<MarketProject>,
     pub bindings: Vec<SkillBinding>,
     pub cached_packages: Vec<CachedSkillPackage>,
     pub local_skills: Vec<LocalSkill>,
@@ -36,6 +37,25 @@ pub struct SaveSourceRequest {
     pub bucket: String,
     pub region: Option<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUnlockRequest {
+    pub admin_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSession {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: Option<String>,
+    pub role: String,
+    pub projects: Vec<String>,
+    pub mac_address: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +98,51 @@ pub struct CategoriesDoc {
     pub schema: String,
     #[serde(alias = "generated_at")]
     pub generated_at: Option<String>,
+    #[serde(default)]
     pub items: Vec<Category>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectsDoc {
+    pub schema: String,
+    #[serde(default, alias = "generated_at")]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub projects: Vec<MarketProject>,
+    #[serde(default)]
+    pub items: Vec<MarketProject>,
+}
+
+impl ProjectsDoc {
+    pub fn into_projects(self) -> Vec<MarketProject> {
+        if self.projects.is_empty() {
+            self.items
+        } else {
+            self.projects
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketProject {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "active_status")]
+    pub status: String,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: Option<String>,
+    #[serde(default, alias = "updated_by")]
+    pub updated_by: Option<String>,
+}
+
+fn active_status() -> String {
+    "active".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +332,15 @@ pub struct SkillPreviewRequest {
     pub version: Option<String>,
     pub binding_id: Option<String>,
     pub path: Option<String>,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDraftPreviewRequest {
+    pub admin_key: String,
+    pub gitlab_source_path: String,
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +350,8 @@ pub struct SkillPreview {
     pub root_path: String,
     pub origin: String,
     pub files: Vec<SkillPreviewFile>,
+    #[serde(default)]
+    pub file_list: Vec<SkillPreviewFileEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +361,14 @@ pub struct SkillPreviewFile {
     pub language: String,
     pub content: String,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPreviewFileEntry {
+    pub path: String,
+    pub language: String,
+    pub previewable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +385,103 @@ pub struct UpdateCandidate {
     pub latest_version: String,
     pub update_policy: String,
     pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDraftSkill {
+    pub gitlab_source_path: String,
+    pub draft_slug: Option<String>,
+    pub gitlab_category_code: Option<String>,
+    #[serde(default)]
+    pub source_available: bool,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub status: String,
+    pub validation_status: Option<String>,
+    pub publish_meta: Option<PublishMeta>,
+    pub published_version: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishMeta {
+    pub namespace: String,
+    #[serde(alias = "skill_id")]
+    pub skill_id: String,
+    pub name: String,
+    pub summary: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub levels: Vec<String>,
+    #[serde(default, alias = "publish_scope")]
+    pub publish_scope: String,
+    #[serde(default, alias = "publish_category_slug")]
+    pub publish_category_slug: Option<String>,
+    #[serde(default, alias = "publish_project_slug")]
+    pub publish_project_slug: Option<String>,
+    #[serde(default)]
+    pub changelog: String,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: Option<String>,
+    #[serde(default, alias = "updated_by")]
+    pub updated_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavePublishMetaRequest {
+    pub admin_key: String,
+    pub gitlab_source_path: String,
+    pub meta: PublishMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMarketProjectRequest {
+    pub admin_key: String,
+    pub project: MarketProject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteMarketProjectRequest {
+    pub admin_key: String,
+    pub slug: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMarketCategoryRequest {
+    pub admin_key: String,
+    pub category: Category,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteMarketCategoryRequest {
+    pub admin_key: String,
+    pub category_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveMarketSkillRequest {
+    pub admin_key: String,
+    pub namespace: String,
+    pub skill_id: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishDraftRequest {
+    pub admin_key: String,
+    pub gitlab_source_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
