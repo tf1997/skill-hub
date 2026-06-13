@@ -486,6 +486,13 @@ pub struct PublishDraftRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct QuickRepublishRequest {
+    pub admin_key: String,
+    pub gitlab_source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandError {
     pub code: String,
     pub message: String,

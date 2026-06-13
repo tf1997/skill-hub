@@ -662,9 +662,16 @@ function App() {
 
   async function previewSelectedDraft() {
     if (!selectedDraftPath) {
-      setError("Select a draft first");
+      setError("请先选择草稿");
       return;
     }
+
+    const selectedDraft = adminDrafts.find((draft) => draft.gitlabSourcePath === selectedDraftPath);
+    if (selectedDraft && !selectedDraft.sourceAvailable) {
+      setError("该草稿未关联 GitLab 源文件，无法预览。请等待 GitLab 重新同步 SKILL.md，或使用快速重新上架功能直接发布已有版本。");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -675,9 +682,14 @@ function App() {
       const result = await api.previewAdminDraft(request);
       setPreview(result);
       setPreviewContext({ kind: "adminDraft", request });
-      setNotice("Draft preview generated");
+      setNotice("草稿预览已生成");
     } catch (err) {
-      setError(readError(err));
+      const errorMsg = readError(err);
+      if (errorMsg.includes("SKILL.md")) {
+        setError("读取草稿源文件失败，该草稿可能未关联 GitLab 源。请刷新草稿列表或等待 GitLab 同步。");
+      } else {
+        setError(errorMsg);
+      }
     } finally {
       setBusy(false);
     }
@@ -718,6 +730,30 @@ function App() {
       setError("该草稿当前版本已发布，不能重复发布到市场");
       return;
     }
+
+    // 校验元数据
+    if (draftMeta.publishScope === "project") {
+      if (!draftMeta.publishProjectSlug) {
+        setError("发布元数据不完整：请选择项目");
+        return;
+      }
+    } else if (draftMeta.publishScope === "public") {
+      if (!draftMeta.publishCategorySlug) {
+        setError("发布元数据不完整：请选择公共分类");
+        return;
+      }
+    }
+
+    if (!draftMeta.name || !draftMeta.name.trim()) {
+      setError("发布元数据不完整：请填写名称");
+      return;
+    }
+
+    if (!draftMeta.summary || !draftMeta.summary.trim()) {
+      setError("发布元数据不完整：请填写摘要");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -727,6 +763,63 @@ function App() {
       setData(next);
       await refreshAdminDrafts();
       setNotice("草稿已发布到市场");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function quickRepublishSelectedDraft() {
+    if (!selectedDraftPath) {
+      setError("请先选择草稿");
+      return;
+    }
+
+    const selectedDraft = adminDrafts.find((draft) => draft.gitlabSourcePath === selectedDraftPath);
+
+    if (!selectedDraft || selectedDraft.sourceAvailable) {
+      setError("该功能仅适用于未关联 GitLab 源的已下架 skill");
+      return;
+    }
+
+    // 不在前端检查状态，让后端来验证（因为前端显示的是翻译后的中文状态）
+
+    // 校验元数据
+    if (draftMeta.publishScope === "project") {
+      if (!draftMeta.publishProjectSlug) {
+        setError("发布元数据不完整：请选择项目");
+        return;
+      }
+    } else if (draftMeta.publishScope === "public") {
+      if (!draftMeta.publishCategorySlug) {
+        setError("发布元数据不完整：请选择公共分类");
+        return;
+      }
+    }
+
+    if (!draftMeta.name || !draftMeta.name.trim()) {
+      setError("发布元数据不完整：请填写名称");
+      return;
+    }
+
+    if (!draftMeta.summary || !draftMeta.summary.trim()) {
+      setError("发布元数据不完整：请填写摘要");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      // 先保存元数据
+      const saved = await api.savePublishMeta(adminKey, selectedDraftPath, normalizeMetaForSave(draftMeta));
+      setDraftMeta(saved);
+
+      // 快速重新上架
+      const next = await api.quickRepublishArchivedSkill(adminKey, selectedDraftPath);
+      setData(next);
+      await refreshAdminDrafts();
+      setNotice("已快速重新上架到市场");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -981,6 +1074,7 @@ function App() {
             onSaveMeta={() => void saveDraftMeta()}
             onPreview={() => void previewSelectedDraft()}
             onPublish={() => void publishSelectedDraft()}
+            onQuickRepublish={() => void quickRepublishSelectedDraft()}
             projects={data.marketProjects}
             projectDraft={remoteProjectDraft}
             onProjectDraft={setRemoteProjectDraft}
@@ -1717,6 +1811,83 @@ function SettingsView(props: {
   );
 }
 
+function DraftList(props: {
+  drafts: AdminDraftSkill[];
+  selectedDraftPath: string | null;
+  onSelectDraft: (draft: AdminDraftSkill) => void;
+}) {
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+
+  // 按 category 分组
+  const grouped = new Map<string, AdminDraftSkill[]>();
+  for (const draft of props.drafts) {
+    const category = draft.gitlabCategoryCode || "未分类";
+    if (!grouped.has(category)) {
+      grouped.set(category, []);
+    }
+    grouped.get(category)!.push(draft);
+  }
+
+  // 排序 category
+  const categories = Array.from(grouped.keys()).sort();
+
+  const toggleCategory = (category: string) => {
+    const newSet = new Set(collapsedCategories);
+    if (newSet.has(category)) {
+      newSet.delete(category);
+    } else {
+      newSet.add(category);
+    }
+    setCollapsedCategories(newSet);
+  };
+
+  return (
+    <>
+      {categories.map((category, index) => {
+        const isCollapsed = collapsedCategories.has(category);
+        return (
+          <div key={category} className="draft-category-group" style={{ animationDelay: `${index * 0.05}s` }}>
+            <button
+              className={`draft-category-header ${isCollapsed ? "collapsed" : ""}`}
+              onClick={() => toggleCategory(category)}
+            >
+              <FolderGit2 size={18} />
+              <strong>{category}</strong>
+              <span className="badge">{grouped.get(category)!.length}</span>
+              <ChevronRight size={16} className="category-toggle" />
+            </button>
+            <div className={`draft-items ${isCollapsed ? "collapsed" : ""}`}>
+              {grouped.get(category)!.map((draft) => (
+                <button
+                  key={draft.gitlabSourcePath}
+                  className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""} ${!draft.sourceAvailable ? "no-source" : ""}`}
+                  onClick={() => props.onSelectDraft(draft)}
+                  title={!draft.sourceAvailable ? "未关联 GitLab 源，无法预览" : undefined}
+                >
+                  <FileText size={20} />
+                  <span>
+                    <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
+                    <small>{draft.gitlabSourcePath}</small>
+                  </span>
+                  <span className={`badge badge-status ${
+                    draft.status === "已发布" ? "published" :
+                    draft.status === "已下架" ? "archived" :
+                    draft.status === "可升级" ? "upgradable" :
+                    "draft"
+                  }`}>
+                    {!draft.sourceAvailable && <AlertCircle size={12} style={{ marginRight: "4px" }} />}
+                    {draft.status}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function AdminView(props: {
   session: AdminSession | null;
   activeTab: AdminTab;
@@ -1736,6 +1907,7 @@ function AdminView(props: {
   onSaveMeta: () => void;
   onPreview: () => void;
   onPublish: () => void;
+  onQuickRepublish: () => void;
   projects: MarketProject[];
   projectDraft: MarketProject;
   onProjectDraft: (value: MarketProject) => void;
@@ -1766,16 +1938,20 @@ function AdminView(props: {
 
   return (
     <section className="admin-console">
-      <div className="admin-command-bar">
-        <div>
-          <p>MinIO 管理会话</p>
-          <h2>{isSystem ? "系统管理员" : "项目管理员"}</h2>
-          <span>{props.session?.endpoint}/{props.session?.bucket}</span>
+      <div className="admin-header">
+        <div className="admin-title">
+          <p>PUBLISHING CONTROL</p>
+          <h2>管理发布</h2>
         </div>
-        <div className="admin-session-meta">
-          <Badge strong>{props.session?.role ?? "admin"}</Badge>
-          <span>{props.session?.name ?? props.session?.macAddress}</span>
-          <small>{authorizedProjects.length > 0 ? authorizedProjects.join(", ") : "全部项目"}</small>
+        <div className="admin-session-compact">
+          <span className="session-indicator">
+            <span className="session-dot"></span>
+            MinIO Live Draft 已下架草稿已同步
+          </span>
+          <button className="session-info-btn" title="查看会话详情">
+            <span className="session-role-badge">{props.session?.role === "system" ? "system" : "admin"}</span>
+            <span className="session-id">{props.session?.macAddress?.slice(-8) || props.session?.name}</span>
+          </button>
         </div>
       </div>
 
@@ -1952,53 +2128,19 @@ function AdminView(props: {
                     <h2>草稿区</h2>
                     <p>MinIO draft/gitlab/skills 下的 SKILL.md。</p>
                   </div>
-                  <button className="primary-soft" onClick={props.onRefreshDrafts}>
-                    <RefreshCw size={17} />
-                    刷新
+                  <button className="icon-button" onClick={props.onRefreshDrafts} title="刷新草稿列表">
+                    <RefreshCw size={16} />
                   </button>
                 </div>
                 <div className="draft-list">
                   {props.drafts.length === 0 ? (
                     <div className="empty-state compact">暂无草稿。请确认 GitLab 已同步到 MinIO 草稿前缀。</div>
                   ) : (
-                    (() => {
-                      // 按 category 分组
-                      const grouped = new Map<string, AdminDraftSkill[]>();
-                      for (const draft of props.drafts) {
-                        const category = draft.gitlabCategoryCode || "未分类";
-                        if (!grouped.has(category)) {
-                          grouped.set(category, []);
-                        }
-                        grouped.get(category)!.push(draft);
-                      }
-
-                      // 排序 category
-                      const categories = Array.from(grouped.keys()).sort();
-
-                      return categories.map((category, index) => (
-                        <div key={category} className="draft-category-group" style={{ animationDelay: `${index * 0.05}s` }}>
-                          <div className="draft-category-header">
-                            <FolderGit2 size={18} />
-                            <strong>{category}</strong>
-                            <span className="badge">{grouped.get(category)!.length}</span>
-                          </div>
-                          {grouped.get(category)!.map((draft) => (
-                            <button
-                              key={draft.gitlabSourcePath}
-                              className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""}`}
-                              onClick={() => props.onSelectDraft(draft)}
-                            >
-                              <FileText size={20} />
-                              <span>
-                                <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
-                                <small>{draft.gitlabSourcePath}</small>
-                              </span>
-                              <span className="badge">{draft.status}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ));
-                    })()
+                    <DraftList
+                      drafts={props.drafts}
+                      selectedDraftPath={props.selectedDraftPath}
+                      onSelectDraft={props.onSelectDraft}
+                    />
                   )}
                 </div>
               </section>
@@ -2080,9 +2222,20 @@ function AdminView(props: {
                   </div>
 
                   {selectedDraft && !selectedDraft.sourceAvailable ? (
-                    <div className="conflict-note">
+                    <div className="conflict-note warning">
                       <AlertCircle size={17} />
-                      该记录由市场下架生成，暂未关联 GitLab 草稿源；需要 GitLab 重新同步 SKILL.md 后才能预览和发布。
+                      <div>
+                        <strong>该草稿由市场下架生成，暂未关联 GitLab 源文件</strong>
+                        <p>
+                          如果需要编辑和预览，请按以下步骤操作：<br/>
+                          1. 确保 GitLab 已重新同步该 skill 的 SKILL.md 文件到 MinIO 草稿区<br/>
+                          2. 点击草稿区的"刷新"按钮，更新草稿列表<br/>
+                          3. 源文件关联后即可预览和编辑
+                        </p>
+                        <p style={{marginTop: "8px", fontSize: "12px", color: "var(--muted)"}}>
+                          💡 如果只是误下架需要快速恢复，可以直接点击"快速重新上架"按钮，无需等待 GitLab 同步。市场中的 skill 包文件仍然存在，该操作只会更新目录关联。
+                        </p>
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -2105,14 +2258,24 @@ function AdminView(props: {
                       <CheckCircle2 size={16} />
                       当前版本已发布
                     </span>
+                  ) : selectedDraft && !selectedDraft.sourceAvailable && selectedDraft.status === "已下架" ? (
+                    <button
+                      className="primary-action compact"
+                      onClick={props.onQuickRepublish}
+                      title="无需 GitLab 源文件，直接重新上架已有版本"
+                    >
+                      <Rocket size={17} />
+                      快速重新上架
+                    </button>
                   ) : (
                     <button
                       className="primary-action compact"
                       onClick={props.onPublish}
                       disabled={Boolean(selectedDraft && !selectedDraft.sourceAvailable)}
+                      title={selectedDraft && !selectedDraft.sourceAvailable ? "需要 GitLab 源文件才能发布" : "发布到市场"}
                     >
                       <Rocket size={17} />
-                      发布到市场
+                      {selectedDraft && !selectedDraft.sourceAvailable ? "重新上架（需要源文件）" : "发布到市场"}
                     </button>
                   )}
                 </div>

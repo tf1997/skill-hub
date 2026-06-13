@@ -29,6 +29,7 @@ fn main() {
             commands::delete_market_category_remote,
             commands::archive_market_skill,
             commands::publish_draft,
+            commands::quick_republish_archived_skill,
             commands::list_target_roots,
             commands::save_target_root,
             commands::refresh_catalog,

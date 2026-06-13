@@ -165,6 +165,7 @@ const browserMockApi = {
   deleteMarketCategoryRemote: async (_adminKey: string, _categoryId: string) => mockBootstrap,
   archiveMarketSkill: async (_adminKey: string, _namespace: string, _skillId: string, _reason?: string) => mockBootstrap,
   publishDraft: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
+  quickRepublishArchivedSkill: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
   listTargetRoots: async () => mockBootstrap.targetRoots,
   saveTargetRoot: async (target: string, personalPath: string) => ({ target, personalPath, updatedAt: new Date().toISOString() }),
   refreshCatalog: async () => mockBootstrap,
@@ -246,6 +247,8 @@ const tauriApi = {
     }),
   publishDraft: (adminKey: string, gitlabSourcePath: string) =>
     invoke<AppBootstrap>("publish_draft", { request: { adminKey, gitlabSourcePath } }),
+  quickRepublishArchivedSkill: (adminKey: string, gitlabSourcePath: string) =>
+    invoke<AppBootstrap>("quick_republish_archived_skill", { request: { adminKey, gitlabSourcePath } }),
   listTargetRoots: () => invoke<TargetRoot[]>("list_target_roots"),
   saveTargetRoot: (target: string, personalPath: string) =>
     invoke<TargetRoot>("save_target_root", {

@@ -28,8 +28,8 @@ use crate::{
         CommandError, DeleteCachedSkillRequest, DeleteMarketCategoryRequest,
         DeleteMarketProjectRequest, InstallSkillRequest, LocalSkill, MarketProject,
         MarketSkill, PackageInfo, Project, ProjectsDoc, PublishDraftRequest, PublishMeta,
-        SaveMarketCategoryRequest, SaveMarketProjectRequest, SaveProjectRequest,
-        SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
+        QuickRepublishRequest, SaveMarketCategoryRequest, SaveMarketProjectRequest,
+        SaveProjectRequest, SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
         SetBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
         SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion, Source,
         TargetRoot, UpdateCandidate,
@@ -238,6 +238,20 @@ pub async fn publish_draft(
 ) -> CommandResult<AppBootstrap> {
     let result = async {
         publish_draft_inner(request).await?;
+        refresh_catalog_inner(&state).await?;
+        app_bootstrap(&state, None)
+    }
+    .await;
+    map_result(result)
+}
+
+#[tauri::command]
+pub async fn quick_republish_archived_skill(
+    request: QuickRepublishRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AppBootstrap> {
+    let result = async {
+        quick_republish_archived_skill_inner(request).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -908,6 +922,188 @@ async fn publish_draft_inner(request: PublishDraftRequest) -> Result<()> {
     Ok(())
 }
 
+async fn quick_republish_archived_skill_inner(request: QuickRepublishRequest) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let client = AdminObjectClient::new();
+    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+
+    // 1. 读取保存的元数据（而不是 SKILL.md）
+    // 尝试从 gitlab 路径和 archived 路径读取
+    let meta_path_gitlab = admin_object_path(&source_path, "publish-meta.v1.json")?;
+    let meta_path_archived = format!("{}{}/publish-meta.v1.json", ARCHIVED_ADMIN_PREFIX, source_path);
+
+    let meta = match client.get_optional_json::<PublishMeta>(&meta_path_gitlab).await? {
+        Some(m) => m,
+        None => client
+            .get_optional_json::<PublishMeta>(&meta_path_archived)
+            .await?
+            .ok_or_else(|| anyhow!("未找到已保存的发布元数据。该 skill 可能未曾发布过，无法使用快速重新上架功能。"))?,
+    };
+
+    // 2. 验证元数据完整性
+    validate_publish_meta(&meta)?;
+    ensure_can_manage_publish_target(&authorization, &meta)?;
+
+    // 3. 检查状态：必须是已下架状态
+    // 同样尝试两个路径
+    let state_path_gitlab = admin_object_path(&source_path, "state.v1.json")?;
+    let state_path_archived = format!("{}{}/state.v1.json", ARCHIVED_ADMIN_PREFIX, source_path);
+
+    let (state_json, actual_state_path) = match client.get_optional_json::<serde_json::Value>(&state_path_gitlab).await? {
+        Some(s) => (Some(s), state_path_gitlab),
+        None => (
+            client.get_optional_json::<serde_json::Value>(&state_path_archived).await?,
+            state_path_archived,
+        ),
+    };
+
+    let state_archived = state_json
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("archived"));
+
+    if !state_archived {
+        return Err(anyhow!("该 skill 未处于已下架状态，请使用正常发布流程"));
+    }
+
+    let state_path = actual_state_path;
+    let state_archived = state_json
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("archived"));
+
+    if !state_archived {
+        return Err(anyhow!("该 skill 未处于已下架状态，请使用正常发布流程"));
+    }
+
+    // 4. 尝试读取市场 manifest（如果存在）
+    let manifest_object = format!("skills/{}/{}/manifest.json", meta.namespace, meta.skill_id);
+    let manifest_opt = client
+        .get_optional_json::<SkillManifest>(&manifest_object)
+        .await?;
+
+    // 获取版本信息：优先从 manifest，其次从 state.v1.json，最后从 publish-meta
+    let latest_version = if let Some(ref manifest) = manifest_opt {
+        // 5a. 如果 manifest 存在，验证包文件存在
+        let version_info = manifest
+            .versions
+            .iter()
+            .find(|v| v.version == manifest.latest_version)
+            .ok_or_else(|| anyhow!("manifest 中未找到最新版本信息"))?;
+
+        // 检查 skill 包是否存在
+        let skill_json_exists = client.get_optional_text(&version_info.skill_path).await?.is_some();
+        if !skill_json_exists {
+            return Err(anyhow!("市场中的 skill 包文件不存在: {}。无法重新上架。", version_info.skill_path));
+        }
+
+        manifest.latest_version.clone()
+    } else {
+        // 5b. 如果 manifest 不存在，尝试从 state.v1.json 读取版本
+        state_json
+            .as_ref()
+            .and_then(|v| v.get("publishedVersion").or_else(|| v.get("published_version")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!(
+                "无法确定 skill 版本信息。该 skill 的下架记录不完整，缺少版本号。\n\n\
+                可能的原因：\n\
+                1. 该 skill 从未成功发布过，只是创建了草稿\n\
+                2. 下架时版本信息未被保存\n\
+                3. 市场中的包文件已被完全删除\n\n\
+                建议：请使用正常发布流程重新发布该 skill。"
+            ))?
+    };
+
+    // 6. 重新加入市场目录
+    let mut catalog = load_remote_catalog(&client).await?;
+    let already_in_catalog = catalog
+        .skills
+        .iter()
+        .any(|skill| skill.namespace == meta.namespace && skill.id == meta.skill_id);
+
+    if already_in_catalog {
+        return Err(anyhow!("该 skill 已在市场目录中，无需重新上架"));
+    }
+
+    // 添加到目录
+    let new_categories = publish_categories(&meta);
+    catalog.generated_at = Some(now());
+    catalog.skills.push(MarketSkill {
+        namespace: meta.namespace.clone(),
+        id: meta.skill_id.clone(),
+        name: meta.name.clone(),
+        summary: meta.summary.clone(),
+        latest_version: latest_version.clone(),
+        categories: new_categories.clone(),
+        tags: meta.tags.clone(),
+        targets: meta.targets.clone(),
+        levels: meta.levels.clone(),
+        manifest_path: manifest_object.clone(),
+        updated_at: Some(now()),
+        source_id: None,
+        installed_bindings: Vec::new(),
+        cached_versions: Vec::new(),
+    });
+    catalog.skills.sort_by(|a, b| a.name.cmp(&b.name));
+    catalog.categories = rebuild_catalog_categories(&catalog.skills);
+
+    // 7. 确保分类和项目存在
+    let categories = ensure_publish_category(load_remote_categories(&client).await?, &meta);
+    let projects = load_remote_projects(&client).await?;
+
+    // 8. 重建搜索索引
+    let search_index = build_search_lite_index(&catalog);
+    let affected_categories = new_categories;
+
+    // 9. 更新状态为已发布
+    let new_state = serde_json::json!({
+        "gitlabSourcePath": source_path,
+        "namespace": meta.namespace,
+        "skillId": meta.skill_id,
+        "publishedVersion": latest_version,
+        "publishedAt": now(),
+        "publishedBy": admin_actor(&authorization),
+        "publishScope": meta.publish_scope,
+        "publishCategorySlug": meta.publish_category_slug,
+        "publishProjectSlug": meta.publish_project_slug,
+        "status": "published",
+        "republishedAt": now(),
+        "updatedAt": now()
+    });
+    client.put_json(&state_path, &new_state).await?;
+
+    // 10. 保存目录和索引
+    client.put_json(CATEGORIES_OBJECT, &categories).await?;
+    client.put_json(PROJECTS_OBJECT, &projects_doc(projects)).await?;
+    write_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
+    client.put_json("indexes/search-lite.v1.json", &search_index).await?;
+    client.put_json(CATALOG_OBJECT, &catalog).await?;
+
+    // 11. 记录审计日志
+    let audit_path = format!("admin/audit/{}/republish-{}.json", now()[0..10].replace('-', "/"), new_id());
+    client
+        .put_json(
+            &audit_path,
+            &serde_json::json!({
+                "schema": "skillhub.admin-audit.v1",
+                "action": "quickRepublishArchivedSkill",
+                "actor": admin_actor(&authorization),
+                "role": authorization.role,
+                "namespace": meta.namespace,
+                "skillId": meta.skill_id,
+                "version": latest_version,
+                "state": new_state,
+                "createdAt": now()
+            }),
+        )
+        .await?;
+
+    Ok(())
+}
+
 async fn archive_market_skill_inner(request: ArchiveMarketSkillRequest) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key).await?;
     validate_object_segment("namespace", &request.namespace)?;
@@ -952,6 +1148,7 @@ async fn archive_market_skill_inner(request: ArchiveMarketSkillRequest) -> Resul
         "name": skill.name,
         "summary": skill.summary,
         "categories": skill.categories,
+        "publishedVersion": skill.latest_version,
         "archivedAt": now(),
         "archivedBy": admin_actor(&authorization),
         "reason": request.reason.unwrap_or_default(),
@@ -2076,6 +2273,9 @@ fn draft_status(
     }
     match published_version {
         Some(published) if Some(published) == version => "已发布".to_string(),
+        Some(published) if version.is_some_and(|value| value > published) => {
+            "可升级".to_string()
+        }
         Some(published) if version.is_some_and(|value| value < published) => {
             "版本回退风险".to_string()
         }

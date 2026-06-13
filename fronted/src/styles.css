@@ -513,8 +513,38 @@ button:focus-visible {
 }
 
 .conflict-note {
-  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
   font-size: 13px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.conflict-note svg {
+  flex-shrink: 0;
+  color: var(--amber);
+  margin-top: 2px;
+}
+
+.conflict-note > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.conflict-note strong {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.conflict-note p {
+  margin: 0;
+  line-height: 1.5;
 }
 
 .market-grid {
@@ -1357,53 +1387,103 @@ button:focus-visible {
   overflow: hidden;
 }
 
-.admin-command-bar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, auto);
+.admin-header {
+  display: flex;
   align-items: center;
-  gap: 14px;
-  min-height: 78px;
-  padding: 14px 18px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 52px;
+  padding: 12px 20px;
+  background: var(--panel-1);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
-.admin-command-bar > div {
+.admin-title {
   min-width: 0;
 }
 
-.admin-command-bar p,
-.admin-command-bar h2,
-.admin-command-bar span,
-.admin-command-bar small {
+.admin-title p {
   margin: 0;
-}
-
-.admin-command-bar p {
-  color: var(--cyan);
+  color: var(--accent-primary);
   font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.admin-title h2 {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.admin-session-compact {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.session-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
   font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
-.admin-command-bar h2 {
-  margin-top: 3px;
-  font-size: 22px;
+.session-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
 }
 
-.admin-command-bar span,
-.admin-command-bar small {
-  color: var(--muted);
-  font-size: 13px;
-  overflow-wrap: anywhere;
+.session-info-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-.admin-session-meta {
-  display: grid;
-  justify-items: end;
-  gap: 5px;
-  min-width: min(220px, 100%);
+.session-info-btn:hover {
+  background: var(--surface);
+  border-color: var(--accent-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.session-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  background: var(--accent-primary);
+  color: white;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.session-id {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 .admin-layout {
@@ -1466,7 +1546,7 @@ button:focus-visible {
 }
 
 .admin-panels.drafts {
-  grid-template-columns: minmax(320px, 1fr) minmax(480px, 1.5fr);
+  grid-template-columns: minmax(360px, 0.9fr) minmax(480px, 1.1fr);
   gap: 20px;
 }
 
@@ -1748,6 +1828,8 @@ button:focus-visible {
   transition: all 0.2s ease;
   user-select: none;
   border: 1px solid var(--line);
+  width: 100%;
+  text-align: left;
 }
 
 .draft-category-header:hover {
@@ -1782,6 +1864,32 @@ button:focus-visible {
   border-radius: 11px;
   font-size: 11px;
   font-weight: 600;
+}
+
+.category-toggle {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  color: var(--text-secondary);
+}
+
+.draft-category-header.collapsed .category-toggle {
+  transform: rotate(-90deg);
+}
+
+.draft-items {
+  display: grid;
+  gap: 8px;
+  padding-left: 8px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  max-height: 5000px;
+  opacity: 1;
+}
+
+.draft-items.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
 }
 
 .draft-row {
@@ -1837,6 +1945,15 @@ button:focus-visible {
   transform: scaleY(1);
 }
 
+.draft-row.no-source {
+  opacity: 0.7;
+  background: var(--bg-tertiary);
+}
+
+.draft-row.no-source:hover {
+  opacity: 1;
+}
+
 .draft-row > svg {
   width: 20px;
   height: 20px;
@@ -1867,6 +1984,34 @@ button:focus-visible {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+
+/* 已发布 - 绿色 */
+.draft-row .badge.published {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--green);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+/* 已下架 - 橙色 */
+.draft-row .badge.archived {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--amber);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* 可升级 - 青色/水绿色 */
+.draft-row .badge.upgradable {
+  background: rgba(14, 165, 233, 0.1);
+  color: #0ea5e9;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+}
+
+/* 待发布/其他 - 蓝色 */
+.draft-row .badge.draft {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent-primary);
+  border: 1px solid rgba(99, 102, 241, 0.2);
 }
 
 .draft-row strong,
@@ -2291,7 +2436,7 @@ button:focus-visible {
   }
 
   .admin-panels.drafts {
-    grid-template-columns: minmax(280px, 0.65fr) minmax(0, 1.35fr);
+    grid-template-columns: minmax(280px, 0.75fr) minmax(0, 1.25fr);
   }
 }
 
@@ -2356,12 +2501,15 @@ button:focus-visible {
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .admin-command-bar {
-    grid-template-columns: 1fr;
+  .admin-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
   }
 
-  .admin-session-meta {
-    justify-items: start;
+  .session-indicator {
+    font-size: 11px;
+    padding: 5px 10px;
   }
 
   .admin-rail {
