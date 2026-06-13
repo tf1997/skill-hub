@@ -112,6 +112,36 @@ export type UpdateCandidate = {
   blockedReason?: string | null;
 };
 
+export type UpdatePackage = {
+  target: "portable" | "installer";
+  platform: string;
+  arch: string;
+  url: string;
+  sha256: string;
+  signature?: string | null;
+  size?: number | null;
+};
+
+export type UpdateCheckResult = {
+  current_version: string;
+  latest_version?: string | null;
+  available: boolean;
+  distribution: string;
+  platform: string;
+  arch: string;
+  package?: UpdatePackage | null;
+  notes?: string | null;
+  message?: string | null;
+};
+
+export type DownloadUpdateResult = {
+  version: string;
+  target: "portable" | "installer";
+  path: string;
+  ready_to_restart: boolean;
+  message: string;
+};
+
 export type AppBootstrap = {
   sources: Source[];
   categories: Category[];

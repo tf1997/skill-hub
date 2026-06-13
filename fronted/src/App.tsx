@@ -29,8 +29,9 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { open } from "@tauri-apps/api/dialog";
-import React, { useEffect, useMemo, useState } from "react";
+import { ask, message, open } from "@tauri-apps/api/dialog";
+import { listen } from "@tauri-apps/api/event";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
   AdminDraftPreviewRequest,
@@ -48,6 +49,7 @@ import type {
   SkillBinding,
   TargetRoot,
   UpdateCandidate,
+  UpdateCheckResult,
   SkillPreview,
   SkillPreviewRequest
 } from "./types";
@@ -86,6 +88,17 @@ const emptyBootstrap: AppBootstrap = {
   updates: [],
   metadataSyncError: null
 };
+
+const canUseTauriEvents = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+
+function formatUpdatePrompt(result: UpdateCheckResult) {
+  const version = result.latest_version || "";
+  const notes = result.notes?.trim();
+  if (!notes) {
+    return `发现新版本 ${version}，是否现在下载？`;
+  }
+  return `发现新版本 ${version}，是否现在下载？\n\n更新说明：\n${notes}`;
+}
 
 const targetLabels: Record<string, string> = {
   codex: "Codex",
@@ -176,10 +189,63 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
   const [error, setError] = useState<string | null>(null);
+  const checkingAppUpdateRef = useRef(false);
+
+  const promptAndDownloadAppUpdate = useCallback(async (result: UpdateCheckResult) => {
+    const shouldDownload = await ask(formatUpdatePrompt(result), {
+      title: "Skill Hub 更新",
+      type: "info",
+      okLabel: "下载",
+      cancelLabel: "稍后"
+    });
+    if (!shouldDownload) return;
+
+    const downloaded = await api.downloadUpdate();
+    await message(downloaded.message, {
+      title: "Skill Hub 更新",
+      type: "info",
+      okLabel: "确定"
+    });
+    if (downloaded.ready_to_restart) {
+      await api.restartAfterUpdate();
+    }
+  }, []);
+
+  const handleBackgroundAppUpdateAvailable = useCallback(
+    async (result: UpdateCheckResult) => {
+      if (!result.available || checkingAppUpdateRef.current) return;
+      checkingAppUpdateRef.current = true;
+      try {
+        await promptAndDownloadAppUpdate(result);
+      } catch (err) {
+        await message(readError(err), {
+          title: "Skill Hub 更新失败",
+          type: "error",
+          okLabel: "确定"
+        });
+      } finally {
+        checkingAppUpdateRef.current = false;
+      }
+    },
+    [promptAndDownloadAppUpdate]
+  );
 
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!canUseTauriEvents) return;
+    let unlistenUpdate: (() => void) | undefined;
+    void listen<UpdateCheckResult>("update-available", (event) => {
+      void handleBackgroundAppUpdateAvailable(event.payload);
+    }).then((fn) => {
+      unlistenUpdate = fn;
+    });
+    return () => {
+      unlistenUpdate?.();
+    };
+  }, [handleBackgroundAppUpdateAvailable]);
 
   const publicCategories = useMemo(
     () => normalizeCategoryList(data.categories),

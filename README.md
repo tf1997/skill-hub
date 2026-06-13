@@ -10,11 +10,12 @@ MinIO bucket:   skill-market
 mc alias:       myminio
 ```
 
-固定源配置在 `src-tauri/src/db.rs`：
+固定源配置在 `src-tauri/src/minio_config.rs`：
 
 ```rust
 COMPILED_SOURCE_ENDPOINT = "http://192.168.1.4:9000"
 COMPILED_SOURCE_BUCKET = "skill-market"
+APP_UPDATE_MANIFEST_OBJECT = "skill-hub/updates/stable/latest.json"
 ```
 
 管理员配置在 `src-tauri/src/admin_config.rs`：
@@ -289,7 +290,7 @@ cargo test
 
 真实 MinIO 集成测试默认是 ignored，需要先准备：
 
-- `src-tauri/src/db.rs` 指向 `http://192.168.1.4:9000`。
+- `src-tauri/src/minio_config.rs` 指向统一 MinIO endpoint / bucket。
 - `skill-market` bucket 存在。
 - `admin/security/mac-allowlist.v1.json` 已包含当前机器 MAC。
 - `draft/gitlab/skills/product/minio-live-draft/SKILL.md` 已存在。
@@ -346,7 +347,7 @@ src-tauri/target/release/bundle/
 
 部署前确认：
 
-- `src-tauri/src/db.rs` 中的 `COMPILED_SOURCE_ENDPOINT` 是目标 MinIO 地址。
+- `src-tauri/src/minio_config.rs` 中的 `COMPILED_SOURCE_ENDPOINT` / `COMPILED_SOURCE_BUCKET` 是统一 MinIO 地址。
 - `src-tauri/src/admin_config.rs` 中的管理员密钥和 MinIO 发布凭证正确。
 - 目标 MinIO 已有 `skill-market` bucket。
 - 目标 MinIO 已有 `catalog.v1.json` 和 `categories.v1.json`。

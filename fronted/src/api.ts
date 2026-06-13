@@ -18,20 +18,24 @@ import type {
   SkillPreviewRequest,
   Source,
   TargetRoot,
-  UpdateCandidate
+  UpdateCandidate,
+  UpdateCheckResult,
+  DownloadUpdateResult
 } from "./types";
 
 const canUseTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
 const isDev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
 const useBrowserMock = isDev && !canUseTauri;
+const mockMinioEndpoint = "http://192.168.1.4:9000";
+const mockMinioBucket = "skill-market";
 
 const mockBootstrap: AppBootstrap = {
   sources: [
     {
       id: "compiled-source",
       name: "本地 MinIO",
-      endpoint: "http://192.168.1.4:9000",
-      bucket: "skill-market",
+      endpoint: mockMinioEndpoint,
+      bucket: mockMinioBucket,
       enabled: true
     }
   ],
@@ -101,8 +105,8 @@ const mockBootstrap: AppBootstrap = {
 
 const mockAdminSession: AdminSession = {
   enabled: true,
-  endpoint: "http://192.168.1.4:9000",
-  bucket: "skill-market",
+  endpoint: mockMinioEndpoint,
+  bucket: mockMinioBucket,
   role: "system",
   projects: ["*"],
   macAddress: "C8:7F:54:5C:60:D8",
@@ -208,7 +212,28 @@ const browserMockApi = {
     files: mockPreviewFiles,
     fileList: mockPreviewFileList
   }),
-  listUpdateCandidates: async () => []
+  listUpdateCandidates: async () => [],
+  checkForUpdates: async () =>
+    ({
+      current_version: "0.1.0",
+      latest_version: "0.1.0",
+      available: false,
+      distribution: "browser",
+      platform: "browser",
+      arch: "browser",
+      package: null,
+      notes: null,
+      message: "当前已是最新版本 0.1.0"
+    }) as UpdateCheckResult,
+  downloadUpdate: async () =>
+    ({
+      version: "0.1.0",
+      target: "installer",
+      path: "",
+      ready_to_restart: false,
+      message: "当前已是最新版本"
+    }) as DownloadUpdateResult,
+  restartAfterUpdate: async () => undefined
 };
 
 const tauriApi = {
@@ -278,7 +303,10 @@ const tauriApi = {
   scanLocalSkills: () => invoke<LocalSkill[]>("scan_local_skills"),
   previewSkill: (request: SkillPreviewRequest) =>
     invoke<SkillPreview>("preview_skill", { request }),
-  listUpdateCandidates: () => invoke<UpdateCandidate[]>("list_update_candidates")
+  listUpdateCandidates: () => invoke<UpdateCandidate[]>("list_update_candidates"),
+  checkForUpdates: () => invoke<UpdateCheckResult>("check_for_updates_command"),
+  downloadUpdate: () => invoke<DownloadUpdateResult>("download_update_command"),
+  restartAfterUpdate: () => invoke<void>("restart_after_update_command")
 };
 
 export const api = useBrowserMock ? browserMockApi : tauriApi;

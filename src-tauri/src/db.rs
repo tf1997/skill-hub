@@ -15,11 +15,10 @@ use crate::models::{
     SkillBinding, Source, TargetRoot, UpdateCandidate,
 };
 
-pub const COMPILED_SOURCE_ID: &str = "compiled-source";
-pub const COMPILED_SOURCE_NAME: &str = "本地 MinIO";
-pub const COMPILED_SOURCE_ENDPOINT: &str = "http://192.168.1.4:9000";
-pub const COMPILED_SOURCE_BUCKET: &str = "skill-market";
-pub const COMPILED_SOURCE_REGION: Option<&str> = None;
+pub use crate::minio_config::{
+    COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_ID, COMPILED_SOURCE_NAME,
+    COMPILED_SOURCE_REGION,
+};
 
 #[derive(Clone)]
 pub struct AppState {

@@ -3,15 +3,35 @@
 mod commands;
 mod admin_config;
 mod db;
+mod minio_config;
 mod models;
+mod updater;
 
-use tauri::Manager;
+use tauri::{CustomMenuItem, Manager, Menu, Submenu};
+
+const MENU_CHECK_UPDATE: &str = "check_update";
+
+fn app_menu() -> Menu {
+    Menu::os_default("Skill Hub").add_submenu(Submenu::new(
+        "帮助",
+        Menu::new().add_item(CustomMenuItem::new(MENU_CHECK_UPDATE, "检查更新")),
+    ))
+}
 
 fn main() {
+    updater::relaunch_latest_portable_if_needed();
+
     tauri::Builder::default()
+        .menu(app_menu())
+        .on_menu_event(|event| {
+            if event.menu_item_id() == MENU_CHECK_UPDATE {
+                updater::spawn_manual_update_check(event.window().app_handle().clone());
+            }
+        })
         .setup(|app| {
             let state = db::init_state(&app.handle())?;
             app.manage(state);
+            updater::spawn_background_update_check(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,7 +63,10 @@ fn main() {
             commands::unbind_project,
             commands::scan_local_skills,
             commands::preview_skill,
-            commands::list_update_candidates
+            commands::list_update_candidates,
+            updater::check_for_updates_command,
+            updater::download_update_command,
+            updater::restart_after_update_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running Skill Hub");
