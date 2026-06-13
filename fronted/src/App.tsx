@@ -1316,7 +1316,6 @@ function MarketView(props: {
           <>
             <div className="detail-heading">
               <div>
-                <p>{props.selectedSkill.namespace}</p>
                 <h2>{props.selectedSkill.name}</h2>
               </div>
               <Badge strong>{props.selectedSkill.latestVersion}</Badge>

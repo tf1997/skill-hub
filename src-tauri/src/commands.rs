@@ -1629,6 +1629,31 @@ pub async fn set_binding_enabled(
             )?;
         }
 
+        let install_path = PathBuf::from(&binding.install_path);
+
+        if request.enabled {
+            // 启用：从缓存包复制文件到安装目录
+            let package_path: String = conn
+                .query_row(
+                    "SELECT package_path FROM skill_packages WHERE id = ?1",
+                    params![binding.package_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("未找到缓存包，无法启用。请尝试重新安装。"))?;
+
+            let cache_path = PathBuf::from(&package_path);
+            if !cache_path.exists() {
+                return Err(anyhow!("缓存包目录不存在: {}", package_path));
+            }
+            copy_package_to_install(&cache_path, &install_path)?;
+        } else {
+            // 禁用：删除安装目录的文件
+            if is_sqlite_managed_install_path(&binding, &install_path) {
+                fs::remove_dir_all(&install_path).context("禁用时删除安装目录失败")?;
+            }
+        }
+
         conn.execute(
             "UPDATE skill_bindings SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
             params![
