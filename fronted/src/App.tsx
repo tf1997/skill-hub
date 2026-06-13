@@ -721,6 +721,8 @@ function App() {
     setBusy(true);
     setError(null);
     try {
+      const saved = await api.savePublishMeta(adminKey, selectedDraftPath, normalizeMetaForSave(draftMeta));
+      setDraftMeta(saved);
       const next = await api.publishDraft(adminKey, selectedDraftPath);
       setData(next);
       await refreshAdminDrafts();
@@ -1956,23 +1958,48 @@ function AdminView(props: {
                   </button>
                 </div>
                 <div className="draft-list">
-                  {props.drafts.map((draft) => (
-                    <button
-                      key={draft.gitlabSourcePath}
-                      className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""}`}
-                      onClick={() => props.onSelectDraft(draft)}
-                    >
-                      <FileText size={17} />
-                      <span>
-                        <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
-                        <small>{draft.gitlabSourcePath}</small>
-                      </span>
-                      <Badge strong={draft.status === "待发布"}>{draft.status}</Badge>
-                    </button>
-                  ))}
                   {props.drafts.length === 0 ? (
                     <div className="empty-state compact">暂无草稿。请确认 GitLab 已同步到 MinIO 草稿前缀。</div>
-                  ) : null}
+                  ) : (
+                    (() => {
+                      // 按 category 分组
+                      const grouped = new Map<string, AdminDraftSkill[]>();
+                      for (const draft of props.drafts) {
+                        const category = draft.gitlabCategoryCode || "未分类";
+                        if (!grouped.has(category)) {
+                          grouped.set(category, []);
+                        }
+                        grouped.get(category)!.push(draft);
+                      }
+
+                      // 排序 category
+                      const categories = Array.from(grouped.keys()).sort();
+
+                      return categories.map((category, index) => (
+                        <div key={category} className="draft-category-group" style={{ animationDelay: `${index * 0.05}s` }}>
+                          <div className="draft-category-header">
+                            <FolderGit2 size={18} />
+                            <strong>{category}</strong>
+                            <span className="badge">{grouped.get(category)!.length}</span>
+                          </div>
+                          {grouped.get(category)!.map((draft) => (
+                            <button
+                              key={draft.gitlabSourcePath}
+                              className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""}`}
+                              onClick={() => props.onSelectDraft(draft)}
+                            >
+                              <FileText size={20} />
+                              <span>
+                                <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
+                                <small>{draft.gitlabSourcePath}</small>
+                              </span>
+                              <span className="badge">{draft.status}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ));
+                    })()
+                  )}
                 </div>
               </section>
 
@@ -1988,12 +2015,8 @@ function AdminView(props: {
                 <div className="publish-scroll">
                   <div className="meta-form">
                     <label className="text-field">
-                      <span>namespace</span>
-                      <input value={props.meta.namespace} onChange={(event) => updateMeta("namespace", event.target.value)} />
-                    </label>
-                    <label className="text-field">
-                      <span>skill_id</span>
-                      <input value={props.meta.skillId} onChange={(event) => updateMeta("skillId", event.target.value)} />
+                      <span>skill_id（只读）</span>
+                      <input value={props.meta.skillId} readOnly disabled />
                     </label>
                     <label className="text-field">
                       <span>名称</span>

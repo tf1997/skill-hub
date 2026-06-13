@@ -44,6 +44,7 @@ const ARCHIVED_ADMIN_PREFIX: &str = "draft/admin/archived/skills/";
 const PROJECTS_OBJECT: &str = "projects.v1.json";
 const CATALOG_OBJECT: &str = "catalog.v1.json";
 const CATEGORIES_OBJECT: &str = "categories.v1.json";
+const FIXED_PUBLISH_NAMESPACE: &str = "DT";
 const PREVIEW_MAX_FILES: usize = 8;
 const PREVIEW_MAX_FILE_LIST: usize = 500;
 const PREVIEW_MAX_BYTES: usize = 24 * 1024;
@@ -265,15 +266,21 @@ async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>
         seen_sources.insert(source_path.clone());
 
         let skill_md = client.get_text(object).await.unwrap_or_default();
-        let version = parse_skill_markdown_field(&skill_md, "version");
-        let author = parse_skill_markdown_field(&skill_md, "author");
+        let draft_metadata = parse_skill_frontmatter(&skill_md);
+        let version = draft_metadata.version.clone();
+        let author = draft_metadata.author.clone();
         let meta_path = admin_object_path(&source_path, "publish-meta.v1.json")?;
         let state_path = admin_object_path(&source_path, "state.v1.json")?;
         let validation_path = format!("{}{}/validation.json", DRAFT_GITLAB_PREFIX, source_path);
+        let default_meta = default_publish_meta_from_draft(&source_path, &draft_metadata);
         let publish_meta = client
             .get_optional_json::<PublishMeta>(&meta_path)
             .await?
-            .map(normalize_publish_meta);
+            .map(|meta| merge_publish_meta_defaults(
+                normalize_publish_meta_for_source(meta, &source_path),
+                default_meta.clone(),
+            ))
+            .or(Some(default_meta));
         let state_json = client
             .get_optional_json::<serde_json::Value>(&state_path)
             .await?;
@@ -490,7 +497,8 @@ async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<
 async fn save_publish_meta_inner(request: SavePublishMetaRequest) -> Result<PublishMeta> {
     let authorization = ensure_admin_allowed(&request.admin_key).await?;
     let client = AdminObjectClient::new();
-    let mut meta = normalize_publish_meta(request.meta);
+    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let mut meta = normalize_publish_meta_for_source(request.meta, &source_path);
     validate_publish_meta(&meta)?;
     ensure_can_manage_publish_target(&authorization, &meta)?;
     validate_publish_target(&client, &meta).await?;
@@ -498,7 +506,7 @@ async fn save_publish_meta_inner(request: SavePublishMetaRequest) -> Result<Publ
     if meta.updated_by.as_deref().unwrap_or("").trim().is_empty() {
         meta.updated_by = Some(admin_actor(&authorization));
     }
-    let path = admin_object_path(&request.gitlab_source_path, "publish-meta.v1.json")?;
+    let path = admin_object_path(&source_path, "publish-meta.v1.json")?;
     client.put_json(&path, &meta).await?;
     Ok(meta)
 }
@@ -684,18 +692,23 @@ async fn publish_draft_inner(request: PublishDraftRequest) -> Result<()> {
         .get_text(&skill_md_path)
         .await
         .with_context(|| format!("读取草稿 SKILL.md 失败: {skill_md_path}"))?;
-    let version = parse_skill_markdown_field(&skill_md, "version")
+    let draft_metadata = parse_skill_frontmatter(&skill_md);
+    let version = draft_metadata.version.clone()
         .ok_or_else(|| anyhow!("草稿 SKILL.md 缺少 version"))?;
-    let author = parse_skill_markdown_field(&skill_md, "author")
+    let author = draft_metadata.author.clone()
         .ok_or_else(|| anyhow!("草稿 SKILL.md 缺少 author"))?;
 
     let meta_path = admin_object_path(&source_path, "publish-meta.v1.json")?;
     let state_path = admin_object_path(&source_path, "state.v1.json")?;
+    let default_meta = default_publish_meta_from_draft(&source_path, &draft_metadata);
     let meta = client
         .get_optional_json::<PublishMeta>(&meta_path)
         .await?
-        .map(normalize_publish_meta)
-        .ok_or_else(|| anyhow!("草稿缺少 publish-meta.v1.json"))?;
+        .map(|meta| merge_publish_meta_defaults(
+            normalize_publish_meta_for_source(meta, &source_path),
+            default_meta.clone(),
+        ))
+        .unwrap_or(default_meta);
     let state_json = client
         .get_optional_json::<serde_json::Value>(&state_path)
         .await?;
@@ -1863,6 +1876,153 @@ fn category_name_from_slug(slug: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+#[derive(Debug, Clone, Default)]
+struct DraftSkillMetadata {
+    name: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+    version: Option<String>,
+    author: Option<String>,
+}
+
+fn default_publish_meta_from_draft(
+    source_path: &str,
+    metadata: &DraftSkillMetadata,
+) -> PublishMeta {
+    let skill_id = draft_skill_id_from_source_path(source_path);
+    PublishMeta {
+        namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
+        skill_id: skill_id.clone(),
+        name: metadata.name.clone().unwrap_or_else(|| skill_id.clone()),
+        summary: metadata.description.clone().unwrap_or_default(),
+        tags: metadata.tags.clone(),
+        targets: Vec::new(),
+        levels: vec!["personal".to_string(), "project".to_string()],
+        publish_scope: "public".to_string(),
+        publish_category_slug: Some("general".to_string()),
+        publish_project_slug: None,
+        changelog: String::new(),
+        updated_at: None,
+        updated_by: None,
+    }
+}
+
+fn merge_publish_meta_defaults(mut meta: PublishMeta, defaults: PublishMeta) -> PublishMeta {
+    meta.namespace = defaults.namespace;
+    meta.skill_id = defaults.skill_id;
+    if meta.name.trim().is_empty() {
+        meta.name = defaults.name;
+    }
+    if meta.summary.trim().is_empty() {
+        meta.summary = defaults.summary;
+    }
+    if meta.tags.is_empty() {
+        meta.tags = defaults.tags;
+    }
+    meta
+}
+
+fn normalize_publish_meta_for_source(meta: PublishMeta, source_path: &str) -> PublishMeta {
+    let mut meta = normalize_publish_meta(meta);
+    meta.namespace = FIXED_PUBLISH_NAMESPACE.to_string();
+    meta.skill_id = draft_skill_id_from_source_path(source_path);
+    meta
+}
+
+fn draft_skill_id_from_source_path(source_path: &str) -> String {
+    let (_, draft_slug) = split_gitlab_source_path(source_path);
+    draft_slug
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "skill".to_string())
+}
+
+fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
+    let mut metadata = DraftSkillMetadata::default();
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return metadata;
+    }
+
+    let mut section: Option<String> = None;
+    for line in lines.take(120) {
+        let trimmed = line.trim();
+        if trimmed == "---" || trimmed == "..." {
+            break;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            if section.as_deref() == Some("tags") {
+                if let Some(tag) = clean_frontmatter_value(item) {
+                    push_unique_tag(&mut metadata.tags, tag);
+                }
+            }
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        if indent == 0 {
+            section = Some(key.clone());
+        }
+
+        match (indent == 0, section.as_deref(), key.as_str()) {
+            (true, _, "name") => metadata.name = clean_frontmatter_value(value),
+            (true, _, "description") => metadata.description = clean_frontmatter_value(value),
+            (true, _, "tags") => {
+                for tag in parse_frontmatter_tags(value) {
+                    push_unique_tag(&mut metadata.tags, tag);
+                }
+            }
+            (true, _, "version") => metadata.version = clean_frontmatter_value(value),
+            (true, _, "author") => metadata.author = clean_frontmatter_value(value),
+            (false, Some("metadata"), "version") => {
+                metadata.version = clean_frontmatter_value(value)
+            }
+            (false, Some("metadata"), "author") => {
+                metadata.author = clean_frontmatter_value(value)
+            }
+            _ => {}
+        }
+    }
+
+    metadata
+}
+
+fn parse_frontmatter_tags(value: &str) -> Vec<String> {
+    let Some(cleaned) = clean_frontmatter_value(value) else {
+        return Vec::new();
+    };
+    let inner = cleaned
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    if inner.contains(',') {
+        inner
+            .split(',')
+            .filter_map(clean_frontmatter_value)
+            .collect()
+    } else {
+        vec![inner.to_string()]
+    }
+}
+
+fn push_unique_tag(tags: &mut Vec<String>, tag: String) {
+    if !tags.iter().any(|item| item.eq_ignore_ascii_case(&tag)) {
+        tags.push(tag);
+    }
+}
+
 fn parse_skill_markdown_field(content: &str, field: &str) -> Option<String> {
     let expected = field.trim();
     for line in content.lines().take(80) {
@@ -4004,6 +4164,54 @@ author: "Skill Hub"
             draft_status(Some("1.0.0"), None, Some("archived"), None, None),
             "已下架"
         );
+    }
+
+    #[test]
+    fn parses_gitlab_draft_frontmatter_with_metadata_section() {
+        let content = r#"---
+name: MinIO Live Draft
+description: MinIO 实时草稿测试
+tags: minio, test
+metadata:
+  version: 0.1.0
+  author: Skill Hub Test
+---
+
+# MinIO Live Draft
+
+这是一个测试草稿。
+"#;
+
+        let metadata = parse_skill_frontmatter(content);
+        assert_eq!(metadata.name.as_deref(), Some("MinIO Live Draft"));
+        assert_eq!(metadata.description.as_deref(), Some("MinIO 实时草稿测试"));
+        assert_eq!(metadata.version.as_deref(), Some("0.1.0"));
+        assert_eq!(metadata.author.as_deref(), Some("Skill Hub Test"));
+        assert_eq!(metadata.tags, vec!["minio", "test"]);
+    }
+
+    #[test]
+    fn parses_gitlab_draft_frontmatter_with_array_tags() {
+        let content = r#"---
+name: Array Tags Test
+description: Test array-style tags
+tags:
+  - frontend
+  - react
+  - ui
+metadata:
+  version: 1.0.0
+  author: Test Author
+---
+
+Content here.
+"#;
+
+        let metadata = parse_skill_frontmatter(content);
+        assert_eq!(metadata.name.as_deref(), Some("Array Tags Test"));
+        assert_eq!(metadata.tags, vec!["frontend", "react", "ui"]);
+        assert_eq!(metadata.version.as_deref(), Some("1.0.0"));
+        assert_eq!(metadata.author.as_deref(), Some("Test Author"));
     }
 
     #[test]
