@@ -18,6 +18,20 @@ if (-not $OutputRoot) {
   $OutputRoot = Join-Path $RepoRoot "dist\portable\windows-$Arch"
 }
 
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Command,
+    [Parameter(Mandatory = $true)]
+    [string]$ErrorMessage
+  )
+
+  & $Command
+  if ($LASTEXITCODE -ne 0) {
+    throw $ErrorMessage
+  }
+}
+
 function Get-CargoVersion {
   $cargoToml = Join-Path $TauriDir "Cargo.toml"
   $versionLine = Get-Content $cargoToml | Where-Object { $_ -match '^\s*version\s*=' } | Select-Object -First 1
@@ -81,12 +95,18 @@ function Resolve-WebView2Runtime {
 
 if ($Build) {
   Push-Location $FrontendDir
-  npm run build
-  Pop-Location
+  try {
+    Invoke-Native { npm run build } "Frontend build failed."
+  } finally {
+    Pop-Location
+  }
 
   Push-Location $TauriDir
-  cargo build --release
-  Pop-Location
+  try {
+    Invoke-Native { cargo build --release } "Tauri release build failed."
+  } finally {
+    Pop-Location
+  }
 }
 
 if (-not $Version) {
@@ -121,6 +141,13 @@ if ($RuntimePath) {
   version = $Version
   executable = "skill-hub.exe"
 } | ConvertTo-Json | Set-Content -Path (Join-Path $StageDir "portable.json") -Encoding UTF8
+
+$ArchiveTimestamp = Get-Date
+Get-ChildItem -Path $StageDir -Recurse -Force | ForEach-Object {
+  $_.CreationTime = $ArchiveTimestamp
+  $_.LastAccessTime = $ArchiveTimestamp
+  $_.LastWriteTime = $ArchiveTimestamp
+}
 
 if (Test-Path $ZipPath) {
   Remove-Item $ZipPath -Force

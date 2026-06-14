@@ -1944,8 +1944,10 @@ function DraftList(props: {
                   onClick={() => props.onSelectDraft(draft)}
                   title={!draft.sourceAvailable ? "未关联 GitLab 源，无法预览" : undefined}
                 >
-                  <FileText size={20} />
-                  <span>
+                  <span className="draft-icon">
+                    <FileText size={16} />
+                  </span>
+                  <span className="draft-row-main">
                     <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
                     <small>{draft.gitlabSourcePath}</small>
                   </span>
@@ -2231,104 +2233,114 @@ function AdminView(props: {
                     <h2>{selectedDraft?.draftSlug ?? "发布元数据"}</h2>
                     <p>{selectedDraft?.version ? `version ${selectedDraft.version}` : "选择草稿后编辑"}</p>
                   </div>
-                  <Badge>{selectedDraft?.author ?? "author"}</Badge>
+                  <Badge>{selectedDraft?.author ?? "等待选择"}</Badge>
                 </div>
 
                 <div className="publish-scroll">
-                  <div className="meta-form">
-                    <label className="text-field">
-                      <span>skill_id（只读）</span>
-                      <input value={props.meta.skillId} readOnly disabled />
-                    </label>
-                    <label className="text-field">
-                      <span>名称</span>
-                      <input value={props.meta.name} onChange={(event) => updateMeta("name", event.target.value)} />
-                    </label>
-                    <label className="text-field wide">
-                      <span>摘要</span>
-                      <input value={props.meta.summary} onChange={(event) => updateMeta("summary", event.target.value)} />
-                    </label>
-                    <label className="text-field">
-                      <span>标签，逗号分隔</span>
-                      <input
-                        value={props.meta.tags.join(", ")}
-                        onChange={(event) => updateMeta("tags", splitCsv(event.target.value))}
-                      />
-                    </label>
-                    <label className="text-field">
-                      <span>发布范围</span>
-                      <select
-                        value={props.meta.publishScope}
-                        onChange={(event) => updateMeta("publishScope", event.target.value)}
-                      >
-                        {isSystem ? <option value="public">公共</option> : null}
-                        <option value="project">项目</option>
-                      </select>
-                    </label>
-                    {props.meta.publishScope === "project" ? (
-                      <label className="text-field">
-                        <span>项目</span>
-                        <select
-                          value={props.meta.publishProjectSlug ?? ""}
-                          onChange={(event) => updateMeta("publishProjectSlug", event.target.value)}
-                        >
-                          <option value="">选择项目</option>
-                          {projectOptions.map((project) => (
-                            <option key={project.slug} value={project.slug}>
-                              {project.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : (
-                      <label className="text-field">
-                        <span>公共分类</span>
-                        <select
-                          value={props.meta.publishCategorySlug ?? "general"}
-                          onChange={(event) => updateMeta("publishCategorySlug", event.target.value)}
-                        >
-                          {props.categories.map((category) => (
-                            <option key={category.id} value={category.id}>
-                              {category.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    <label className="text-field wide">
-                      <span>变更说明</span>
-                      <input value={props.meta.changelog} onChange={(event) => updateMeta("changelog", event.target.value)} />
-                    </label>
-                  </div>
-
-                  {selectedDraft && !selectedDraft.sourceAvailable ? (
-                    <div className="conflict-note warning">
-                      <AlertCircle size={17} />
-                      <div>
-                        <strong>该草稿由市场下架生成，暂未关联 GitLab 源文件</strong>
-                        <p>
-                          如果需要编辑和预览，请按以下步骤操作：<br/>
-                          1. 确保 GitLab 已重新同步该 skill 的 SKILL.md 文件到 MinIO 草稿区<br/>
-                          2. 点击草稿区的"刷新"按钮，更新草稿列表<br/>
-                          3. 源文件关联后即可预览和编辑
-                        </p>
-                        <p style={{marginTop: "8px", fontSize: "12px", color: "var(--muted)"}}>
-                          💡 如果只是误下架需要快速恢复，可以直接点击"快速重新上架"按钮，无需等待 GitLab 同步。市场中的 skill 包文件仍然存在，该操作只会更新目录关联。
-                        </p>
+                  {selectedDraft ? (
+                    <>
+                      <div className="meta-form">
+                        <label className="text-field">
+                          <span>skill_id（只读）</span>
+                          <input value={props.meta.skillId} readOnly disabled />
+                        </label>
+                        <label className="text-field">
+                          <span>名称</span>
+                          <input value={props.meta.name} onChange={(event) => updateMeta("name", event.target.value)} />
+                        </label>
+                        <label className="text-field wide">
+                          <span>摘要</span>
+                          <input value={props.meta.summary} onChange={(event) => updateMeta("summary", event.target.value)} />
+                        </label>
+                        <label className="text-field">
+                          <span>标签，逗号分隔</span>
+                          <input
+                            value={props.meta.tags.join(", ")}
+                            onChange={(event) => updateMeta("tags", splitCsv(event.target.value))}
+                          />
+                        </label>
+                        <label className="text-field">
+                          <span>发布范围</span>
+                          <select
+                            value={props.meta.publishScope}
+                            onChange={(event) => updateMeta("publishScope", event.target.value)}
+                          >
+                            {isSystem ? <option value="public">公共</option> : null}
+                            <option value="project">项目</option>
+                          </select>
+                        </label>
+                        {props.meta.publishScope === "project" ? (
+                          <label className="text-field">
+                            <span>项目</span>
+                            <select
+                              value={props.meta.publishProjectSlug ?? ""}
+                              onChange={(event) => updateMeta("publishProjectSlug", event.target.value)}
+                            >
+                              <option value="">选择项目</option>
+                              {projectOptions.map((project) => (
+                                <option key={project.slug} value={project.slug}>
+                                  {project.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <label className="text-field">
+                            <span>公共分类</span>
+                            <select
+                              value={props.meta.publishCategorySlug ?? "general"}
+                              onChange={(event) => updateMeta("publishCategorySlug", event.target.value)}
+                            >
+                              {props.categories.map((category) => (
+                                <option key={category.id} value={category.id}>
+                                  {category.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        <label className="text-field wide">
+                          <span>变更说明</span>
+                          <input value={props.meta.changelog} onChange={(event) => updateMeta("changelog", event.target.value)} />
+                        </label>
                       </div>
+
+                      {!selectedDraft.sourceAvailable ? (
+                        <div className="conflict-note warning">
+                          <AlertCircle size={17} />
+                          <div>
+                            <strong>该草稿由市场下架生成，暂未关联 GitLab 源文件</strong>
+                            <p>
+                              如果需要编辑和预览，请按以下步骤操作：<br/>
+                              1. 确保 GitLab 已重新同步该 skill 的 SKILL.md 文件到 MinIO 草稿区<br/>
+                              2. 点击草稿区的"刷新"按钮，更新草稿列表<br/>
+                              3. 源文件关联后即可预览和编辑
+                            </p>
+                            <p style={{marginTop: "8px", fontSize: "12px", color: "var(--muted)"}}>
+                              提示：如果只是误下架需要快速恢复，可以直接点击"快速重新上架"按钮，无需等待 GitLab 同步。市场中的 skill 包文件仍然存在，该操作只会更新目录关联。
+                            </p>
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="publish-empty-state">
+                      <FileText size={28} />
+                      <strong>等待选择草稿</strong>
+                      <span>左侧草稿载入后会显示发布元数据。</span>
                     </div>
-                  ) : null}
+                  )}
                 </div>
 
                 <div className="button-line publish-actions">
-                  <button className="primary-soft" onClick={props.onSaveMeta}>
+                  <button className="primary-soft" onClick={props.onSaveMeta} disabled={!selectedDraft}>
                     <Save size={17} />
                     保存元数据
                   </button>
                   <button
                     className="primary-soft"
                     onClick={props.onPreview}
-                    disabled={Boolean(selectedDraft && !selectedDraft.sourceAvailable)}
+                    disabled={!selectedDraft || !selectedDraft.sourceAvailable}
                   >
                     <BookOpen size={17} />
                     预览草稿
@@ -2351,8 +2363,8 @@ function AdminView(props: {
                     <button
                       className="primary-action compact"
                       onClick={props.onPublish}
-                      disabled={Boolean(selectedDraft && !selectedDraft.sourceAvailable)}
-                      title={selectedDraft && !selectedDraft.sourceAvailable ? "需要 GitLab 源文件才能发布" : "发布到市场"}
+                      disabled={!selectedDraft || !selectedDraft.sourceAvailable}
+                      title={!selectedDraft ? "请选择草稿" : !selectedDraft.sourceAvailable ? "需要 GitLab 源文件才能发布" : "发布到市场"}
                     >
                       <Rocket size={17} />
                       {selectedDraft && !selectedDraft.sourceAvailable ? "重新上架（需要源文件）" : "发布到市场"}

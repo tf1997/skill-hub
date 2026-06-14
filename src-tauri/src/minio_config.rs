@@ -10,7 +10,7 @@ pub const COMPILED_SOURCE_BUCKET: &str = match option_env!("SKILL_HUB_MINIO_BUCK
 };
 pub const COMPILED_SOURCE_REGION: Option<&str> = option_env!("SKILL_HUB_MINIO_REGION");
 
-pub const APP_UPDATE_MANIFEST_OBJECT: &str = "skill-hub/updates/stable/latest.json";
+pub const APP_UPDATE_MANIFEST_OBJECT: &str = "updates/stable/latest.json";
 
 pub fn object_url(object_path: &str) -> String {
     format!(

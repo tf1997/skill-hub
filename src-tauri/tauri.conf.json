@@ -15,6 +15,8 @@
       "all": false,
       "dialog": {
         "all": false,
+        "ask": true,
+        "message": true,
         "open": true
       },
       "shell": {
