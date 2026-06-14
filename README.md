@@ -1,24 +1,100 @@
 # Skill Hub
 
-Skill Hub 是一个 Tauri v1 + Rust + React 的桌面 skill 市场客户端。远程市场数据来自 MinIO 对象存储，本地使用 SQLite 记录缓存、项目、安装状态和 skill 生效绑定。
+Skill Hub 是一个基于 Tauri v1、Rust、React 和 SQLite 的桌面 skill 市场客户端。它从 MinIO 对象存储读取市场数据，把 skill 下载到本地缓存，并按 Codex / Claude、个人级 / 项目级安装到目标目录。
 
-当前代码默认连接：
+本仓库侧重桌面客户端本体：市场浏览、安装启用、本地扫描、更新、管理员发布、项目市场和审计查看。GitLab 只负责把 skill 原生文件同步到 MinIO 草稿区，正式发布由客户端管理员模式完成。
+
+## 文档
+
+- [操作文档](docs/operation-guide.md)：MinIO 数据准备、GitLab 草稿同步、管理员发布流程、权限配置、审计查看。
+- [GitLab 草稿同步模板](docs/gitlab-draft-sync-template.yml)：复制到 skill 源码仓库作为 `.gitlab-ci.yml` 使用。
+- [管理员发布设计说明](docs/admin-publishing-community-design.md)：管理员发布、项目市场和权限模型的设计记录。
+- [发布说明](docs/release.md)：桌面应用发布和更新相关记录。
+
+## 主要能力
+
+- 浏览公共市场和项目市场，支持搜索、分类筛选、详情和预览。
+- 下载 skill 到本地包缓存，并安装 / 启用到 Codex 或 Claude。
+- 支持个人级和项目级作用域，同一 skill 在同一目标平台上个人级和项目级互斥。
+- 扫描本机已有 Claude / Codex skill，区分 Skill Hub 托管项和本地已有项。
+- 管理员模式支持项目治理、公共分类维护、GitLab 草稿发布、市场下架和审计记录。
+- 管理权限分为 `system` 和 `project`：系统管理员拥有全部权限；项目管理员可管理所有项目 skill，但不能配置公共分类、发布公共 skill 或查看审计日志。
+
+## 技术栈
+
+- 桌面框架：Tauri v1
+- 后端：Rust
+- 前端：React + Vite
+- 本地数据：SQLite
+- 远程市场：MinIO / S3-compatible object storage
+- 包格式：`package.zip`
+- 校验：SHA-256
+
+## 目录结构
 
 ```text
-MinIO endpoint: http://192.168.1.4:9000
-MinIO bucket:   skill-market
-mc alias:       myminio
+.
+├─ fronted/                 # 前端工程，目录名按现状保留
+│  ├─ src/
+│  └─ package.json
+├─ src-tauri/               # Tauri / Rust 后端
+│  ├─ src/
+│  ├─ Cargo.toml
+│  └─ tauri.conf.json
+├─ docs/
+│  ├─ operation-guide.md
+│  └─ gitlab-draft-sync-template.yml
+├─ categories.v1.json       # 示例公共分类
+├─ seed-minio.ps1           # 本地 MinIO 示例数据种子脚本
+└─ publish-skill.ps1        # 早期脚本发布工具，保留作运维参考
 ```
 
-固定源配置在 `src-tauri/src/minio_config.rs`：
+## 环境要求
+
+建议开发环境：
+
+- Windows 10 / 11
+- Node.js 18+
+- npm 9+
+- Rust stable toolchain
+- Git
+- WebView2 Runtime
+- 可选：MinIO Server / MinIO Client `mc`
+
+首次安装前端依赖：
+
+```powershell
+npm --prefix fronted install
+```
+
+根目录 `package.json` 提供了 workspace 级脚本，会自动转到 `fronted` 执行：
+
+```powershell
+npm run build
+npm run tauri -- dev
+npm run tauri -- build
+```
+
+## 配置
+
+市场源配置在 [src-tauri/src/minio_config.rs](src-tauri/src/minio_config.rs)：
 
 ```rust
 COMPILED_SOURCE_ENDPOINT = "http://192.168.1.4:9000"
 COMPILED_SOURCE_BUCKET = "skill-market"
-APP_UPDATE_MANIFEST_OBJECT = "skill-hub/updates/stable/latest.json"
+APP_UPDATE_MANIFEST_OBJECT = "updates/stable/latest.json"
 ```
 
-管理员配置在 `src-tauri/src/admin_config.rs`：
+这些值支持编译时环境变量覆盖：
+
+```powershell
+$env:SKILL_HUB_MINIO_ENDPOINT = "http://minio.example.com:9000"
+$env:SKILL_HUB_MINIO_BUCKET = "skill-market"
+$env:SKILL_HUB_MINIO_REGION = "us-east-1"
+$env:SKILL_HUB_BUILT_IN_UPDATE_MANIFEST_URL = "http://minio.example.com:9000/skill-market/updates/stable/latest.json"
+```
+
+管理员配置在 [src-tauri/src/admin_config.rs](src-tauri/src/admin_config.rs)：
 
 ```rust
 ADMIN_KEY = "skillhub-admin"
@@ -27,243 +103,27 @@ MINIO_PUBLISHER_SECRET_KEY = "minioadmin"
 MAC_ALLOWLIST_OBJECT_PATH = "admin/security/mac-allowlist.v1.json"
 ```
 
-## 当前能力
+生产构建前需要确认这些配置已指向正式 MinIO 和正式管理员凭证。普通市场读取只需要公开读权限或只读凭证；管理员写操作使用后端中的发布凭证。
 
-- 浏览公共市场 skill，支持搜索、分类筛选、详情和预览。
-- 市场有 `公共` / `项目` 两个页签，项目市场由 `projects.v1.json` 驱动。
-- 下载 skill 到本地缓存，并安装 / 启用到 Codex 或 Claude。
-- 支持个人级和项目级作用域，同一 skill 在同一平台上个人级和项目级互斥。
-- 支持本地缓存查看、预览、删除，以及本地已有 skill 扫描。
-- 管理员模式支持系统管理员 / 项目管理员两种角色、项目维护、公共分类维护、草稿列表、草稿预览、发布元数据维护、发布和 skill 下架。
-- 管理员发布会生成 `skill.json`、`package.zip`、`package.sha256`、`manifest.json`、`catalog.v1.json`、分类 / 项目索引、草稿状态、publish job 和审计对象。
+## 开发运行
 
-## 管理员入口
-
-管理员入口是隐藏入口，普通侧边栏默认不显示“管理”。
-
-进入方式：
-
-1. 启动客户端。
-2. 点击左上角 `Skill Hub` 品牌区域。
-3. 先弹出管理员验证窗口。
-4. 输入管理员密钥：`skillhub-admin`。
-5. 点击 `验证并进入`。
-6. 验证通过后，侧边栏才会出现 `管理` 菜单，并自动进入管理页面。
-
-解锁成功需要同时满足：
-
-- 管理员密钥等于 `src-tauri/src/admin_config.rs` 中的 `ADMIN_KEY`。
-- MinIO 中存在 `admin/security/mac-allowlist.v1.json`。
-- 当前机器 MAC 地址命中白名单，并带有允许的管理员角色。
-- 后端能使用代码中写死的 MinIO Access Key / Secret Key 访问 `skill-market`。
-
-MAC 白名单示例：
-
-```json
-{
-  "entries": [
-    {
-      "mac": "C8-7F-54-5C-60-D8",
-      "status": "active",
-      "role": "system",
-      "name": "ops-admin"
-    },
-    {
-      "mac": "11:22:33:44:55:66",
-      "status": "active",
-      "role": "project",
-      "name": "project-admin"
-    }
-  ]
-}
-```
-
-也兼容早期简单写法，简单写法等价于系统管理员：
-
-```json
-{
-  "macs": [
-    "C8-7F-54-5C-60-D8"
-  ]
-}
-```
-
-后端会把 `AA-BB-CC-DD-EE-FF`、`AA:BB:CC:DD:EE:FF`、`AABB.CCDD.EEFF` 规范化后再比较。
-
-角色说明：
-
-- `role = system`：系统管理员，可管理公共分类、所有市场项目、公共 skill 和项目 skill 的发布 / 下架。
-- `role = project`：项目管理员，可管理所有市场项目，以及所有项目 skill 的发布 / 下架。
-- 项目管理员不能发布到公共分类，也不能下架公共市场 skill。
-
-## MinIO 初始化
-
-本机如果 `mc` 不在 PATH，可以直接使用当前测试过的路径：
+启动 Tauri 开发模式：
 
 ```powershell
-$mc = "D:\tmp\skillhub-minio\mc.exe"
+npm run tauri -- dev
 ```
 
-配置 alias：
+当前 Tauri 配置的 `beforeDevCommand` 会先构建前端，`devPath` 指向 `fronted/dist`，不会依赖 Vite dev server。
+
+也可以先构建前端，再直接运行 Rust 后端：
 
 ```powershell
-& $mc alias set myminio http://192.168.1.4:9000 minioadmin minioadmin
+npm run build
+cd src-tauri
+cargo run
 ```
 
-创建 bucket：
-
-```powershell
-& $mc mb --ignore-existing myminio/skill-market
-& $mc anonymous set download myminio/skill-market
-```
-
-写入管理员 MAC 白名单：
-
-```powershell
-@'
-{
-  "entries": [
-    {
-      "mac": "C8-7F-54-5C-60-D8",
-      "status": "active",
-      "role": "system",
-      "name": "ops-admin"
-    }
-  ]
-}
-'@ | Set-Content -Encoding UTF8 .\mac-allowlist.v1.json
-
-& $mc cp .\mac-allowlist.v1.json myminio/skill-market/admin/security/mac-allowlist.v1.json
-```
-
-查看当前机器 MAC：
-
-```powershell
-getmac /FO CSV /NH
-```
-
-写入示例市场数据：
-
-```powershell
-$env:MC_CONFIG_DIR = "$env:USERPROFILE\mc"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\seed-minio.ps1 `
-  -McPath D:\tmp\skillhub-minio\mc.exe `
-  -Alias myminio `
-  -Bucket skill-market
-```
-
-检查对象：
-
-```powershell
-& $mc ls myminio/skill-market
-& $mc cat myminio/skill-market/catalog.v1.json
-```
-
-## GitLab 草稿同步
-
-GitLab 只负责把 skill 原生内容同步到草稿前缀，不负责发布正式市场。
-
-草稿路径约定：
-
-```text
-draft/gitlab/skills/{gitlab_category_code}/{draft_slug}/SKILL.md
-draft/gitlab/skills/{gitlab_category_code}/{draft_slug}/...
-draft/gitlab/skills/{gitlab_category_code}/{draft_slug}/validation.json
-```
-
-仓库提供模板：
-
-```text
-docs/gitlab-draft-sync-template.yml
-```
-
-使用方式：
-
-1. 复制到 skill 源码仓库，命名为 `.gitlab-ci.yml`。
-2. 配置 GitLab CI 变量：
-   - `MINIO_ENDPOINT`
-   - `MINIO_ACCESS_KEY`
-   - `MINIO_SECRET_KEY`
-   - `GITLAB_CATEGORY_CODE`
-   - `DRAFT_SLUG`
-   - 可选：`SKILL_DIR`
-   - 可选：`SKILL_MARKET_BUCKET`
-3. pipeline 会校验 `SKILL.md` 中的 `version` 和 `author`。
-4. pipeline 只写 `draft/gitlab/skills/...`，不会写 catalog、manifest、projects 或正式版本对象。
-
-手工创建一个草稿示例：
-
-```powershell
-New-Item -ItemType Directory -Force .\tmp-draft | Out-Null
-
-@'
----
-name: MinIO Live Draft
-version: 0.1.0
-author: Skill Hub Test
----
-
-# MinIO Live Draft
-'@ | Set-Content -Encoding UTF8 .\tmp-draft\SKILL.md
-
-@'
-{
-  "schema": "skillhub.draft-validation.v1",
-  "status": "passed",
-  "commitSha": "local-test"
-}
-'@ | Set-Content -Encoding UTF8 .\tmp-draft\validation.json
-
-& $mc mirror --overwrite .\tmp-draft myminio/skill-market/draft/gitlab/skills/product/minio-live-draft
-```
-
-## 管理员发布操作
-
-1. 进入管理员入口并解锁。
-2. 点击 `刷新草稿`。
-3. 在草稿列表中选择一个草稿。
-4. 补齐发布元数据：
-   - `namespace`
-   - `skill_id`
-   - 名称
-   - 摘要
-   - 标签
-   - 发布范围：`公共` 或 `项目`
-   - 公共分类或项目
-   - 变更说明
-5. 点击 `保存元数据`。
-6. 点击 `预览草稿`，确认 `SKILL.md`、文件清单、`publish-meta.v1.json`。
-7. 点击 `发布到市场`。
-
-发布成功后会写入：
-
-```text
-skills/{namespace}/{skill_id}/versions/{version}/skill.json
-skills/{namespace}/{skill_id}/versions/{version}/package.zip
-skills/{namespace}/{skill_id}/versions/{version}/package.sha256
-skills/{namespace}/{skill_id}/versions/{version}/changelog.md
-skills/{namespace}/{skill_id}/manifest.json
-catalog.v1.json
-categories.v1.json
-projects.v1.json
-indexes/search-lite.v1.json
-indexes/market/public/{category}.v1.json
-indexes/market/projects/{project}.v1.json
-draft/admin/gitlab/skills/{gitlab_source_path}/publish-meta.v1.json
-draft/admin/gitlab/skills/{gitlab_source_path}/state.v1.json
-admin/publish-jobs/{job_id}.json
-admin/audit/{yyyy}/{mm}/{dd}/publish-{id}.json
-```
-
-如果 `validation.json.status` 不是 `passed` / `ok` / `success`，发布会被拒绝。
-
-## 构建和测试
-
-安装前端依赖：
-
-```powershell
-npm --prefix fronted install
-```
+## 构建和检查
 
 前端构建：
 
@@ -271,7 +131,7 @@ npm --prefix fronted install
 npm run build
 ```
 
-Rust 检查：
+Rust 编译检查：
 
 ```powershell
 cd src-tauri
@@ -285,113 +145,45 @@ cd src-tauri
 cargo test
 ```
 
-真实 MinIO 集成测试默认是 ignored，需要先准备：
-
-- `src-tauri/src/minio_config.rs` 指向统一 MinIO endpoint / bucket。
-- `skill-market` bucket 存在。
-- `admin/security/mac-allowlist.v1.json` 已包含当前机器 MAC。
-- `draft/gitlab/skills/product/minio-live-draft/SKILL.md` 已存在。
-
-运行：
+真实 MinIO 集成测试默认标记为 ignored，运行前需要先按 [操作文档](docs/operation-guide.md) 准备 bucket、管理员白名单和 GitLab 草稿对象：
 
 ```powershell
 cd src-tauri
 cargo test commands::tests::live_minio_admin_publish_flow -- --ignored --exact --nocapture
 ```
 
-当前已验证通过：
-
-```text
-cargo check
-cargo test
-npm.cmd run build
-cargo test commands::tests::live_minio_admin_publish_flow -- --ignored --exact --nocapture
-```
-
-## 开发运行
-
-启动 Tauri 开发模式：
-
-```powershell
-npm run tauri -- dev
-```
-
-直接运行 Rust/Tauri：
-
-```powershell
-npm run build
-cd src-tauri
-cargo run
-```
-
-`cargo run` 会加载 `fronted/dist`，不会连接 `localhost:5173`。
-
-## 打包部署
+## 打包
 
 打包桌面应用：
 
 ```powershell
-npm run build
 npm run tauri -- build
 ```
 
-产物通常位于：
+常见产物位置：
 
 ```text
 src-tauri/target/release/
 src-tauri/target/release/bundle/
 ```
 
-部署前确认：
+打包前确认：
 
-- `src-tauri/src/minio_config.rs` 中的 `COMPILED_SOURCE_ENDPOINT` / `COMPILED_SOURCE_BUCKET` 是统一 MinIO 地址。
-- `src-tauri/src/admin_config.rs` 中的管理员密钥和 MinIO 发布凭证正确。
-- 目标 MinIO 已有 `skill-market` bucket。
-- 目标 MinIO 已有 `catalog.v1.json` 和 `categories.v1.json`。
-- 管理员机器 MAC 已写入 `admin/security/mac-allowlist.v1.json`。
+- 编译时 MinIO endpoint / bucket 已设置到目标环境。
+- 管理员密钥和 MinIO 发布凭证已替换为目标环境配置。
+- 目标 MinIO 已准备 `catalog.v1.json`、`categories.v1.json`、`projects.v1.json` 和 skill 对象。
+- `admin/security/mac-allowlist.v1.json` 已包含管理员机器 MAC。
+- `updates/stable/latest.json` 与发布包路径一致，或已设置 `SKILL_HUB_BUILT_IN_UPDATE_MANIFEST_URL`。
 
-## 普通用户操作
+## 普通使用
 
-1. 打开客户端。
-2. 在 `市场` 页刷新市场。
-3. 在 `公共` 或 `项目` 页签选择 skill。
-4. 选择 Codex / Claude。
-5. 选择个人级或项目级作用域。
-6. 点击安装 / 启用。
-7. 在 `本地` 页查看缓存、预览、删除缓存。
-8. 在 `项目` 页绑定项目目录，供项目级安装使用。
+普通用户打开客户端后可以：
 
-## 作用域规则
+1. 在 `市场` 页浏览公共或项目 skill。
+2. 选择 Codex / Claude。
+3. 选择个人级或项目级作用域。
+4. 安装并启用 skill。
+5. 在 `本地` 页查看缓存、预览、删除缓存或扫描本机已有 skill。
+6. 在 `项目` 页绑定项目目录，供项目级安装使用。
 
-市场里的 skill 不区分 Codex 和 Claude。下载 skill 只是进入 Skill Hub 本地包缓存；真正生效时，用户需要选择目标平台和作用域。
-
-生效目录：
-
-```text
-Codex / personal  -> 设置页配置的 Codex 个人级 skill 目录，默认 ~/.codex/skills
-Claude / personal -> 设置页配置的 Claude 个人级 skill 目录，默认 ~/.claude/skills
-Codex / project   -> 项目根目录/.codex/skills
-Claude / project  -> 项目根目录/.claude/skills
-```
-
-同一个 skill 在同一个目标平台上，个人级和项目级不能同时生效。
-
-判断字段：
-
-```text
-namespace + skill_id + target
-```
-
-允许：
-
-```text
-Codex / personal / skill-a
-Claude / project / skill-a
-```
-
-不允许：
-
-```text
-Codex / personal / skill-a
-Codex / project / skill-a
-```
+管理员入口是隐藏入口：点击左上角 `Skill Hub` 品牌区域，输入管理员密钥并通过 MAC 白名单校验后，侧边栏才会显示 `管理` 菜单。管理员发布和权限配置见 [操作文档](docs/operation-guide.md)。

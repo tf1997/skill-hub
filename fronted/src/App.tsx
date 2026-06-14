@@ -92,6 +92,7 @@ const emptyBootstrap: AppBootstrap = {
 };
 
 const canUseTauriEvents = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const ADMIN_ENTRY_CLICK_THRESHOLD = 5;
 
 function formatUpdatePrompt(result: UpdateCheckResult) {
   const version = result.latest_version || "";
@@ -184,6 +185,7 @@ function App() {
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
   const [error, setError] = useState<string | null>(null);
   const checkingAppUpdateRef = useRef(false);
+  const adminEntryClickCountRef = useRef(0);
 
   const promptAndDownloadAppUpdate = useCallback(async (result: UpdateCheckResult) => {
     const shouldDownload = await ask(formatUpdatePrompt(result), {
@@ -395,6 +397,15 @@ function App() {
   }
 
   function revealAdminEntry() {
+    if (adminSession || adminUnlockOpen) {
+      adminEntryClickCountRef.current = 0;
+      return;
+    }
+    adminEntryClickCountRef.current += 1;
+    if (adminEntryClickCountRef.current < ADMIN_ENTRY_CLICK_THRESHOLD) {
+      return;
+    }
+    adminEntryClickCountRef.current = 0;
     setAdminUnlockOpen(true);
   }
 
