@@ -32,7 +32,13 @@
         "icons/icon.ico"
       ],
       "identifier": "com.skillhub.desktop",
-      "targets": "all"
+      "targets": "all",
+      "windows": {
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        }
+      }
     },
     "security": {
       "csp": null
