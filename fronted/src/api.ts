@@ -24,10 +24,48 @@ import type {
 } from "./types";
 
 const canUseTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
-const isDev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
-const useBrowserMock = isDev && !canUseTauri;
+const useBrowserMock = !canUseTauri;
 const mockMinioEndpoint = "http://192.168.1.4:9000";
 const mockMinioBucket = "skill-market";
+const mockUpdatedAt = "2026-06-12T16:18:08Z";
+
+const mockBindings: SkillBinding[] = [
+  {
+    id: "binding-live-codex-personal",
+    packageId: "pkg-live-minio-010",
+    namespace: "live",
+    skillId: "minio-live-draft",
+    skillName: "MinIO Live Draft",
+    version: "0.1.0",
+    target: "codex",
+    level: "personal",
+    installPath: "C:/Users/ctf19/.codex/skills/minio-live-draft",
+    enabled: true,
+    installMode: "copy",
+    updatePolicy: "follow_latest",
+    status: "enabled",
+    createdAt: mockUpdatedAt,
+    updatedAt: mockUpdatedAt
+  },
+  {
+    id: "binding-backend-project",
+    packageId: "pkg-backend-helper-120",
+    namespace: "internal",
+    skillId: "backend-release-helper",
+    skillName: "Backend Release Helper",
+    version: "1.2.0",
+    target: "claude",
+    level: "project",
+    projectPath: "D:/code/skill-hub",
+    installPath: "D:/code/skill-hub/.claude/skills/backend-release-helper",
+    enabled: false,
+    installMode: "copy",
+    updatePolicy: "follow_latest",
+    status: "installed",
+    createdAt: mockUpdatedAt,
+    updatedAt: mockUpdatedAt
+  }
+];
 
 const mockBootstrap: AppBootstrap = {
   sources: [
@@ -40,7 +78,7 @@ const mockBootstrap: AppBootstrap = {
     }
   ],
   categories: [
-    { id: "public", name: "Public", order: 10 },
+    { id: "public", name: "公共", order: 10 },
     { id: "p", name: "p", order: 30 },
     { id: "yy", name: "yy", order: 40 },
     { id: "backend", name: "后端", order: 50 },
@@ -58,49 +96,134 @@ const mockBootstrap: AppBootstrap = {
       targets: ["codex"],
       levels: ["personal", "project"],
       manifestPath: "skills/live/minio-live-draft/manifest.json",
-      updatedAt: "2026-06-12T16:18:08Z",
-      installedBindings: [],
-      cachedVersions: []
+      updatedAt: mockUpdatedAt,
+      installedBindings: [mockBindings[0]],
+      cachedVersions: ["0.1.0"]
+    },
+    {
+      namespace: "internal",
+      id: "backend-release-helper",
+      name: "Backend Release Helper",
+      summary: "Prepare changelog, release notes, and validation tasks for backend skills.",
+      latestVersion: "1.3.0",
+      categories: ["backend", "project:ops"],
+      tags: ["release", "validation", "ops"],
+      targets: ["claude", "codex"],
+      levels: ["project"],
+      manifestPath: "skills/internal/backend-release-helper/manifest.json",
+      updatedAt: mockUpdatedAt,
+      installedBindings: [mockBindings[1]],
+      cachedVersions: ["1.2.0"]
     }
   ],
   marketProjects: [
     {
       slug: "live-project",
       name: "Live Project",
-      description: "Created by live MinIO integration test",
-      status: "active"
+      description: "Created by live MinIO integration test"
     },
     {
       slug: "alpha",
       name: "Alpha",
-      description: "Internal alpha workspace",
-      status: "active"
+      description: "Internal alpha workspace"
     },
     {
       slug: "ops",
       name: "Ops",
-      description: "Operations workflow skills",
-      status: "active"
+      description: "Operations workflow skills"
     },
     {
       slug: "research",
       name: "Research",
-      description: "Research and analysis skills",
-      status: "active"
+      description: "Research and analysis skills"
     },
     {
       slug: "archive-demo",
       name: "Archive Demo",
-      description: "Archived project example",
-      status: "archived"
+      description: "Project example"
     }
   ],
-  bindings: [],
-  cachedPackages: [],
-  localSkills: [],
-  projects: [],
-  targetRoots: [{ target: "codex", personalPath: "C:/Users/ctf19/.codex/skills", updatedAt: "2026-06-12T16:18:08Z" }],
-  updates: []
+  bindings: mockBindings,
+  cachedPackages: [
+    {
+      sourceId: "compiled-source",
+      namespace: "live",
+      skillId: "minio-live-draft",
+      skillName: "MinIO Live Draft",
+      version: "0.1.0",
+      packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/cache/live/minio-live-draft/0.1.0/package.zip",
+      cachedAt: mockUpdatedAt,
+      bindingCount: 1
+    },
+    {
+      sourceId: "compiled-source",
+      namespace: "internal",
+      skillId: "backend-release-helper",
+      skillName: "Backend Release Helper",
+      version: "1.2.0",
+      packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/cache/internal/backend-release-helper/1.2.0/package.zip",
+      cachedAt: mockUpdatedAt,
+      bindingCount: 1
+    }
+  ],
+  localSkills: [
+    {
+      id: "local-codex-live",
+      target: "codex",
+      level: "personal",
+      path: "C:/Users/ctf19/.codex/skills/minio-live-draft",
+      detectedManifest: "MinIO Live Draft",
+      managedBySkillhub: true,
+      status: "installed",
+      scannedAt: mockUpdatedAt
+    },
+    {
+      id: "local-project-backend",
+      target: "claude",
+      level: "project",
+      projectPath: "D:/code/skill-hub",
+      path: "D:/code/skill-hub/.claude/skills/backend-release-helper",
+      detectedManifest: "Backend Release Helper",
+      managedBySkillhub: true,
+      status: "missing",
+      scannedAt: mockUpdatedAt
+    }
+  ],
+  projects: [
+    {
+      id: "project-skill-hub",
+      name: "skill-hub",
+      path: "D:/code/skill-hub",
+      createdAt: mockUpdatedAt,
+      updatedAt: mockUpdatedAt
+    },
+    {
+      id: "project-echo",
+      name: "echo",
+      path: "D:/code/echo",
+      createdAt: mockUpdatedAt,
+      updatedAt: mockUpdatedAt
+    }
+  ],
+  targetRoots: [
+    { target: "codex", personalPath: "C:/Users/ctf19/.codex/skills", updatedAt: mockUpdatedAt },
+    { target: "claude", personalPath: "C:/Users/ctf19/.claude/skills", updatedAt: mockUpdatedAt }
+  ],
+  updates: [
+    {
+      bindingId: "binding-backend-project",
+      namespace: "internal",
+      skillId: "backend-release-helper",
+      skillName: "Backend Release Helper",
+      target: "claude",
+      level: "project",
+      projectPath: "D:/code/skill-hub",
+      currentVersion: "1.2.0",
+      latestVersion: "1.3.0",
+      updatePolicy: "follow_latest",
+      blockedReason: null
+    }
+  ]
 };
 
 const mockAdminSession: AdminSession = {
@@ -142,13 +265,90 @@ const mockPreviewFileList = [
   { path: "scripts/check.py", language: "python", previewable: true }
 ];
 
+const mockAdminDrafts: AdminDraftSkill[] = [
+  {
+    gitlabSourcePath: "product/minio-live-draft",
+    draftSlug: "minio-live-draft",
+    gitlabCategoryCode: "product",
+    sourceAvailable: true,
+    version: "0.1.0",
+    author: "Skill Hub Test",
+    status: "待发布",
+    validationStatus: "passed",
+    updatedAt: mockUpdatedAt,
+    publishMeta: {
+      namespace: "live",
+      skillId: "minio-live-draft",
+      name: "MinIO Live Draft",
+      summary: "Published by live MinIO integration test.",
+      tags: ["backend", "minio", "live-test"],
+      targets: ["codex"],
+      levels: ["personal", "project"],
+      publishScope: "project",
+      publishCategorySlug: null,
+      publishProjectSlug: "live-project",
+      changelog: "Validate live MinIO draft publishing flow."
+    }
+  },
+  {
+    gitlabSourcePath: "ops/backend-release-helper",
+    draftSlug: "backend-release-helper",
+    gitlabCategoryCode: "ops",
+    sourceAvailable: false,
+    version: "1.2.0",
+    author: "Ops Team",
+    status: "已下架",
+    validationStatus: "archived",
+    publishedVersion: "1.2.0",
+    updatedAt: mockUpdatedAt,
+    publishMeta: {
+      namespace: "internal",
+      skillId: "backend-release-helper",
+      name: "Backend Release Helper",
+      summary: "Prepare backend releases with repeatable checks and package notes.",
+      tags: ["release", "validation", "ops"],
+      targets: ["claude", "codex"],
+      levels: ["project"],
+      publishScope: "project",
+      publishCategorySlug: null,
+      publishProjectSlug: "live-project",
+      changelog: "Restore archived package."
+    }
+  },
+  {
+    gitlabSourcePath: "general/prompt-audit-kit",
+    draftSlug: "prompt-audit-kit",
+    gitlabCategoryCode: "general",
+    sourceAvailable: true,
+    version: "0.3.0",
+    author: "Market Admin",
+    status: "已发布",
+    validationStatus: "passed",
+    publishedVersion: "0.3.0",
+    updatedAt: mockUpdatedAt,
+    publishMeta: {
+      namespace: "community",
+      skillId: "prompt-audit-kit",
+      name: "Prompt Audit Kit",
+      summary: "Review prompt packs before they are shared in the market.",
+      tags: ["review", "quality"],
+      targets: ["codex"],
+      levels: ["personal"],
+      publishScope: "public",
+      publishCategorySlug: "public",
+      publishProjectSlug: null,
+      changelog: "Current public version is already published."
+    }
+  }
+];
+
 const browserMockApi = {
   bootstrap: async () => mockBootstrap,
   listMarketSkills: async () => mockBootstrap.skills,
   listSources: async () => mockBootstrap.sources,
   saveSource: async (_request: SaveSourceRequest) => mockBootstrap.sources[0],
   unlockAdminMode: async (_adminKey: string) => mockAdminSession,
-  listAdminDrafts: async (_adminKey: string) => [],
+  listAdminDrafts: async (_adminKey: string) => mockAdminDrafts,
   previewAdminDraft: async (_request: AdminDraftPreviewRequest) => ({
     title: "Mock Draft",
     rootPath: "draft/gitlab/skills/mock",
@@ -195,7 +395,7 @@ const browserMockApi = {
   setBindingEnabled: async (_bindingId: string, _enabled: boolean) => browserMockApi.installSkill({} as InstallSkillRequest),
   uninstallBinding: async (_bindingId: string) => [],
   upgradeSkillBinding: async (_bindingId: string) => mockBootstrap,
-  listProjects: async () => [],
+  listProjects: async () => mockBootstrap.projects,
   saveProject: async (name: string, path: string, id?: string) => ({
     id: id ?? "mock-project",
     name,
@@ -204,7 +404,7 @@ const browserMockApi = {
     updatedAt: new Date().toISOString()
   }),
   unbindProject: async (_projectId: string) => [],
-  scanLocalSkills: async () => [],
+  scanLocalSkills: async () => mockBootstrap.localSkills,
   previewSkill: async (_request: SkillPreviewRequest) => ({
     title: "MinIO Live Draft",
     rootPath: "skills/live/minio-live-draft",
@@ -212,7 +412,7 @@ const browserMockApi = {
     files: mockPreviewFiles,
     fileList: mockPreviewFileList
   }),
-  listUpdateCandidates: async () => [],
+  listUpdateCandidates: async () => mockBootstrap.updates,
   checkForUpdates: async () =>
     ({
       current_version: "0.1.0",

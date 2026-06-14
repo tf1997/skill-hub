@@ -120,10 +120,7 @@ function normalizeCategoryList(categories: Category[]) {
   for (const category of categories) {
     const id = category.id.trim();
     if (!id || id.startsWith("project:")) continue;
-    const name =
-      id === "public"
-        ? "公共"
-        : category.name.trim() || (id === "general" ? "通用" : id);
+    const name = category.name.trim() || id;
     byId.set(id, {
       id,
       name,
@@ -132,8 +129,6 @@ function normalizeCategoryList(categories: Category[]) {
   }
 
   const normalized = [...byId.values()].sort((a, b) => {
-    const priority = categorySortPriority(a.id) - categorySortPriority(b.id);
-    if (priority !== 0) return priority;
     if (a.order !== b.order) return a.order - b.order;
     return a.id.localeCompare(b.id, "en");
   });
@@ -144,10 +139,6 @@ function normalizeCategoryList(categories: Category[]) {
     nextOrder = order + 10;
     return { ...category, order };
   });
-}
-
-function categorySortPriority(id: string) {
-  return id === "public" || id === "general" ? 0 : 1;
 }
 
 function nextCategoryOrder(categories: Category[]) {
@@ -265,8 +256,7 @@ function App() {
             : skill.categories.includes(`project:${selectedMarketProjectSlug}`)
           : publicScopeOk &&
             (selectedCategory === "all" ||
-              skill.categories.includes(selectedCategory) ||
-              (selectedCategory === "general" && skill.categories.includes("public")));
+              skill.categories.includes(selectedCategory));
       const queryOk =
         normalized.length === 0 ||
         [skill.name, skill.id, skill.namespace, skill.summary, ...skill.tags]
@@ -1026,8 +1016,12 @@ function App() {
                 key={item.key}
                 className={`nav-item ${view === item.key ? "active" : ""}`}
                 onClick={() => void openView(item.key)}
+                type="button"
+                aria-current={view === item.key ? "page" : undefined}
               >
-                <Icon size={18} />
+                <span className="nav-icon" aria-hidden="true">
+                  <Icon size={16} />
+                </span>
                 <span>{item.label}</span>
                 <b>{item.count}</b>
               </button>
@@ -1313,7 +1307,7 @@ function MarketView(props: {
                 }`}
                 onClick={() => props.onSelectCategory(category.id)}
               >
-                {category.id === "public" ? "通用" : category.name}
+                {category.name}
               </button>
             ))}
           </>
@@ -1375,8 +1369,12 @@ function MarketView(props: {
                   }`}
                   onClick={() => props.onSelectSkill(skillKey(skill))}
                 >
+                  <span className="skill-row-icon" aria-hidden="true">
+                    <Layers3 size={16} />
+                  </span>
                   <div className="skill-row-main">
                     <strong>{skill.name}</strong>
+                    <small>{skill.namespace}/{skill.id}</small>
                   </div>
                   <div className="row-meta">
                     <Badge>{skill.latestVersion}</Badge>
@@ -1580,6 +1578,12 @@ function InstalledView(props: {
     { key: "cache" as const, label: "本地缓存", count: props.cachedSkills.length },
     { key: "local" as const, label: "本地已有 skill", count: props.localSkills.length }
   ];
+  const activeCount =
+    activeTab === "bindings"
+      ? props.bindings.length
+      : activeTab === "cache"
+        ? props.cachedSkills.length
+        : props.localSkills.length;
 
   return (
     <section className="content-stack installed-view">
@@ -1588,6 +1592,7 @@ function InstalledView(props: {
           <h2>{activeTitle}</h2>
           <p>{activeDescription}</p>
         </div>
+        <Badge strong={activeCount > 0}>{activeCount} 项</Badge>
         {activeTab === "local" ? (
           <div className="toolbar-actions">
             <button className="primary-soft" onClick={props.onScan}>
@@ -1650,7 +1655,10 @@ function InstalledView(props: {
               </div>
             ))
           ) : (
-            <div className="empty-state compact">还没有通过 Skill Hub 安装或启用的 skill。</div>
+            <EmptyState
+              title="还没有生效记录"
+              body="从市场安装并启用 skill 后，这里会显示平台、范围、版本和启用状态。"
+            />
           )}
         </div>
       ) : null}
@@ -1694,7 +1702,10 @@ function InstalledView(props: {
               ))}
             </div>
           ) : (
-            <div className="empty-state compact">还没有下载到本地缓存的 skill。</div>
+            <EmptyState
+              title="本地缓存为空"
+              body="安装或仅缓存市场 skill 后，可以在这里预览、复用或删除本地包。"
+            />
           )}
         </div>
       ) : null}
@@ -1722,7 +1733,10 @@ function InstalledView(props: {
               </div>
             ))
           ) : (
-            <div className="empty-state compact">点击扫描后会显示个人级和项目级目录中包含 SKILL.md 的 skill。</div>
+            <EmptyState
+              title="等待扫描本地目录"
+              body="点击右上角扫描，Skill Hub 会列出个人级和项目级目录中包含 SKILL.md 的 skill。"
+            />
           )}
         </div>
       ) : null}
@@ -1761,14 +1775,14 @@ function ProjectsView(props: {
             选择
           </button>
         </div>
-        <button className="primary-action compact" onClick={props.onSave}>
+        <button className="primary-action compact" onClick={props.onSave} disabled={!props.path.trim()}>
           <FolderGit2 size={17} />
           绑定项目
         </button>
       </div>
 
       <div className="project-grid">
-        {props.projects.map((project) => {
+        {props.projects.length > 0 ? props.projects.map((project) => {
           const count = props.bindings.filter(
             (binding) => binding.projectPath === project.path
           ).length;
@@ -1790,7 +1804,12 @@ function ProjectsView(props: {
               </div>
             </div>
           );
-        })}
+        }) : (
+          <EmptyState
+            title="还没有项目绑定"
+            body="选择一个项目文件夹后，Skill Hub 可以把 skill 安装到项目级目录。"
+          />
+        )}
       </div>
     </section>
   );
@@ -1849,7 +1868,10 @@ function UpdatesView(props: {
             </div>
           ))
         ) : (
-          <div className="empty-state compact">当前没有可更新项。</div>
+          <EmptyState
+            title="所有 skill 都是最新"
+            body="当本地绑定落后于市场版本时，更新项会显示在这里。"
+          />
         )}
       </div>
     </section>
@@ -1880,14 +1902,30 @@ function SettingsView(props: {
                   选择
                 </button>
                 <button className="primary-soft" onClick={() => props.onSaveTargetRoot(root.target)}>
+                  <Save size={17} />
                   保存
                 </button>
               </div>
             </div>
           ))}
+          {props.targetRoots.length === 0 ? (
+            <EmptyState
+              title="没有目标平台目录"
+              body="配置 Codex 或 Claude 的个人级 skill 目录后，安装流程会显示写入位置。"
+            />
+          ) : null}
         </div>
       </div>
     </section>
+  );
+}
+
+function EmptyState(props: { title: string; body: string }) {
+  return (
+    <div className="empty-state compact">
+      <strong>{props.title}</strong>
+      <span>{props.body}</span>
+    </div>
   );
 }
 
@@ -1923,10 +1961,10 @@ function DraftList(props: {
 
   return (
     <>
-      {categories.map((category, index) => {
+      {categories.map((category) => {
         const isCollapsed = collapsedCategories.has(category);
         return (
-          <div key={category} className="draft-category-group" style={{ animationDelay: `${index * 0.05}s` }}>
+          <div key={category} className="draft-category-group">
             <button
               className={`draft-category-header ${isCollapsed ? "collapsed" : ""}`}
               onClick={() => toggleCategory(category)}
@@ -1957,7 +1995,7 @@ function DraftList(props: {
                     draft.status === "可升级" ? "upgradable" :
                     "draft"
                   }`}>
-                    {!draft.sourceAvailable && <AlertCircle size={12} style={{ marginRight: "4px" }} />}
+                    {!draft.sourceAvailable && <AlertCircle size={12} className="badge-inline-icon" />}
                     {draft.status}
                   </span>
                 </button>
@@ -2017,6 +2055,24 @@ function AdminView(props: {
   const projectOptions = isSystem ? props.projects : manageableProjects;
   const activeGovernanceTab: GovernanceTab = isSystem ? props.governanceTab : "project";
   const selectedDraftPublished = isPublishedDraft(selectedDraft);
+  const selectedDraftNeedsSource = Boolean(selectedDraft && !selectedDraft.sourceAvailable);
+  const publishTargetMissing =
+    props.meta.publishScope === "project" ? !props.meta.publishProjectSlug : !props.meta.publishCategorySlug;
+  const metaIncomplete = Boolean(
+    selectedDraft && (!props.meta.name.trim() || !props.meta.summary.trim() || publishTargetMissing)
+  );
+  const canPublishSelectedDraft = Boolean(
+    selectedDraft && selectedDraft.sourceAvailable && !selectedDraftPublished && !metaIncomplete
+  );
+  const publishTitle = !selectedDraft
+    ? "请选择草稿"
+    : selectedDraftNeedsSource
+      ? "需要 GitLab 源文件才能发布"
+      : selectedDraftPublished
+        ? "当前版本已发布"
+        : metaIncomplete
+          ? "请补齐名称、摘要和发布目标"
+          : "发布到市场";
 
   return (
     <section className="admin-console">
@@ -2069,7 +2125,7 @@ function AdminView(props: {
                 <div className="section-toolbar">
                   <div>
                     <h2>项目治理</h2>
-                    <p>{isSystem ? "维护市场项目和通用分类" : "仅维护 MAC 白名单授权项目"}</p>
+                    <p>{isSystem ? "维护市场项目和公共分类" : "仅维护 MAC 白名单授权项目"}</p>
                   </div>
                   <div className="segmented governance-tabs" aria-label="治理类型">
                     <button
@@ -2083,7 +2139,7 @@ function AdminView(props: {
                         className={activeGovernanceTab === "general" ? "active" : ""}
                         onClick={() => props.onGovernanceTab("general")}
                       >
-                        通用
+                        公共
                       </button>
                     ) : null}
                   </div>
@@ -2113,7 +2169,7 @@ function AdminView(props: {
                           <div>
                             <strong>{project.name}</strong>
                             <span>
-                              {project.slug} · {project.status || "active"} · {project.description || "无描述"}
+                              {project.slug} · {project.description || "无描述"}
                             </span>
                           </div>
                           <div className="row-actions">
@@ -2148,7 +2204,7 @@ function AdminView(props: {
                   <div className="governance-board">
                     <div className="governance-board-head">
                       <div>
-                        <h3>通用分类</h3>
+                        <h3>公共分类</h3>
                         <span>{props.categories.length} 个公共分类</span>
                       </div>
                       <button
@@ -2159,7 +2215,7 @@ function AdminView(props: {
                         }}
                       >
                         <Plus size={17} />
-                        新增通用
+                        新增分类
                       </button>
                     </div>
                     <div className="governance-list">
@@ -2179,15 +2235,14 @@ function AdminView(props: {
                                   props.onCategoryDraft({ ...category });
                                   props.onGovernanceDialog({ kind: "category-edit", category });
                                 }}
-                                title="编辑通用分类"
+                                title="编辑公共分类"
                               >
                                 <Pencil size={16} />
                               </button>
                               <button
                                 className="icon-button danger"
                                 onClick={() => props.onGovernanceDialog({ kind: "category-delete", category })}
-                                title="删除通用分类"
-                                disabled={category.id === "general" || category.id === "public"}
+                                title="删除公共分类"
                               >
                                 <Trash2 size={16} />
                               </button>
@@ -2288,9 +2343,10 @@ function AdminView(props: {
                           <label className="text-field">
                             <span>公共分类</span>
                             <select
-                              value={props.meta.publishCategorySlug ?? "general"}
+                              value={props.meta.publishCategorySlug ?? ""}
                               onChange={(event) => updateMeta("publishCategorySlug", event.target.value)}
                             >
+                              <option value="">选择公共分类</option>
                               {props.categories.map((category) => (
                                 <option key={category.id} value={category.id}>
                                   {category.name}
@@ -2316,12 +2372,21 @@ function AdminView(props: {
                               2. 点击草稿区的"刷新"按钮，更新草稿列表<br/>
                               3. 源文件关联后即可预览和编辑
                             </p>
-                            <p style={{marginTop: "8px", fontSize: "12px", color: "var(--muted)"}}>
+                            <p className="conflict-note-hint">
                               提示：如果只是误下架需要快速恢复，可以直接点击"快速重新上架"按钮，无需等待 GitLab 同步。市场中的 skill 包文件仍然存在，该操作只会更新目录关联。
                             </p>
                           </div>
                         </div>
-                      ) : null}
+                      ) : (
+                        <div className={`publish-readiness ${metaIncomplete ? "warning" : "ready"}`}>
+                          {metaIncomplete ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}
+                          <span>
+                            {metaIncomplete
+                              ? "请补齐名称、摘要和发布目标后再发布。"
+                              : "发布元数据已具备基础信息，可以预览或发布。"}
+                          </span>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <div className="publish-empty-state">
@@ -2363,8 +2428,8 @@ function AdminView(props: {
                     <button
                       className="primary-action compact"
                       onClick={props.onPublish}
-                      disabled={!selectedDraft || !selectedDraft.sourceAvailable}
-                      title={!selectedDraft ? "请选择草稿" : !selectedDraft.sourceAvailable ? "需要 GitLab 源文件才能发布" : "发布到市场"}
+                      disabled={!canPublishSelectedDraft}
+                      title={publishTitle}
                     >
                       <Rocket size={17} />
                       {selectedDraft && !selectedDraft.sourceAvailable ? "重新上架（需要源文件）" : "发布到市场"}
@@ -2512,8 +2577,8 @@ function GovernanceDialogView(props: {
         <section className="admin-unlock-dialog governance-dialog" role="dialog" aria-modal="true">
           <div className="preview-head">
             <div>
-              <p>General</p>
-              <h2>删除通用分类</h2>
+              <p>Public</p>
+              <h2>删除公共分类</h2>
               <span>{category.id}</span>
             </div>
             <button className="icon-button" onClick={props.onClose} title="关闭">
@@ -2551,20 +2616,20 @@ function GovernanceDialogView(props: {
       <section className="admin-unlock-dialog governance-dialog" role="dialog" aria-modal="true">
         <div className="preview-head">
           <div>
-            <p>{projectForm ? "Project" : "General"}</p>
+            <p>{projectForm ? "Project" : "Public"}</p>
             <h2>
               {projectForm
                 ? editingProject
                   ? "编辑项目"
                   : "新增项目"
                 : editingCategory
-                  ? "编辑通用分类"
-                  : "新增通用分类"}
+                  ? "编辑公共分类"
+                  : "新增公共分类"}
             </h2>
             <span>
               {projectForm
                 ? editingProject
-                  ? "更新项目名称、描述和状态"
+                  ? "更新项目名称和描述"
                   : "创建市场项目入口"
                 : editingCategory
                   ? "更新公共市场分类"
@@ -2610,16 +2675,6 @@ function GovernanceDialogView(props: {
                   placeholder="项目市场说明"
                 />
               </label>
-              <label className="text-field">
-                <span>状态</span>
-                <select
-                  value={props.projectDraft.status || "active"}
-                  onChange={(event) => updateProject("status", event.target.value)}
-                >
-                  <option value="active">active</option>
-                  <option value="archived">archived</option>
-                </select>
-              </label>
               <button className="primary-action compact" onClick={props.onSaveProject} disabled={props.busy}>
                 <Save size={17} />
                 {editingProject ? "保存修改" : "保存项目"}
@@ -2633,7 +2688,7 @@ function GovernanceDialogView(props: {
                   autoFocus
                   value={props.categoryDraft.id}
                   onChange={(event) => updateCategory("id", event.target.value)}
-                  placeholder="general"
+                  placeholder="frontend"
                   readOnly={editingCategory}
                 />
               </label>
@@ -2642,7 +2697,7 @@ function GovernanceDialogView(props: {
                 <input
                   value={props.categoryDraft.name}
                   onChange={(event) => updateCategory("name", event.target.value)}
-                  placeholder="通用"
+                  placeholder="公共分类"
                 />
               </label>
               <label className="text-field">
@@ -2913,8 +2968,8 @@ function PreviewPanel(props: { preview: SkillPreview; onSelectFile: (filePath: s
 function StatusPill(props: { busy: boolean; text: string }) {
   return (
     <div className={`status-pill ${props.busy ? "busy" : ""}`}>
-      <span />
-      {props.text}
+      <span className="status-dot" aria-hidden="true" />
+      <span className="status-text">{props.text}</span>
     </div>
   );
 }
@@ -3048,7 +3103,7 @@ function emptyPublishMeta(): PublishMeta {
     targets: [],
     levels: ["personal", "project"],
     publishScope: "public",
-    publishCategorySlug: "general",
+    publishCategorySlug: null,
     publishProjectSlug: null,
     changelog: ""
   };
@@ -3058,8 +3113,7 @@ function emptyMarketProject(): MarketProject {
   return {
     slug: "",
     name: "",
-    description: "",
-    status: "active"
+    description: ""
   };
 }
 
@@ -3084,7 +3138,7 @@ function defaultMetaFromDraft(draft: AdminDraftSkill): PublishMeta {
 function normalizeMetaForSave(meta: PublishMeta): PublishMeta {
   return {
     ...meta,
-    publishCategorySlug: meta.publishScope === "project" ? null : meta.publishCategorySlug || "general",
+    publishCategorySlug: meta.publishScope === "project" ? null : meta.publishCategorySlug || null,
     publishProjectSlug: meta.publishScope === "project" ? meta.publishProjectSlug : null
   };
 }

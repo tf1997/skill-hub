@@ -131,18 +131,12 @@ pub struct MarketProject {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "active_status")]
-    pub status: String,
     #[serde(default, alias = "created_at")]
     pub created_at: Option<String>,
     #[serde(default, alias = "updated_at")]
     pub updated_at: Option<String>,
     #[serde(default, alias = "updated_by")]
     pub updated_by: Option<String>,
-}
-
-fn active_status() -> String {
-    "active".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -565,6 +559,34 @@ mod tests {
             manifest.versions[0].package_path,
             "skills/validation/metadata-probe/versions/1.0.0/package.zip"
         );
+    }
+
+    #[test]
+    fn project_status_is_ignored_when_rewriting_projects_doc() {
+        let doc: ProjectsDoc = serde_json::from_str(
+            r#"{
+              "schema": "skillhub.projects.v1",
+              "projects": [{
+                "slug": "archive-demo",
+                "name": "Archive Demo",
+                "description": "Legacy archived project",
+                "status": "archived"
+              }]
+            }"#,
+        )
+        .expect("legacy project status should not break parsing");
+
+        let projects = doc.into_projects();
+        assert_eq!(projects[0].slug, "archive-demo");
+
+        let rewritten = serde_json::to_value(ProjectsDoc {
+            schema: "skillhub.projects.v1".to_string(),
+            generated_at: None,
+            projects,
+            items: Vec::new(),
+        })
+        .expect("projects doc should serialize");
+        assert!(rewritten["projects"][0].get("status").is_none());
     }
 
     #[test]

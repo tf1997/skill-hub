@@ -473,7 +473,7 @@ async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<
             } else {
                 format!(
                     "public / {}",
-                    value.publish_category_slug.as_deref().unwrap_or("general")
+                    value.publish_category_slug.as_deref().unwrap_or("unselected")
                 )
             }
         })
@@ -540,12 +540,8 @@ async fn save_market_project_remote_inner(
     project.slug = project.slug.trim().to_string();
     project.name = project.name.trim().to_string();
     project.description = project.description.trim().to_string();
-    project.status = project.status.trim().to_string();
     if project.name.is_empty() {
         project.name = project.slug.clone();
-    }
-    if project.status.trim().is_empty() {
-        project.status = "active".to_string();
     }
     let timestamp = now();
     if project.created_at.is_none() {
@@ -661,10 +657,6 @@ async fn delete_market_category_remote_inner(
     ensure_system_admin(&authorization)?;
     let category_id = request.category_id.trim().to_string();
     validate_object_segment("category slug", &category_id)?;
-    if category_id == "general" || category_id == "public" {
-        return Err(anyhow!("内置通用分类不能删除"));
-    }
-
     let client = AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
     if catalog
@@ -1008,7 +1000,7 @@ async fn quick_republish_archived_skill_inner(request: QuickRepublishRequest) ->
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!(
-                "无法确定 skill 版本信息。该 skill 的下架记录不完整，缺少版本号。\n\n\
+                    "无法确定 skill 版本信息。该 skill 的下架记录不完整，缺少版本号。\n\n\
                 可能的原因：\n\
                 1. 该 skill 从未成功发布过，只是创建了草稿\n\
                 2. 下架时版本信息未被保存\n\
@@ -2139,9 +2131,7 @@ fn normalize_categories_doc(mut doc: CategoriesDoc) -> CategoriesDoc {
             continue;
         }
         category.name = category.name.trim().to_string();
-        if category.id == "public" {
-            category.name = "公共".to_string();
-        } else if category.name.is_empty() {
+        if category.name.is_empty() {
             category.name = category_name_from_slug(&category.id);
         }
         by_id.insert(category.id.clone(), category);
@@ -2149,9 +2139,8 @@ fn normalize_categories_doc(mut doc: CategoriesDoc) -> CategoriesDoc {
 
     let mut items = by_id.into_values().collect::<Vec<_>>();
     items.sort_by(|a, b| {
-        category_sort_priority(&a.id)
-            .cmp(&category_sort_priority(&b.id))
-            .then_with(|| a.order.cmp(&b.order))
+        a.order
+            .cmp(&b.order)
             .then_with(|| a.id.cmp(&b.id))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -2164,30 +2153,13 @@ fn normalize_categories_doc(mut doc: CategoriesDoc) -> CategoriesDoc {
         next_order = item.order + 10;
     }
 
-    items.sort_by(|a, b| {
-        category_sort_priority(&a.id)
-            .cmp(&category_sort_priority(&b.id))
-            .then_with(|| a.order.cmp(&b.order))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    items.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
 
     doc.items = items;
     doc
 }
 
-fn category_sort_priority(id: &str) -> i32 {
-    if id == "public" || id == "general" {
-        0
-    } else {
-        1
-    }
-}
-
 fn category_name_from_slug(slug: &str) -> String {
-    if slug == "general" || slug == "public" {
-        return "通用".to_string();
-    }
-
     slug.split(['-', '_'])
         .filter(|part| !part.is_empty())
         .map(|part| {
@@ -2223,7 +2195,7 @@ fn default_publish_meta_from_draft(
         targets: Vec::new(),
         levels: vec!["personal".to_string(), "project".to_string()],
         publish_scope: "public".to_string(),
-        publish_category_slug: Some("general".to_string()),
+        publish_category_slug: None,
         publish_project_slug: None,
         changelog: String::new(),
         updated_at: None,
@@ -2479,10 +2451,7 @@ async fn validate_publish_target(client: &AdminObjectClient, meta: &PublishMeta)
     if meta.publish_scope == "project" {
         let project_slug = meta.publish_project_slug.as_deref().unwrap_or("");
         let projects = load_remote_projects(client).await?;
-        if projects
-            .iter()
-            .any(|project| project.slug == project_slug && project.status != "archived")
-        {
+        if projects.iter().any(|project| project.slug == project_slug) {
             Ok(())
         } else {
             Err(anyhow!("发布项目不存在: {project_slug}"))
@@ -2622,7 +2591,7 @@ fn publish_categories(meta: &PublishMeta) -> Vec<String> {
         vec![meta
             .publish_category_slug
             .clone()
-            .unwrap_or_else(|| "general".to_string())]
+            .unwrap_or_default()]
     }
 }
 
@@ -2662,31 +2631,26 @@ async fn load_remote_categories(client: &AdminObjectClient) -> Result<Categories
         .unwrap_or_else(|| CategoriesDoc {
             schema: "skillhub.categories.v1".to_string(),
             generated_at: Some(now()),
-            items: vec![Category {
-                id: "general".to_string(),
-                name: "通用".to_string(),
-                order: 10,
-            }],
+            items: Vec::new(),
         });
     Ok(normalize_categories_doc(doc))
 }
 
 fn ensure_publish_category(mut doc: CategoriesDoc, meta: &PublishMeta) -> CategoriesDoc {
     if meta.publish_scope != "project" {
-        let slug = meta
+        if let Some(slug) = meta
             .publish_category_slug
-            .clone()
-            .unwrap_or_else(|| "general".to_string());
-        if !doc.items.iter().any(|item| item.id == slug) {
-            doc.items.push(Category {
-                id: slug.clone(),
-                name: if slug == "general" {
-                    "通用".to_string()
-                } else {
-                    slug
-                },
-                order: 10 + doc.items.len() as i64 * 10,
-            });
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !doc.items.iter().any(|item| item.id == slug) {
+                doc.items.push(Category {
+                    id: slug.to_string(),
+                    name: category_name_from_slug(slug),
+                    order: 10 + doc.items.len() as i64 * 10,
+                });
+            }
         }
     }
     doc.generated_at = Some(now());
@@ -4406,7 +4370,7 @@ author: "Skill Hub"
     }
 
     #[test]
-    fn normalize_categories_cleans_builtin_names_and_duplicate_order() {
+    fn normalize_categories_cleans_names_and_duplicate_order() {
         let doc = normalize_categories_doc(CategoriesDoc {
             schema: "skillhub.categories.v1".to_string(),
             generated_at: None,
@@ -4435,10 +4399,13 @@ author: "Skill Hub"
         });
 
         assert_eq!(
-            doc.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
-            vec!["public", "backend", "yy"]
+            doc.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["backend", "public", "yy"]
         );
-        assert_eq!(doc.items[0].name, "公共");
+        assert_eq!(doc.items[1].name, "Public");
         assert_eq!(
             doc.items.iter().map(|item| item.order).collect::<Vec<_>>(),
             vec![10, 20, 30]
@@ -4561,103 +4528,102 @@ Content here.
     #[ignore = "requires live MinIO at the compiled endpoint and an allowlisted local MAC"]
     fn live_minio_admin_publish_flow() {
         tauri::async_runtime::block_on(async {
-        let admin_key = admin_config::ADMIN_KEY.to_string();
-        unlock_admin_mode_inner(AdminUnlockRequest {
-            admin_key: admin_key.clone(),
-        })
-        .await
-        .expect("admin mode should unlock against live MinIO");
+            let admin_key = admin_config::ADMIN_KEY.to_string();
+            unlock_admin_mode_inner(AdminUnlockRequest {
+                admin_key: admin_key.clone(),
+            })
+            .await
+            .expect("admin mode should unlock against live MinIO");
 
-        let project = MarketProject {
-            slug: "live-project".to_string(),
-            name: "Live Project".to_string(),
-            description: "Created by live MinIO integration test".to_string(),
-            status: "active".to_string(),
-            created_at: None,
-            updated_at: None,
-            updated_by: None,
-        };
-        let client = AdminObjectClient::new();
-        let mut projects = load_remote_projects(&client).await.expect("load projects");
-        projects.retain(|item| item.slug != project.slug);
-        projects.push(project);
+            let project = MarketProject {
+                slug: "live-project".to_string(),
+                name: "Live Project".to_string(),
+                description: "Created by live MinIO integration test".to_string(),
+                created_at: None,
+                updated_at: None,
+                updated_by: None,
+            };
+            let client = AdminObjectClient::new();
+            let mut projects = load_remote_projects(&client).await.expect("load projects");
+            projects.retain(|item| item.slug != project.slug);
+            projects.push(project);
         save_remote_projects(&client, &projects).await.expect("save projects");
 
-        let source_path = "product/minio-live-draft".to_string();
-        let drafts = list_admin_drafts_inner(&admin_key)
-            .await
-            .expect("drafts should list");
-        assert!(
-            drafts
-                .iter()
+            let source_path = "product/minio-live-draft".to_string();
+            let drafts = list_admin_drafts_inner(&admin_key)
+                .await
+                .expect("drafts should list");
+            assert!(
+                drafts
+                    .iter()
                 .any(|draft| draft.gitlab_source_path == source_path && draft.version.as_deref() == Some("0.1.0")),
-            "live draft should be visible"
-        );
+                "live draft should be visible"
+            );
 
-        let meta = PublishMeta {
-            namespace: "live".to_string(),
-            skill_id: "minio-live-draft".to_string(),
-            name: "MinIO Live Draft".to_string(),
-            summary: "Published by live MinIO integration test.".to_string(),
-            tags: vec!["minio".to_string(), "live-test".to_string()],
-            targets: vec!["codex".to_string()],
-            levels: vec!["personal".to_string(), "project".to_string()],
-            publish_scope: "project".to_string(),
-            publish_category_slug: None,
-            publish_project_slug: Some("live-project".to_string()),
-            changelog: "Initial live MinIO publish.".to_string(),
-            updated_at: None,
-            updated_by: None,
-        };
+            let meta = PublishMeta {
+                namespace: "live".to_string(),
+                skill_id: "minio-live-draft".to_string(),
+                name: "MinIO Live Draft".to_string(),
+                summary: "Published by live MinIO integration test.".to_string(),
+                tags: vec!["minio".to_string(), "live-test".to_string()],
+                targets: vec!["codex".to_string()],
+                levels: vec!["personal".to_string(), "project".to_string()],
+                publish_scope: "project".to_string(),
+                publish_category_slug: None,
+                publish_project_slug: Some("live-project".to_string()),
+                changelog: "Initial live MinIO publish.".to_string(),
+                updated_at: None,
+                updated_by: None,
+            };
 
-        save_publish_meta_inner(SavePublishMetaRequest {
-            admin_key: admin_key.clone(),
-            gitlab_source_path: source_path.clone(),
-            meta,
-        })
-        .await
-        .expect("save publish metadata");
-
-        let preview = preview_admin_draft_inner(AdminDraftPreviewRequest {
-            admin_key: admin_key.clone(),
-            gitlab_source_path: source_path.clone(),
-            file_path: None,
-        })
-        .await
-        .expect("preview draft");
-        assert_eq!(preview.title, "MinIO Live Draft");
-        assert!(preview.files.iter().any(|file| file.path == "SKILL.md"));
-        assert!(preview.file_list.iter().any(|file| file.path == "SKILL.md"));
-
-        let state_path = "draft/admin/gitlab/skills/product/minio-live-draft/state.v1.json";
-        let already_published = client
-            .get_optional_json::<serde_json::Value>(state_path)
+            save_publish_meta_inner(SavePublishMetaRequest {
+                admin_key: admin_key.clone(),
+                gitlab_source_path: source_path.clone(),
+                meta,
+            })
             .await
-            .expect("read existing state")
-            .is_some_and(|state| state["publishedVersion"] == "0.1.0");
+            .expect("save publish metadata");
 
-        if already_published {
-            return;
-        }
-
-        publish_draft_inner(PublishDraftRequest {
-            admin_key,
-            gitlab_source_path: source_path,
-        })
-        .await
-        .expect("publish draft");
-
-        let catalog = load_remote_catalog(&client).await.expect("load catalog");
-        assert!(catalog
-            .skills
-            .iter()
-            .any(|skill| skill.namespace == "live" && skill.id == "minio-live-draft"));
-        let state = client
-            .get_optional_json::<serde_json::Value>(state_path)
+            let preview = preview_admin_draft_inner(AdminDraftPreviewRequest {
+                admin_key: admin_key.clone(),
+                gitlab_source_path: source_path.clone(),
+                file_path: None,
+            })
             .await
-            .expect("read state")
-            .expect("state exists");
-        assert_eq!(state["publishedVersion"], "0.1.0");
+            .expect("preview draft");
+            assert_eq!(preview.title, "MinIO Live Draft");
+            assert!(preview.files.iter().any(|file| file.path == "SKILL.md"));
+            assert!(preview.file_list.iter().any(|file| file.path == "SKILL.md"));
+
+            let state_path = "draft/admin/gitlab/skills/product/minio-live-draft/state.v1.json";
+            let already_published = client
+                .get_optional_json::<serde_json::Value>(state_path)
+                .await
+                .expect("read existing state")
+                .is_some_and(|state| state["publishedVersion"] == "0.1.0");
+
+            if already_published {
+                return;
+            }
+
+            publish_draft_inner(PublishDraftRequest {
+                admin_key,
+                gitlab_source_path: source_path,
+            })
+            .await
+            .expect("publish draft");
+
+            let catalog = load_remote_catalog(&client).await.expect("load catalog");
+            assert!(catalog
+                .skills
+                .iter()
+                .any(|skill| skill.namespace == "live" && skill.id == "minio-live-draft"));
+            let state = client
+                .get_optional_json::<serde_json::Value>(state_path)
+                .await
+                .expect("read state")
+                .expect("state exists");
+            assert_eq!(state["publishedVersion"], "0.1.0");
         });
     }
 
@@ -4677,7 +4643,6 @@ Content here.
                 slug: "live-project".to_string(),
                 name: "Live Project".to_string(),
                 description: "Created by live MinIO integration test".to_string(),
-                status: "active".to_string(),
                 created_at: None,
                 updated_at: None,
                 updated_by: None,

@@ -41,7 +41,6 @@ export type MarketProject = {
   slug: string;
   name: string;
   description: string;
-  status: string;
   createdAt?: string | null;
   updatedAt?: string | null;
   updatedBy?: string | null;
