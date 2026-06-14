@@ -25,6 +25,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  ScrollText,
   Sun,
   Trash2,
   X
@@ -35,6 +36,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api } from "./api";
 import type {
   AdminDraftPreviewRequest,
+  AdminAuditLog,
   AdminDraftSkill,
   AdminSession,
   AppBootstrap,
@@ -57,7 +59,7 @@ import type {
 type ViewKey = "market" | "installed" | "projects" | "updates" | "settings" | "admin";
 type LevelChoice = "personal" | "project" | "download";
 type MarketMode = "public" | "project";
-type AdminTab = "projects" | "drafts" | "archive";
+type AdminTab = "projects" | "drafts" | "archive" | "audit";
 type GovernanceTab = "project" | "general";
 type GovernanceDialog =
   | { kind: "project-create" }
@@ -168,6 +170,7 @@ function App() {
   const [adminKey, setAdminKey] = useState("");
   const [adminSession, setAdminSession] = useState<AdminSession | null>(null);
   const [adminDrafts, setAdminDrafts] = useState<AdminDraftSkill[]>([]);
+  const [adminAuditLogs, setAdminAuditLogs] = useState<AdminAuditLog[]>([]);
   const [adminTab, setAdminTab] = useState<AdminTab>("projects");
   const [governanceTab, setGovernanceTab] = useState<GovernanceTab>("project");
   const [governanceDialog, setGovernanceDialog] = useState<GovernanceDialog | null>(null);
@@ -319,13 +322,14 @@ function App() {
 
   const isSystemAdmin = adminSession?.role === "system";
 
-  const canManageProject = (slug: string) =>
-    Boolean(
-      adminSession &&
-        (adminSession.role === "system" ||
-          adminSession.projects.includes("*") ||
-          adminSession.projects.some((project) => project.toLowerCase() === slug.toLowerCase()))
-    );
+  useEffect(() => {
+    if (adminSession && !isSystemAdmin && adminTab === "audit") {
+      setAdminTab("projects");
+    }
+  }, [adminSession, adminTab, isSystemAdmin]);
+
+  const canManageProject = (_slug: string) =>
+    Boolean(adminSession && (adminSession.role === "system" || adminSession.role === "project"));
 
   const canManageSkill = (skill: MarketSkill) =>
     Boolean(
@@ -669,6 +673,14 @@ function App() {
       setView("admin");
       setNotice("管理员模式已解锁");
       await refreshAdminDrafts();
+      if (session.role === "system") {
+        await refreshAdminAuditLogs(false);
+      } else {
+        setAdminAuditLogs([]);
+        if (adminTab === "audit") {
+          setAdminTab("projects");
+        }
+      }
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -697,6 +709,34 @@ function App() {
     }
   }
 
+  async function refreshAdminAuditLogs(showBusy = true) {
+    if (adminSession && adminSession.role !== "system") {
+      setAdminAuditLogs([]);
+      return;
+    }
+    if (!adminKey.trim()) {
+      setError("请先输入管理员密钥");
+      return;
+    }
+    if (showBusy) {
+      setBusy(true);
+    }
+    setError(null);
+    try {
+      const logs = await api.listAdminAuditLogs(adminKey, 100);
+      setAdminAuditLogs(logs);
+      if (showBusy) {
+        setNotice("审计记录已刷新");
+      }
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      if (showBusy) {
+        setBusy(false);
+      }
+    }
+  }
+
   function selectDraft(draft: AdminDraftSkill) {
     setSelectedDraftPath(draft.gitlabSourcePath);
     const nextMeta = draft.publishMeta ?? defaultMetaFromDraft(draft);
@@ -705,7 +745,7 @@ function App() {
         ...nextMeta,
         publishScope: "project",
         publishCategorySlug: null,
-        publishProjectSlug: adminSession.projects.find((project) => project !== "*") ?? null
+        publishProjectSlug: data.marketProjects[0]?.slug ?? null
       });
       return;
     }
@@ -723,6 +763,7 @@ function App() {
       const saved = await api.savePublishMeta(adminKey, selectedDraftPath, normalizeMetaForSave(draftMeta));
       setDraftMeta(saved);
       await refreshAdminDrafts();
+      await refreshAdminAuditLogs(false);
       setNotice("发布元数据已保存");
     } catch (err) {
       setError(readError(err));
@@ -833,6 +874,7 @@ function App() {
       const next = await api.publishDraft(adminKey, selectedDraftPath);
       setData(next);
       await refreshAdminDrafts();
+      await refreshAdminAuditLogs(false);
       setNotice("草稿已发布到市场");
     } catch (err) {
       setError(readError(err));
@@ -890,6 +932,7 @@ function App() {
       const next = await api.quickRepublishArchivedSkill(adminKey, selectedDraftPath);
       setData(next);
       await refreshAdminDrafts();
+      await refreshAdminAuditLogs(false);
       setNotice("已快速重新上架到市场");
     } catch (err) {
       setError(readError(err));
@@ -907,6 +950,7 @@ function App() {
       setData((current) => ({ ...current, marketProjects: projects }));
       setRemoteProjectDraft(emptyMarketProject());
       setGovernanceDialog(null);
+      await refreshAdminAuditLogs(false);
       setNotice("市场项目已保存");
     } catch (err) {
       setGovernanceDialogError(readError(err));
@@ -926,6 +970,7 @@ function App() {
         setSelectedMarketProjectSlug("");
       }
       setGovernanceDialog(null);
+      await refreshAdminAuditLogs(false);
       setNotice(`${project.name} 已从远程市场项目中删除`);
     } catch (err) {
       setGovernanceDialogError(readError(err));
@@ -943,6 +988,7 @@ function App() {
       setData((current) => ({ ...current, categories: normalizeCategoryList(categories) }));
       setMarketCategoryDraft(emptyMarketCategory());
       setGovernanceDialog(null);
+      await refreshAdminAuditLogs(false);
       setNotice("公共分类已保存");
     } catch (err) {
       setGovernanceDialogError(readError(err));
@@ -959,6 +1005,7 @@ function App() {
       const next = await api.deleteMarketCategoryRemote(adminKey, category.id);
       setData(next);
       setGovernanceDialog(null);
+      await refreshAdminAuditLogs(false);
       setNotice(`${category.name} 已删除`);
     } catch (err) {
       setGovernanceDialogError(readError(err));
@@ -975,6 +1022,7 @@ function App() {
       setData(next);
       setArchiveReason("");
       await refreshAdminDrafts();
+      await refreshAdminAuditLogs(false);
       setNotice(`${skill.name} 已下架并回到草稿区`);
     } catch (err) {
       setError(readError(err));
@@ -1138,6 +1186,8 @@ function App() {
               setGovernanceDialog(dialog);
             }}
             drafts={adminDrafts}
+            auditLogs={adminAuditLogs}
+            onRefreshAuditLogs={() => void refreshAdminAuditLogs()}
             selectedDraftPath={selectedDraftPath}
             onRefreshDrafts={() => void refreshAdminDrafts()}
             onSelectDraft={selectDraft}
@@ -2019,6 +2069,8 @@ function AdminView(props: {
   busy: boolean;
   onGovernanceDialog: (value: GovernanceDialog | null) => void;
   drafts: AdminDraftSkill[];
+  auditLogs: AdminAuditLog[];
+  onRefreshAuditLogs: () => void;
   selectedDraftPath: string | null;
   onRefreshDrafts: () => void;
   onSelectDraft: (draft: AdminDraftSkill) => void;
@@ -2047,12 +2099,11 @@ function AdminView(props: {
 }) {
   const selectedDraft = props.drafts.find((draft) => draft.gitlabSourcePath === props.selectedDraftPath);
   const isSystem = props.session?.role === "system";
-  const authorizedProjects = props.session?.projects ?? [];
   const manageableProjects = props.projects.filter((project) => props.canManageProject(project.slug));
   const manageableSkills = props.skills.filter((skill) => props.canManageSkill(skill));
   const updateMeta = <K extends keyof PublishMeta>(key: K, value: PublishMeta[K]) =>
     props.onMeta({ ...props.meta, [key]: value });
-  const projectOptions = isSystem ? props.projects : manageableProjects;
+  const projectOptions = manageableProjects;
   const activeGovernanceTab: GovernanceTab = isSystem ? props.governanceTab : "project";
   const selectedDraftPublished = isPublishedDraft(selectedDraft);
   const selectedDraftNeedsSource = Boolean(selectedDraft && !selectedDraft.sourceAvailable);
@@ -2064,6 +2115,16 @@ function AdminView(props: {
   const canPublishSelectedDraft = Boolean(
     selectedDraft && selectedDraft.sourceAvailable && !selectedDraftPublished && !metaIncomplete
   );
+  const sessionName = props.session?.name?.trim();
+  const sessionRoleLabel = props.session?.role === "system" ? "system" : "project";
+  const sessionShortMac = props.session?.macAddress?.slice(-8);
+  const sessionTitle = [
+    sessionName,
+    `role: ${props.session?.role ?? "unknown"}`,
+    props.session?.macAddress ? `mac: ${props.session.macAddress}` : null
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const publishTitle = !selectedDraft
     ? "请选择草稿"
     : selectedDraftNeedsSource
@@ -2086,9 +2147,11 @@ function AdminView(props: {
             <span className="session-dot"></span>
             MinIO Live Draft 已下架草稿已同步
           </span>
-          <button className="session-info-btn" title="查看会话详情">
-            <span className="session-role-badge">{props.session?.role === "system" ? "system" : "admin"}</span>
-            <span className="session-id">{props.session?.macAddress?.slice(-8) || props.session?.name}</span>
+          <button className="session-info-btn" title={sessionTitle || "查看会话详情"}>
+            <span className={`session-role-badge ${sessionName ? "named" : ""}`}>
+              {sessionName || sessionRoleLabel}
+            </span>
+            {!sessionName && sessionShortMac ? <span className="session-id">{sessionShortMac}</span> : null}
           </button>
         </div>
       </div>
@@ -2116,6 +2179,15 @@ function AdminView(props: {
             <Archive size={17} />
             市场下架
           </button>
+          {isSystem ? (
+            <button
+              className={props.activeTab === "audit" ? "active" : ""}
+              onClick={() => props.onActiveTab("audit")}
+            >
+              <ScrollText size={17} />
+              审计记录
+            </button>
+          ) : null}
         </aside>
 
         <div className="admin-workspace">
@@ -2125,7 +2197,7 @@ function AdminView(props: {
                 <div className="section-toolbar">
                   <div>
                     <h2>项目治理</h2>
-                    <p>{isSystem ? "维护市场项目和公共分类" : "仅维护 MAC 白名单授权项目"}</p>
+                    <p>{isSystem ? "维护市场项目和公共分类" : "维护所有市场项目"}</p>
                   </div>
                   <div className="segmented governance-tabs" aria-label="治理类型">
                     <button
@@ -2194,7 +2266,7 @@ function AdminView(props: {
                         </article>
                       ))}
                       {manageableProjects.length === 0 ? (
-                        <div className="empty-state compact">当前角色没有可管理的项目。</div>
+                        <div className="empty-state compact">暂无市场项目。</div>
                       ) : null}
                     </div>
                   </div>
@@ -2446,7 +2518,7 @@ function AdminView(props: {
                 <div className="section-toolbar">
                   <div>
                     <h2>市场下架</h2>
-                    <p>{isSystem ? "可下架公共和项目 skill" : "只能下架授权项目 skill"}</p>
+                    <p>{isSystem ? "可下架公共和项目 skill" : "可下架所有项目 skill"}</p>
                   </div>
                 </div>
                 <label className="text-field">
@@ -2485,6 +2557,23 @@ function AdminView(props: {
               </section>
             </div>
           ) : null}
+
+          {isSystem && props.activeTab === "audit" ? (
+            <div className="admin-panels audit">
+              <section className="admin-panel audit-panel">
+                <div className="section-toolbar">
+                  <div>
+                    <h2>审计记录</h2>
+                    <p>最近 100 条管理员写操作，按创建时间倒序显示。</p>
+                  </div>
+                  <button className="icon-button" onClick={props.onRefreshAuditLogs} title="刷新审计记录">
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+                <AuditLogList logs={props.auditLogs} />
+              </section>
+            </div>
+          ) : null}
         </div>
       </div>
       {props.governanceDialog ? (
@@ -2505,6 +2594,76 @@ function AdminView(props: {
       ) : null}
     </section>
   );
+}
+
+function AuditLogList(props: { logs: AdminAuditLog[] }) {
+  if (props.logs.length === 0) {
+    return (
+      <div className="empty-state compact audit-empty">
+        暂无审计记录。完成一次保存、发布、下架或删除操作后会出现在这里。
+      </div>
+    );
+  }
+
+  return (
+    <div className="audit-log-list">
+      {props.logs.map((log) => {
+        const device = log.ipAddress?.trim() || log.macAddress?.trim() || "未记录";
+        const actor = log.actor?.trim() || "未知管理员";
+        const role = log.role?.trim() || "unknown";
+        return (
+          <article className="audit-log-row" key={log.objectPath}>
+            <div className="audit-log-main">
+              <div className="audit-log-title">
+                <strong>{log.summary || adminAuditActionLabel(log.action)}</strong>
+                <span>{adminAuditActionLabel(log.action)}</span>
+              </div>
+              <div className="audit-log-meta">
+                <span>{formatAuditTime(log.createdAt)}</span>
+                <span>{actor}</span>
+                <span>{role}</span>
+                <span>{device}</span>
+              </div>
+              <small>{log.objectPath}</small>
+            </div>
+            <div className="audit-log-target">
+              <span>{log.target || "-"}</span>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function adminAuditActionLabel(action: string) {
+  const labels: Record<string, string> = {
+    savePublishMeta: "保存发布元数据",
+    saveMarketProject: "保存项目",
+    deleteMarketProject: "删除项目",
+    saveMarketCategory: "保存公共分类",
+    deleteMarketCategory: "删除公共分类",
+    publishDraft: "发布草稿",
+    quickRepublishArchivedSkill: "快速重新上架",
+    archiveMarketSkill: "下架 skill"
+  };
+  return labels[action] ?? action;
+}
+
+function formatAuditTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || "-";
+  }
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
 }
 
 function GovernanceDialogView(props: {

@@ -66,15 +66,13 @@ MAC 白名单示例：
       "mac": "C8-7F-54-5C-60-D8",
       "status": "active",
       "role": "system",
-      "projects": ["*"],
       "name": "ops-admin"
     },
     {
       "mac": "11:22:33:44:55:66",
       "status": "active",
       "role": "project",
-      "projects": ["live-project"],
-      "name": "live-project-admin"
+      "name": "project-admin"
     }
   ]
 }
@@ -95,7 +93,7 @@ MAC 白名单示例：
 角色说明：
 
 - `role = system`：系统管理员，可管理公共分类、所有市场项目、公共 skill 和项目 skill 的发布 / 下架。
-- `role = project`：项目管理员，只能管理 `projects` 中列出的项目，以及这些项目下 skill 的发布 / 下架。
+- `role = project`：项目管理员，可管理所有市场项目，以及所有项目 skill 的发布 / 下架。
 - 项目管理员不能发布到公共分类，也不能下架公共市场 skill。
 
 ## MinIO 初始化
@@ -129,7 +127,6 @@ $mc = "D:\tmp\skillhub-minio\mc.exe"
       "mac": "C8-7F-54-5C-60-D8",
       "status": "active",
       "role": "system",
-      "projects": ["*"],
       "name": "ops-admin"
     }
   ]

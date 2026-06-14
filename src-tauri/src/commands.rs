@@ -23,16 +23,17 @@ use crate::{
         COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION,
     },
     models::{
-        AdminDraftPreviewRequest, AdminDraftSkill, AdminSession, AdminUnlockRequest,
-        AppBootstrap, ArchiveMarketSkillRequest, CatalogDoc, CategoriesDoc, Category,
-        CommandError, DeleteCachedSkillRequest, DeleteMarketCategoryRequest,
-        DeleteMarketProjectRequest, InstallSkillRequest, LocalSkill, MarketProject,
-        MarketSkill, PackageInfo, Project, ProjectsDoc, PublishDraftRequest, PublishMeta,
-        QuickRepublishRequest, SaveMarketCategoryRequest, SaveMarketProjectRequest,
-        SaveProjectRequest, SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
+        AdminAuditLog, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession,
+        AdminUnlockRequest, AppBootstrap, ArchiveMarketSkillRequest, CatalogDoc,
+        CategoriesDoc, Category, CommandError, DeleteCachedSkillRequest,
+        DeleteMarketCategoryRequest, DeleteMarketProjectRequest, InstallSkillRequest,
+        ListAdminAuditLogsRequest, LocalSkill, MarketProject, MarketSkill, PackageInfo,
+        Project, ProjectsDoc, PublishDraftRequest, PublishMeta, QuickRepublishRequest,
+        SaveMarketCategoryRequest, SaveMarketProjectRequest, SaveProjectRequest,
+        SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
         SetBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
-        SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion, Source,
-        TargetRoot, UpdateCandidate, UpgradeBindingRequest,
+        SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion,
+        Source, TargetRoot, UpdateCandidate, UpgradeBindingRequest,
     },
 };
 
@@ -127,24 +128,28 @@ async fn ensure_admin_allowed(admin_key: &str) -> Result<admin_config::AdminAuth
 
     let allowlist = fetch_admin_mac_allowlist().await?;
     let local_macs = admin_config::local_mac_addresses();
+    authorize_admin_from_allowlist(admin_key, &local_macs, &allowlist)
+}
+
+fn authorize_admin_from_allowlist(
+    admin_key: &str,
+    local_macs: &[String],
+    allowlist: &admin_config::MacAllowlist,
+) -> Result<admin_config::AdminAuthorization> {
+    if !admin_config::is_admin_key_valid(admin_key) {
+        return Err(anyhow!("管理员密钥错误"));
+    }
+
     let Some(authorization) = admin_config::admin_authorization(&local_macs, &allowlist) else {
-        let allowed = admin_config::allowed_admin_macs(&allowlist)
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
         let detected = if local_macs.is_empty() {
             "未识别到本机 MAC".to_string()
         } else {
             local_macs.join(", ")
         };
         return Err(anyhow!(
-            "本机 MAC 地址不在管理员白名单中；本机识别到: {detected}；白名单: {allowed}"
+            "本机 MAC 地址未获得管理员授权；本机识别到: {detected}"
         ));
     };
-
-    if authorization.role == "project" && authorization.projects.is_empty() {
-        return Err(anyhow!("项目管理员未配置授权项目"));
-    }
 
     Ok(authorization)
 }
@@ -155,6 +160,13 @@ pub async fn list_admin_drafts(
     _state: State<'_, AppState>,
 ) -> CommandResult<Vec<AdminDraftSkill>> {
     map_result(list_admin_drafts_inner(&admin_key).await)
+}
+
+#[tauri::command]
+pub async fn list_admin_audit_logs(
+    request: ListAdminAuditLogsRequest,
+) -> CommandResult<Vec<AdminAuditLog>> {
+    map_result(list_admin_audit_logs_inner(request).await)
 }
 
 #[tauri::command]
@@ -432,6 +444,37 @@ async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>
     Ok(drafts)
 }
 
+async fn list_admin_audit_logs_inner(
+    request: ListAdminAuditLogsRequest,
+) -> Result<Vec<AdminAuditLog>> {
+    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    ensure_can_view_admin_audit(&authorization)?;
+    let limit = request.limit.unwrap_or(100).clamp(1, 200);
+    let client = AdminObjectClient::new();
+    let mut objects = client.list_objects("admin/audit/").await?;
+    objects.retain(|object| object.ends_with(".json"));
+    objects.sort_by(|a, b| b.cmp(a));
+
+    let mut records = Vec::new();
+    for object in objects {
+        let Some(text) = client.get_optional_text(&object).await? else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        records.push(admin_audit_log_from_value(&object, value)?);
+    }
+
+    records.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.object_path.cmp(&a.object_path))
+    });
+    records.truncate(limit);
+    Ok(records)
+}
+
 async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<SkillPreview> {
     let authorization = ensure_admin_allowed(&request.admin_key).await?;
     let client = AdminObjectClient::new();
@@ -522,6 +565,20 @@ async fn save_publish_meta_inner(request: SavePublishMetaRequest) -> Result<Publ
     }
     let path = admin_object_path(&source_path, "publish-meta.v1.json")?;
     client.put_json(&path, &meta).await?;
+    write_admin_audit(
+        &client,
+        &authorization,
+        "savePublishMeta",
+        serde_json::json!({
+            "gitlabSourcePath": source_path,
+            "namespace": meta.namespace.clone(),
+            "skillId": meta.skill_id.clone(),
+            "publishScope": meta.publish_scope.clone(),
+            "publishCategorySlug": meta.publish_category_slug.clone(),
+            "publishProjectSlug": meta.publish_project_slug.clone()
+        }),
+    )
+    .await?;
     Ok(meta)
 }
 
@@ -551,11 +608,19 @@ async fn save_market_project_remote_inner(
     if project.updated_by.is_none() {
         project.updated_by = Some(admin_actor(&authorization));
     }
+    let audit_payload = serde_json::json!({
+        "slug": project.slug.clone(),
+        "name": project.name.clone(),
+        "description": project.description.clone(),
+        "createdAt": project.created_at.clone(),
+        "updatedAt": project.updated_at.clone()
+    });
 
     projects.retain(|item| item.slug != project.slug);
     projects.push(project);
     projects.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.slug.cmp(&b.slug)));
     save_remote_projects(&client, &projects).await?;
+    write_admin_audit(&client, &authorization, "saveMarketProject", audit_payload).await?;
     fs::write(
         market_project_cache_path(&state.app_dir),
         serde_json::to_string_pretty(&projects_doc(projects.clone()))?,
@@ -596,12 +661,10 @@ async fn delete_market_project_remote_inner(
     write_all_market_indexes(&client, &catalog).await?;
     write_admin_audit(
         &client,
+        &authorization,
         "deleteMarketProject",
         serde_json::json!({
-            "slug": slug,
-            "actor": admin_actor(&authorization),
-            "role": authorization.role,
-            "createdAt": now()
+            "slug": slug
         }),
     )
     .await?;
@@ -633,17 +696,16 @@ async fn save_market_category_remote_inner(
     }
 
     categories.items.retain(|item| item.id != category.id);
-    categories.items.push(category);
+    categories.items.push(category.clone());
     categories = normalize_categories_doc(categories);
     categories.generated_at = Some(now());
     client.put_json(CATEGORIES_OBJECT, &categories).await?;
     write_admin_audit(
         &client,
+        &authorization,
         "saveMarketCategory",
         serde_json::json!({
-            "actor": admin_actor(&authorization),
-            "role": authorization.role,
-            "createdAt": now()
+            "category": category
         }),
     )
     .await?;
@@ -677,12 +739,10 @@ async fn delete_market_category_remote_inner(
     write_all_market_indexes(&client, &catalog).await?;
     write_admin_audit(
         &client,
+        &authorization,
         "deleteMarketCategory",
         serde_json::json!({
-            "categoryId": category_id,
-            "actor": admin_actor(&authorization),
-            "role": authorization.role,
-            "createdAt": now()
+            "categoryId": category_id
         }),
     )
     .await?;
@@ -894,21 +954,16 @@ async fn publish_draft_inner(request: PublishDraftRequest) -> Result<()> {
     });
     client.put_json(&state_path, &state).await?;
     client.put_json(&job_path, &publish_job).await?;
-    let audit_path = format!("admin/audit/{}/publish-{}.json", now()[0..10].replace('-', "/"), new_id());
-    client
-        .put_json(
-            &audit_path,
-            &serde_json::json!({
-                "schema": "skillhub.admin-audit.v1",
-                "action": "publishDraft",
-                "actor": admin_actor(&authorization),
-                "role": authorization.role,
-                "job": publish_job,
-                "state": state,
-                "createdAt": now()
-            }),
-        )
-        .await?;
+    write_admin_audit(
+        &client,
+        &authorization,
+        "publishDraft",
+        serde_json::json!({
+            "job": publish_job,
+            "state": state
+        }),
+    )
+    .await?;
 
     client.put_json(CATALOG_OBJECT, &catalog).await?;
     Ok(())
@@ -1075,23 +1130,18 @@ async fn quick_republish_archived_skill_inner(request: QuickRepublishRequest) ->
     client.put_json(CATALOG_OBJECT, &catalog).await?;
 
     // 11. 记录审计日志
-    let audit_path = format!("admin/audit/{}/republish-{}.json", now()[0..10].replace('-', "/"), new_id());
-    client
-        .put_json(
-            &audit_path,
-            &serde_json::json!({
-                "schema": "skillhub.admin-audit.v1",
-                "action": "quickRepublishArchivedSkill",
-                "actor": admin_actor(&authorization),
-                "role": authorization.role,
-                "namespace": meta.namespace,
-                "skillId": meta.skill_id,
-                "version": latest_version,
-                "state": new_state,
-                "createdAt": now()
-            }),
-        )
-        .await?;
+    write_admin_audit(
+        &client,
+        &authorization,
+        "quickRepublishArchivedSkill",
+        serde_json::json!({
+            "namespace": meta.namespace,
+            "skillId": meta.skill_id,
+            "version": latest_version,
+            "state": new_state
+        }),
+    )
+    .await?;
 
     Ok(())
 }
@@ -1160,15 +1210,13 @@ async fn archive_market_skill_inner(request: ArchiveMarketSkillRequest) -> Resul
     client.put_json(&state_path, &state).await?;
     write_admin_audit(
         &client,
+        &authorization,
         "archiveMarketSkill",
         serde_json::json!({
             "namespace": request.namespace,
             "skillId": request.skill_id,
             "categories": skill.categories,
             "statePath": state_path,
-            "actor": admin_actor(&authorization),
-            "role": authorization.role,
-            "createdAt": now()
         }),
     )
     .await?;
@@ -2469,6 +2517,14 @@ fn ensure_system_admin(authorization: &admin_config::AdminAuthorization) -> Resu
     }
 }
 
+fn ensure_can_view_admin_audit(authorization: &admin_config::AdminAuthorization) -> Result<()> {
+    if authorization.is_system() {
+        Ok(())
+    } else {
+        Err(anyhow!("审计日志仅系统管理员可查看"))
+    }
+}
+
 fn ensure_can_manage_project(
     authorization: &admin_config::AdminAuthorization,
     project_slug: &str,
@@ -2518,6 +2574,176 @@ fn admin_actor(authorization: &admin_config::AdminAuthorization) -> String {
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| authorization.mac_address.clone())
+}
+
+fn admin_audit_envelope(
+    action: &str,
+    authorization: &admin_config::AdminAuthorization,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "skillhub.admin-audit.v1",
+        "action": action,
+        "actor": admin_actor(authorization),
+        "role": authorization.role.clone(),
+        "macAddress": authorization.mac_address.clone(),
+        "ipAddress": serde_json::Value::Null,
+        "payload": payload,
+        "createdAt": now()
+    })
+}
+
+fn admin_audit_log_from_value(
+    object_path: &str,
+    value: serde_json::Value,
+) -> Result<AdminAuditLog> {
+    let payload = value
+        .get("payload")
+        .cloned()
+        .unwrap_or_else(|| value.clone());
+    let action = audit_field_string(&value, &payload, &["action"])
+        .unwrap_or_else(|| audit_action_from_path(object_path));
+    let actor = audit_field_string(&value, &payload, &["actor"]);
+    let role = audit_field_string(&value, &payload, &["role"]);
+    let mac_address = audit_field_string(&value, &payload, &["macAddress", "mac_address", "mac"]);
+    let ip_address = audit_field_string(&value, &payload, &["ipAddress", "ip_address", "ip"]);
+    let target = admin_audit_target(&action, &value, &payload);
+    let summary = admin_audit_summary(&action, target.as_deref());
+    let created_at = audit_field_string(&value, &payload, &["createdAt", "created_at"])
+        .unwrap_or_else(|| audit_date_from_path(object_path).unwrap_or_else(now));
+
+    Ok(AdminAuditLog {
+        object_path: object_path.to_string(),
+        action,
+        actor,
+        role,
+        mac_address,
+        ip_address,
+        target,
+        summary,
+        created_at,
+        payload,
+    })
+}
+
+fn audit_field_string(
+    value: &serde_json::Value,
+    payload: &serde_json::Value,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter()
+        .find_map(|key| audit_value_string(value, key).or_else(|| audit_value_string(payload, key)))
+}
+
+fn audit_value_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+}
+
+fn admin_audit_target(
+    action: &str,
+    value: &serde_json::Value,
+    payload: &serde_json::Value,
+) -> Option<String> {
+    match action {
+        "saveMarketProject" | "deleteMarketProject" => {
+            audit_field_string(value, payload, &["slug", "projectSlug", "project_slug"])
+        }
+        "saveMarketCategory" | "deleteMarketCategory" => audit_field_string(
+            value,
+            payload,
+            &["categoryId", "category_id", "id"],
+        )
+        .or_else(|| {
+            payload
+                .get("category")
+                .and_then(|category| {
+                    audit_value_string(category, "id")
+                        .or_else(|| audit_value_string(category, "categoryId"))
+                })
+        }),
+        "savePublishMeta" => audit_field_string(
+            value,
+            payload,
+            &["gitlabSourcePath", "gitlab_source_path"],
+        )
+        .or_else(|| namespace_skill_target(payload)),
+        "publishDraft" => value
+            .get("state")
+            .and_then(namespace_skill_target)
+            .or_else(|| payload.get("state").and_then(namespace_skill_target))
+            .or_else(|| namespace_skill_target(payload)),
+        "quickRepublishArchivedSkill" | "archiveMarketSkill" => namespace_skill_target(payload),
+        _ => audit_field_string(
+            value,
+            payload,
+            &[
+                "target",
+                "slug",
+                "categoryId",
+                "category_id",
+                "gitlabSourcePath",
+                "gitlab_source_path",
+            ],
+        )
+        .or_else(|| namespace_skill_target(payload)),
+    }
+}
+
+fn namespace_skill_target(value: &serde_json::Value) -> Option<String> {
+    let namespace = audit_value_string(value, "namespace")?;
+    let skill_id = audit_value_string(value, "skillId").or_else(|| audit_value_string(value, "skill_id"))?;
+    let base = format!("{namespace}/{skill_id}");
+    let version = audit_value_string(value, "version")
+        .or_else(|| audit_value_string(value, "publishedVersion"))
+        .or_else(|| audit_value_string(value, "published_version"));
+    Some(match version {
+        Some(version) => format!("{base}@{version}"),
+        None => base,
+    })
+}
+
+fn admin_audit_summary(action: &str, target: Option<&str>) -> String {
+    let label = match action {
+        "savePublishMeta" => "保存发布元数据",
+        "saveMarketProject" => "保存项目",
+        "deleteMarketProject" => "删除项目",
+        "saveMarketCategory" => "保存公共分类",
+        "deleteMarketCategory" => "删除公共分类",
+        "publishDraft" => "发布草稿",
+        "quickRepublishArchivedSkill" => "快速重新上架",
+        "archiveMarketSkill" => "下架 skill",
+        other => other,
+    };
+    match target {
+        Some(target) => format!("{label}: {target}"),
+        None => label.to_string(),
+    }
+}
+
+fn audit_action_from_path(object_path: &str) -> String {
+    object_path
+        .rsplit('/')
+        .next()
+        .and_then(|file| file.strip_suffix(".json").unwrap_or(file).rsplit_once('-').map(|(action, _)| action))
+        .filter(|action| !action.trim().is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn audit_date_from_path(object_path: &str) -> Option<String> {
+    let mut parts = object_path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("admin"), Some("audit"), Some(year), Some(month)) => {
+            let day = parts.next()?;
+            Some(format!("{year}-{month}-{day}T00:00:00Z"))
+        }
+        _ => None,
+    }
 }
 
 fn should_republish_existing_version(
@@ -2709,6 +2935,7 @@ async fn write_market_indexes_for_categories(
 
 async fn write_admin_audit(
     client: &AdminObjectClient,
+    authorization: &admin_config::AdminAuthorization,
     action: &str,
     payload: serde_json::Value,
 ) -> Result<()> {
@@ -2719,15 +2946,7 @@ async fn write_admin_audit(
         new_id()
     );
     client
-        .put_json(
-            &audit_path,
-            &serde_json::json!({
-                "schema": "skillhub.admin-audit.v1",
-                "action": action,
-                "payload": payload,
-                "createdAt": now()
-            }),
-        )
+        .put_json(&audit_path, &admin_audit_envelope(action, authorization, payload))
         .await
 }
 
@@ -4137,6 +4356,94 @@ fn is_sqlite_managed_install_path(binding: &SkillBinding, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_mac_rejection_does_not_expose_allowlist_macs() {
+        let allowlist = admin_config::parse_mac_allowlist(
+            r#"{
+              "entries": [
+                { "mac": "C1:7F:54:5C:60:D8", "role": "system" }
+              ]
+            }"#,
+        )
+        .expect("allowlist should parse");
+
+        let err = authorize_admin_from_allowlist(
+            admin_config::ADMIN_KEY,
+            &[String::from("C8:7F:54:5C:60:D8")],
+            &allowlist,
+        )
+        .expect_err("non-allowlisted mac should be rejected");
+        let message = err.to_string();
+
+        assert!(message.contains("C8:7F:54:5C:60:D8"));
+        assert!(!message.contains("C1:7F:54:5C:60:D8"));
+        assert!(!message.contains("白名单:"));
+    }
+
+    #[test]
+    fn admin_audit_envelope_includes_authorized_mac() {
+        let authorization = admin_config::AdminAuthorization {
+            role: "project".to_string(),
+            projects: vec![],
+            mac_address: "C8:7F:54:5C:60:D8".to_string(),
+            name: Some("系统管理员".to_string()),
+        };
+
+        let envelope = admin_audit_envelope(
+            "saveMarketProject",
+            &authorization,
+            serde_json::json!({ "slug": "live-project" }),
+        );
+
+        assert_eq!(envelope["action"], "saveMarketProject");
+        assert_eq!(envelope["actor"], "系统管理员");
+        assert_eq!(envelope["role"], "project");
+        assert_eq!(envelope["macAddress"], "C8:7F:54:5C:60:D8");
+        assert_eq!(envelope["payload"]["slug"], "live-project");
+    }
+
+    #[test]
+    fn admin_audit_log_normalizes_wrapped_payload_identity() {
+        let record = admin_audit_log_from_value(
+            "admin/audit/2026/06/14/saveMarketProject-abc.json",
+            serde_json::json!({
+                "schema": "skillhub.admin-audit.v1",
+                "action": "saveMarketProject",
+                "actor": "系统管理员",
+                "role": "project",
+                "macAddress": "C8:7F:54:5C:60:D8",
+                "payload": {
+                    "slug": "live-project"
+                },
+                "createdAt": "2026-06-14T10:20:30Z"
+            }),
+        )
+        .expect("audit record should normalize");
+
+        assert_eq!(record.action, "saveMarketProject");
+        assert_eq!(record.actor.as_deref(), Some("系统管理员"));
+        assert_eq!(record.role.as_deref(), Some("project"));
+        assert_eq!(record.mac_address.as_deref(), Some("C8:7F:54:5C:60:D8"));
+        assert_eq!(record.target.as_deref(), Some("live-project"));
+        assert!(record.summary.contains("live-project"));
+        assert_eq!(record.created_at, "2026-06-14T10:20:30Z");
+    }
+
+    #[test]
+    fn project_admin_cannot_view_admin_audit_logs() {
+        let authorization = admin_config::AdminAuthorization {
+            role: "project".to_string(),
+            projects: vec![],
+            mac_address: "C8:7F:54:5C:60:D8".to_string(),
+            name: Some("项目管理员".to_string()),
+        };
+
+        let err = ensure_can_view_admin_audit(&authorization)
+            .expect_err("project admin should not view audit logs");
+
+        assert!(err.to_string().contains("系统管理员"));
+    }
 
     #[test]
     fn parses_skill_name_from_frontmatter() {

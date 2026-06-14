@@ -8,15 +8,38 @@ mod minio_config;
 mod models;
 mod updater;
 
+use tauri::api::dialog::{
+    blocking::MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
+};
 use tauri::{CustomMenuItem, Manager, Menu, Submenu};
 
 const MENU_CHECK_UPDATE: &str = "check_update";
+const MENU_ABOUT: &str = "about";
 
 fn app_menu() -> Menu {
     Menu::os_default("Skill Hub").add_submenu(Submenu::new(
         "帮助",
-        Menu::new().add_item(CustomMenuItem::new(MENU_CHECK_UPDATE, "检查更新")),
+        Menu::new()
+            .add_item(CustomMenuItem::new(MENU_CHECK_UPDATE, "检查更新"))
+            .add_item(CustomMenuItem::new(MENU_ABOUT, "关于 Skill Hub")),
     ))
+}
+
+fn show_about_dialog(window: &tauri::Window) {
+    let body = format!(
+        "{name}\n\n{description}\n\n开发维护：{authors}\n当前版本：{version}\n开源许可：{license}",
+        name = env!("CARGO_PKG_NAME"),
+        description = "Claude / Codex skills 的桌面市场、安装、更新与管理工具。",
+        authors = env!("CARGO_PKG_AUTHORS"),
+        version = env!("CARGO_PKG_VERSION"),
+        license = env!("CARGO_PKG_LICENSE")
+    );
+
+    MessageDialogBuilder::new("关于 Skill Hub", body)
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::Ok)
+        .parent(window)
+        .show();
 }
 
 fn main() {
@@ -25,10 +48,12 @@ fn main() {
 
     if let Err(error) = tauri::Builder::default()
         .menu(app_menu())
-        .on_menu_event(|event| {
-            if event.menu_item_id() == MENU_CHECK_UPDATE {
+        .on_menu_event(|event| match event.menu_item_id() {
+            MENU_CHECK_UPDATE => {
                 updater::spawn_manual_update_check(event.window().app_handle().clone());
             }
+            MENU_ABOUT => show_about_dialog(event.window()),
+            _ => {}
         })
         .setup(|app| {
             let state = db::init_state(&app.handle())?;
@@ -43,6 +68,7 @@ fn main() {
             commands::save_source,
             commands::unlock_admin_mode,
             commands::list_admin_drafts,
+            commands::list_admin_audit_logs,
             commands::preview_admin_draft,
             commands::save_publish_meta,
             commands::save_market_project_remote,

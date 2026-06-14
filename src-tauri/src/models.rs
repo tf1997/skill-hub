@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +57,28 @@ pub struct AdminSession {
     pub projects: Vec<String>,
     pub mac_address: String,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAdminAuditLogsRequest {
+    pub admin_key: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminAuditLog {
+    pub object_path: String,
+    pub action: String,
+    pub actor: Option<String>,
+    pub role: Option<String>,
+    pub mac_address: Option<String>,
+    pub ip_address: Option<String>,
+    pub target: Option<String>,
+    pub summary: String,
+    pub created_at: String,
+    pub payload: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

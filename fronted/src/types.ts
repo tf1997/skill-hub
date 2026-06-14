@@ -175,6 +175,19 @@ export type AdminSession = {
   name?: string | null;
 };
 
+export type AdminAuditLog = {
+  objectPath: string;
+  action: string;
+  actor?: string | null;
+  role?: string | null;
+  macAddress?: string | null;
+  ipAddress?: string | null;
+  target?: string | null;
+  summary: string;
+  createdAt: string;
+  payload: unknown;
+};
+
 export type InstallSkillRequest = {
   sourceId?: string | null;
   namespace: string;

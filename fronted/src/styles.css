@@ -1656,6 +1656,16 @@ select:focus-visible {
   letter-spacing: 0.05em;
 }
 
+.session-role-badge.named {
+  max-width: min(180px, 22vw);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-id {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11px;
@@ -1732,6 +1742,10 @@ select:focus-visible {
   grid-column: 1 / -1;
 }
 
+.admin-panels.audit {
+  grid-column: 1 / -1;
+}
+
 .admin-panel {
   min-width: 0;
   min-height: 0;
@@ -1762,6 +1776,108 @@ select:focus-visible {
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
+}
+
+.audit-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.audit-log-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 10px 0;
+  scrollbar-gutter: stable;
+}
+
+.audit-log-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 240px);
+  align-items: center;
+  gap: 14px;
+  min-height: 86px;
+  padding: 13px 14px;
+  background: var(--control-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.audit-log-main,
+.audit-log-title,
+.audit-log-meta {
+  min-width: 0;
+}
+
+.audit-log-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audit-log-title strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.audit-log-title span,
+.audit-log-target span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.audit-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-log-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-log-main small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-log-target {
+  justify-self: end;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.audit-log-target span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audit-empty {
+  margin-top: 10px;
 }
 
 .governance-panel {
@@ -2721,7 +2837,7 @@ select:focus-visible {
   }
 
   .admin-rail {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
 
   .admin-rail button {
@@ -2806,7 +2922,7 @@ select:focus-visible {
   }
 
   .admin-rail {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   }
 
   .admin-rail button {
@@ -2880,6 +2996,15 @@ select:focus-visible {
   .governance-row {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .audit-log-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .audit-log-target {
+    justify-self: start;
   }
 
   .governance-row .row-actions {

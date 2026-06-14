@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import type {
+  AdminAuditLog,
   AdminDraftPreviewRequest,
   AdminSession,
   AdminDraftSkill,
@@ -342,6 +343,33 @@ const mockAdminDrafts: AdminDraftSkill[] = [
   }
 ];
 
+const mockAdminAuditLogs: AdminAuditLog[] = [
+  {
+    objectPath: "admin/audit/2026/06/14/publishDraft-mock.json",
+    action: "publishDraft",
+    actor: "系统管理员",
+    role: "system",
+    macAddress: "C8:7F:54:5C:60:D8",
+    ipAddress: null,
+    target: "live/minio-live-draft@0.1.0",
+    summary: "发布草稿: live/minio-live-draft@0.1.0",
+    createdAt: "2026-06-14T10:20:30Z",
+    payload: {}
+  },
+  {
+    objectPath: "admin/audit/2026/06/14/saveMarketProject-mock.json",
+    action: "saveMarketProject",
+    actor: "系统管理员",
+    role: "project",
+    macAddress: "C8:7F:54:5C:60:D8",
+    ipAddress: null,
+    target: "live-project",
+    summary: "保存项目: live-project",
+    createdAt: "2026-06-14T09:52:12Z",
+    payload: {}
+  }
+];
+
 const browserMockApi = {
   bootstrap: async () => mockBootstrap,
   listMarketSkills: async () => mockBootstrap.skills,
@@ -349,6 +377,7 @@ const browserMockApi = {
   saveSource: async (_request: SaveSourceRequest) => mockBootstrap.sources[0],
   unlockAdminMode: async (_adminKey: string) => mockAdminSession,
   listAdminDrafts: async (_adminKey: string) => mockAdminDrafts,
+  listAdminAuditLogs: async (_adminKey: string, _limit = 100) => mockAdminAuditLogs,
   previewAdminDraft: async (_request: AdminDraftPreviewRequest) => ({
     title: "Mock Draft",
     rootPath: "draft/gitlab/skills/mock",
@@ -445,6 +474,8 @@ const tauriApi = {
     invoke<AdminSession>("unlock_admin_mode", { request: { adminKey } }),
   listAdminDrafts: (adminKey: string) =>
     invoke<AdminDraftSkill[]>("list_admin_drafts", { adminKey }),
+  listAdminAuditLogs: (adminKey: string, limit = 100) =>
+    invoke<AdminAuditLog[]>("list_admin_audit_logs", { request: { adminKey, limit } }),
   previewAdminDraft: (request: AdminDraftPreviewRequest) =>
     invoke<SkillPreview>("preview_admin_draft", { request }),
   savePublishMeta: (adminKey: string, gitlabSourcePath: string, meta: PublishMeta) =>

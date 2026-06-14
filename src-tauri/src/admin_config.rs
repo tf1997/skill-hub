@@ -40,12 +40,8 @@ impl AdminAuthorization {
         self.role == "system"
     }
 
-    pub fn can_manage_project(&self, slug: &str) -> bool {
-        let normalized = slug.trim();
-        self.is_system()
-            || self.projects.iter().any(|project| {
-                project == "*" || project.eq_ignore_ascii_case(normalized)
-            })
+    pub fn can_manage_project(&self, _slug: &str) -> bool {
+        self.role == "system" || self.role == "project"
     }
 }
 
@@ -124,24 +120,8 @@ pub fn admin_authorization(
     project_match
 }
 
-pub fn allowed_admin_macs(allowlist: &MacAllowlist) -> HashSet<String> {
-    allowlist
-        .macs
-        .iter()
-        .filter_map(|mac| normalize_mac(mac))
-        .chain(allowlist.entries.iter().filter_map(|entry| {
-            let status = entry.status.as_deref().unwrap_or("active");
-            if status.eq_ignore_ascii_case("active") {
-                entry.mac.as_deref().and_then(normalize_mac)
-            } else {
-                None
-            }
-        }))
-        .collect::<HashSet<_>>()
-}
-
 fn normalize_role(value: Option<&str>) -> String {
-    match value.unwrap_or("system").trim().to_ascii_lowercase().as_str() {
+    match value.unwrap_or("project").trim().to_ascii_lowercase().as_str() {
         "project" | "project_admin" | "project-admin" => "project".to_string(),
         _ => "system".to_string(),
     }
@@ -262,6 +242,7 @@ mod tests {
               "macs": ["aa-bb-cc-dd-ee-ff"],
               "entries": [
                 { "macAddress": "11:22:33:44:55:66", "status": "disabled" },
+                { "mac": "33:44:55:66:77:88" },
                 { "mac_address": "22.33.44.55.66.77", "role": "project", "projects": ["live-project"] }
               ]
             }"#,
@@ -277,7 +258,12 @@ mod tests {
                 .expect("project admin should match");
         assert_eq!(authorization.role, "project");
         assert!(authorization.can_manage_project("live-project"));
-        assert!(!authorization.can_manage_project("other-project"));
+        assert!(authorization.can_manage_project("other-project"));
+        let default_entry_authorization =
+            admin_authorization(&[String::from("33-44-55-66-77-88")], &allowlist)
+                .expect("entry without role should match");
+        assert_eq!(default_entry_authorization.role, "project");
+        assert!(default_entry_authorization.can_manage_project("any-project"));
         assert!(admin_authorization(&[String::from("11-22-33-44-55-66")], &allowlist).is_none());
     }
 }
