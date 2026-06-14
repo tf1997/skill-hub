@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod crash_report;
 mod admin_config;
 mod db;
 mod minio_config;
@@ -19,9 +20,10 @@ fn app_menu() -> Menu {
 }
 
 fn main() {
+    crash_report::install();
     updater::relaunch_latest_portable_if_needed();
 
-    tauri::Builder::default()
+    if let Err(error) = tauri::Builder::default()
         .menu(app_menu())
         .on_menu_event(|event| {
             if event.menu_item_id() == MENU_CHECK_UPDATE {
@@ -69,5 +71,9 @@ fn main() {
             updater::restart_after_update_command
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Skill Hub");
+    {
+        crash_report::report_fatal_error("tauri run", &error.to_string());
+        eprintln!("error while running Skill Hub: {error}");
+        std::process::exit(1);
+    }
 }

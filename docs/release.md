@@ -60,6 +60,26 @@ portable.json
 
 脚本会输出 `sha256` 和 `size`，把它们填入 `latest.json`。
 
+## Windows Crash Event Log
+
+Windows 版启动时会安装崩溃上报钩子。程序崩溃后会向 Windows 事件日志写入错误事件：
+
+```text
+Log:    Application
+Source: Skill Hub
+Level:  Error
+```
+
+事件 ID：
+
+```text
+1001  Rust panic
+1002  Tauri runtime fatal error
+1003  Native unhandled Windows exception
+```
+
+如果事件查看器提示找不到 `Skill Hub` 的消息资源，这是正常现象。事件详情仍会包含崩溃摘要、版本、进程 ID、panic 位置和 backtrace。
+
 ## Publish Order
 
 1. 更新版本号。
