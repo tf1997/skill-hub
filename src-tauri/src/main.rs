@@ -8,9 +8,7 @@ mod minio_config;
 mod models;
 mod updater;
 
-use tauri::api::dialog::{
-    blocking::MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
-};
+use tauri::api::dialog;
 use tauri::{CustomMenuItem, Manager, Menu, Submenu};
 
 const MENU_CHECK_UPDATE: &str = "check_update";
@@ -21,25 +19,20 @@ fn app_menu() -> Menu {
         "帮助",
         Menu::new()
             .add_item(CustomMenuItem::new(MENU_CHECK_UPDATE, "检查更新"))
-            .add_item(CustomMenuItem::new(MENU_ABOUT, "关于 Skill Hub")),
+            .add_item(CustomMenuItem::new(MENU_ABOUT, "关于")),
     ))
 }
 
 fn show_about_dialog(window: &tauri::Window) {
     let body = format!(
-        "{name}\n\n{description}\n\n开发维护：{authors}\n当前版本：{version}\n开源许可：{license}",
+        "{name}\n\n{description}\n\n开发维护：{authors}\n当前版本：{version}",
         name = env!("CARGO_PKG_NAME"),
         description = "Claude / Codex skills 的桌面市场、安装、更新与管理工具。",
         authors = env!("CARGO_PKG_AUTHORS"),
-        version = env!("CARGO_PKG_VERSION"),
-        license = env!("CARGO_PKG_LICENSE")
+        version = env!("CARGO_PKG_VERSION")
     );
 
-    MessageDialogBuilder::new("关于 Skill Hub", body)
-        .kind(MessageDialogKind::Info)
-        .buttons(MessageDialogButtons::Ok)
-        .parent(window)
-        .show();
+    dialog::message(Some(window), "关于", body);
 }
 
 fn main() {
