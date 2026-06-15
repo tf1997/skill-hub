@@ -396,11 +396,7 @@ fn extract_zip(archive_path: &Path, dest: &Path) -> Result<()> {
 }
 
 fn current_distribution() -> String {
-    if std::env::var("SKILL_HUB_DISTRIBUTION")
-        .ok()
-        .as_deref()
-        == Some("installer")
-    {
+    if std::env::var("SKILL_HUB_DISTRIBUTION").ok().as_deref() == Some("installer") {
         return "installer".to_string();
     }
     if portable_root().is_ok() {

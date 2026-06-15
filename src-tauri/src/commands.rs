@@ -23,17 +23,16 @@ use crate::{
         COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION,
     },
     models::{
-        AdminAuditLog, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession,
-        AdminUnlockRequest, AppBootstrap, ArchiveMarketSkillRequest, CatalogDoc,
-        CategoriesDoc, Category, CommandError, DeleteCachedSkillRequest,
-        DeleteMarketCategoryRequest, DeleteMarketProjectRequest, InstallSkillRequest,
-        ListAdminAuditLogsRequest, LocalSkill, MarketProject, MarketSkill, PackageInfo,
-        Project, ProjectsDoc, PublishDraftRequest, PublishMeta, QuickRepublishRequest,
+        AdminAuditLog, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession, AdminUnlockRequest,
+        AppBootstrap, ArchiveMarketSkillRequest, CatalogDoc, CategoriesDoc, Category, CommandError,
+        DeleteCachedSkillRequest, DeleteMarketCategoryRequest, DeleteMarketProjectRequest,
+        InstallSkillRequest, ListAdminAuditLogsRequest, LocalSkill, MarketProject, MarketSkill,
+        PackageInfo, Project, ProjectsDoc, PublishDraftRequest, PublishMeta, QuickRepublishRequest,
         SaveMarketCategoryRequest, SaveMarketProjectRequest, SaveProjectRequest,
-        SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest,
-        SetBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
-        SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion,
-        Source, TargetRoot, UpdateCandidate, UpgradeBindingRequest,
+        SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest, SetBindingEnabledRequest,
+        SkillBinding, SkillManifest, SkillPreview, SkillPreviewFile, SkillPreviewFileEntry,
+        SkillPreviewRequest, SkillVersion, Source, TargetRoot, UpdateCandidate,
+        UpgradeBindingRequest,
     },
 };
 
@@ -314,17 +313,23 @@ async fn list_admin_drafts_inner(
         let publish_meta = client
             .get_optional_json::<PublishMeta>(&meta_path)
             .await?
-            .map(|meta| merge_publish_meta_defaults(
-                normalize_publish_meta_for_source(meta, &source_path),
-                default_meta.clone(),
-            ))
+            .map(|meta| {
+                merge_publish_meta_defaults(
+                    normalize_publish_meta_for_source(meta, &source_path),
+                    default_meta.clone(),
+                )
+            })
             .or(Some(default_meta));
         let state_json = client
             .get_optional_json::<serde_json::Value>(&state_path)
             .await?;
         let published_version = state_json
             .as_ref()
-            .and_then(|value| value.get("publishedVersion").or_else(|| value.get("published_version")))
+            .and_then(|value| {
+                value
+                    .get("publishedVersion")
+                    .or_else(|| value.get("published_version"))
+            })
             .and_then(|value| value.as_str())
             .map(ToString::to_string);
         let state_status = state_json
@@ -363,10 +368,9 @@ async fn list_admin_drafts_inner(
     }
 
     let archived_objects = client.list_objects(ARCHIVED_ADMIN_PREFIX).await?;
-    for object in archived_objects
-        .iter()
-        .filter(|object| object.ends_with("/state.v1.json") && object.starts_with(ARCHIVED_ADMIN_PREFIX))
-    {
+    for object in archived_objects.iter().filter(|object| {
+        object.ends_with("/state.v1.json") && object.starts_with(ARCHIVED_ADMIN_PREFIX)
+    }) {
         let state_json = client
             .get_optional_json::<serde_json::Value>(object)
             .await?
@@ -537,12 +541,18 @@ async fn preview_admin_draft_inner(
             if value.publish_scope == "project" {
                 format!(
                     "project / {}",
-                    value.publish_project_slug.as_deref().unwrap_or("unselected")
+                    value
+                        .publish_project_slug
+                        .as_deref()
+                        .unwrap_or("unselected")
                 )
             } else {
                 format!(
                     "public / {}",
-                    value.publish_category_slug.as_deref().unwrap_or("unselected")
+                    value
+                        .publish_category_slug
+                        .as_deref()
+                        .unwrap_or("unselected")
                 )
             }
         })
@@ -690,7 +700,9 @@ async fn delete_market_project_remote_inner(
         return Err(anyhow!("市场项目不存在: {slug}"));
     }
 
-    catalog.categories.retain(|category| category != &project_category);
+    catalog
+        .categories
+        .retain(|category| category != &project_category);
     catalog.generated_at = Some(now());
     save_remote_projects(&client, &projects).await?;
     write_all_market_indexes(&client, &catalog).await?;
@@ -758,18 +770,23 @@ async fn delete_market_category_remote_inner(
     validate_object_segment("category slug", &category_id)?;
     let client = AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
-    if catalog
-        .skills
-        .iter()
-        .any(|skill| skill.categories.iter().any(|category| category == &category_id))
-    {
+    if catalog.skills.iter().any(|skill| {
+        skill
+            .categories
+            .iter()
+            .any(|category| category == &category_id)
+    }) {
         return Err(anyhow!("公共分类仍有关联 skill，请先下架相关 skill"));
     }
 
     let mut categories = load_remote_categories(&client).await?;
-    categories.items.retain(|category| category.id != category_id);
+    categories
+        .items
+        .retain(|category| category.id != category_id);
     categories = normalize_categories_doc(categories);
-    catalog.categories.retain(|category| category != &category_id);
+    catalog
+        .categories
+        .retain(|category| category != &category_id);
     categories.generated_at = Some(now());
     catalog.generated_at = Some(now());
     client.put_json(CATEGORIES_OBJECT, &categories).await?;
@@ -786,10 +803,7 @@ async fn delete_market_category_remote_inner(
     Ok(())
 }
 
-async fn publish_draft_inner(
-    request: PublishDraftRequest,
-    local_macs: &[String],
-) -> Result<()> {
+async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
@@ -799,9 +813,13 @@ async fn publish_draft_inner(
         .await
         .with_context(|| format!("读取草稿 SKILL.md 失败: {skill_md_path}"))?;
     let draft_metadata = parse_skill_frontmatter(&skill_md);
-    let version = draft_metadata.version.clone()
+    let version = draft_metadata
+        .version
+        .clone()
         .ok_or_else(|| anyhow!("草稿 SKILL.md 缺少 version"))?;
-    let author = draft_metadata.author.clone()
+    let author = draft_metadata
+        .author
+        .clone()
         .ok_or_else(|| anyhow!("草稿 SKILL.md 缺少 author"))?;
 
     let meta_path = admin_object_path(&source_path, "publish-meta.v1.json")?;
@@ -810,17 +828,23 @@ async fn publish_draft_inner(
     let meta = client
         .get_optional_json::<PublishMeta>(&meta_path)
         .await?
-        .map(|meta| merge_publish_meta_defaults(
-            normalize_publish_meta_for_source(meta, &source_path),
-            default_meta.clone(),
-        ))
+        .map(|meta| {
+            merge_publish_meta_defaults(
+                normalize_publish_meta_for_source(meta, &source_path),
+                default_meta.clone(),
+            )
+        })
         .unwrap_or(default_meta);
     let state_json = client
         .get_optional_json::<serde_json::Value>(&state_path)
         .await?;
     let published_version = state_json
         .as_ref()
-        .and_then(|value| value.get("publishedVersion").or_else(|| value.get("published_version")))
+        .and_then(|value| {
+            value
+                .get("publishedVersion")
+                .or_else(|| value.get("published_version"))
+        })
         .and_then(|value| value.as_str());
     let state_archived = state_json
         .as_ref()
@@ -860,7 +884,10 @@ async fn publish_draft_inner(
     let job_id = new_id();
     let job_path = format!("admin/publish-jobs/{job_id}.json");
 
-    let base = format!("skills/{}/{}/versions/{}", meta.namespace, meta.skill_id, version);
+    let base = format!(
+        "skills/{}/{}/versions/{}",
+        meta.namespace, meta.skill_id, version
+    );
     let skill_object = format!("{base}/skill.json");
     let package_object = format!("{base}/package.zip");
     let sha_object = format!("{base}/package.sha256");
@@ -921,7 +948,9 @@ async fn publish_draft_inner(
         .unwrap_or_default();
     let new_categories = publish_categories(&meta);
     let affected_categories = merge_categories(old_categories, new_categories.clone());
-    catalog.skills.retain(|skill| !(skill.namespace == meta.namespace && skill.id == meta.skill_id));
+    catalog
+        .skills
+        .retain(|skill| !(skill.namespace == meta.namespace && skill.id == meta.skill_id));
     catalog.generated_at = Some(now());
     catalog.skills.push(MarketSkill {
         namespace: meta.namespace.clone(),
@@ -948,19 +977,33 @@ async fn publish_draft_inner(
 
     if !version_exists {
         client.put_json(&skill_object, &skill_json).await?;
-        client.put_bytes(&package_object, package_bytes, "application/zip").await?;
         client
-            .put_text(&sha_object, &(package_hash.clone() + "\n"), "text/plain; charset=utf-8")
+            .put_bytes(&package_object, package_bytes, "application/zip")
             .await?;
         client
-            .put_text(&changelog_object, &meta.changelog, "text/markdown; charset=utf-8")
+            .put_text(
+                &sha_object,
+                &(package_hash.clone() + "\n"),
+                "text/plain; charset=utf-8",
+            )
+            .await?;
+        client
+            .put_text(
+                &changelog_object,
+                &meta.changelog,
+                "text/markdown; charset=utf-8",
+            )
             .await?;
     }
     client.put_json(&manifest_object, &manifest).await?;
     client.put_json(CATEGORIES_OBJECT, &categories).await?;
-    client.put_json(PROJECTS_OBJECT, &projects_doc(projects)).await?;
+    client
+        .put_json(PROJECTS_OBJECT, &projects_doc(projects))
+        .await?;
     write_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
-    client.put_json("indexes/search-lite.v1.json", &search_index).await?;
+    client
+        .put_json("indexes/search-lite.v1.json", &search_index)
+        .await?;
 
     let state = serde_json::json!({
         "gitlabSourcePath": source_path,
@@ -1020,14 +1063,24 @@ async fn quick_republish_archived_skill_inner(
     // 1. 读取保存的元数据（而不是 SKILL.md）
     // 尝试从 gitlab 路径和 archived 路径读取
     let meta_path_gitlab = admin_object_path(&source_path, "publish-meta.v1.json")?;
-    let meta_path_archived = format!("{}{}/publish-meta.v1.json", ARCHIVED_ADMIN_PREFIX, source_path);
+    let meta_path_archived = format!(
+        "{}{}/publish-meta.v1.json",
+        ARCHIVED_ADMIN_PREFIX, source_path
+    );
 
-    let meta = match client.get_optional_json::<PublishMeta>(&meta_path_gitlab).await? {
+    let meta = match client
+        .get_optional_json::<PublishMeta>(&meta_path_gitlab)
+        .await?
+    {
         Some(m) => m,
         None => client
             .get_optional_json::<PublishMeta>(&meta_path_archived)
             .await?
-            .ok_or_else(|| anyhow!("未找到已保存的发布元数据。该 skill 可能未曾发布过，无法使用快速重新上架功能。"))?,
+            .ok_or_else(|| {
+                anyhow!(
+                    "未找到已保存的发布元数据。该 skill 可能未曾发布过，无法使用快速重新上架功能。"
+                )
+            })?,
     };
 
     // 2. 验证元数据完整性
@@ -1039,10 +1092,15 @@ async fn quick_republish_archived_skill_inner(
     let state_path_gitlab = admin_object_path(&source_path, "state.v1.json")?;
     let state_path_archived = format!("{}{}/state.v1.json", ARCHIVED_ADMIN_PREFIX, source_path);
 
-    let (state_json, actual_state_path) = match client.get_optional_json::<serde_json::Value>(&state_path_gitlab).await? {
+    let (state_json, actual_state_path) = match client
+        .get_optional_json::<serde_json::Value>(&state_path_gitlab)
+        .await?
+    {
         Some(s) => (Some(s), state_path_gitlab),
         None => (
-            client.get_optional_json::<serde_json::Value>(&state_path_archived).await?,
+            client
+                .get_optional_json::<serde_json::Value>(&state_path_archived)
+                .await?,
             state_path_archived,
         ),
     };
@@ -1084,9 +1142,15 @@ async fn quick_republish_archived_skill_inner(
             .ok_or_else(|| anyhow!("manifest 中未找到最新版本信息"))?;
 
         // 检查 skill 包是否存在
-        let skill_json_exists = client.get_optional_text(&version_info.skill_path).await?.is_some();
+        let skill_json_exists = client
+            .get_optional_text(&version_info.skill_path)
+            .await?
+            .is_some();
         if !skill_json_exists {
-            return Err(anyhow!("市场中的 skill 包文件不存在: {}。无法重新上架。", version_info.skill_path));
+            return Err(anyhow!(
+                "市场中的 skill 包文件不存在: {}。无法重新上架。",
+                version_info.skill_path
+            ));
         }
 
         manifest.latest_version.clone()
@@ -1094,17 +1158,22 @@ async fn quick_republish_archived_skill_inner(
         // 5b. 如果 manifest 不存在，尝试从 state.v1.json 读取版本
         state_json
             .as_ref()
-            .and_then(|v| v.get("publishedVersion").or_else(|| v.get("published_version")))
+            .and_then(|v| {
+                v.get("publishedVersion")
+                    .or_else(|| v.get("published_version"))
+            })
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!(
+            .ok_or_else(|| {
+                anyhow!(
                     "无法确定 skill 版本信息。该 skill 的下架记录不完整，缺少版本号。\n\n\
                 可能的原因：\n\
                 1. 该 skill 从未成功发布过，只是创建了草稿\n\
                 2. 下架时版本信息未被保存\n\
                 3. 市场中的包文件已被完全删除\n\n\
                 建议：请使用正常发布流程重新发布该 skill。"
-            ))?
+                )
+            })?
     };
 
     // 6. 重新加入市场目录
@@ -1167,9 +1236,13 @@ async fn quick_republish_archived_skill_inner(
 
     // 10. 保存目录和索引
     client.put_json(CATEGORIES_OBJECT, &categories).await?;
-    client.put_json(PROJECTS_OBJECT, &projects_doc(projects)).await?;
+    client
+        .put_json(PROJECTS_OBJECT, &projects_doc(projects))
+        .await?;
     write_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
-    client.put_json("indexes/search-lite.v1.json", &search_index).await?;
+    client
+        .put_json("indexes/search-lite.v1.json", &search_index)
+        .await?;
     client.put_json(CATALOG_OBJECT, &catalog).await?;
 
     // 11. 记录审计日志
@@ -1221,11 +1294,15 @@ async fn archive_market_skill_inner(
     catalog.generated_at = Some(now());
     write_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
     client
-        .put_json("indexes/search-lite.v1.json", &build_search_lite_index(&catalog))
+        .put_json(
+            "indexes/search-lite.v1.json",
+            &build_search_lite_index(&catalog),
+        )
         .await?;
     client.put_json(CATALOG_OBJECT, &catalog).await?;
 
-    let source_path = find_draft_source_for_skill(&client, &request.namespace, &request.skill_id).await?;
+    let source_path =
+        find_draft_source_for_skill(&client, &request.namespace, &request.skill_id).await?;
     let archive_source_path = source_path
         .clone()
         .unwrap_or_else(|| format!("{}/{}", request.namespace, request.skill_id));
@@ -2375,9 +2452,7 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
             (false, Some("metadata"), "version") => {
                 metadata.version = clean_frontmatter_value(value)
             }
-            (false, Some("metadata"), "author") => {
-                metadata.author = clean_frontmatter_value(value)
-            }
+            (false, Some("metadata"), "author") => metadata.author = clean_frontmatter_value(value),
             _ => {}
         }
     }
@@ -2484,9 +2559,7 @@ fn draft_status(
     }
     match published_version {
         Some(published) if Some(published) == version => "已发布".to_string(),
-        Some(published) if version.is_some_and(|value| value > published) => {
-            "可升级".to_string()
-        }
+        Some(published) if version.is_some_and(|value| value > published) => "可升级".to_string(),
         Some(published) if version.is_some_and(|value| value < published) => {
             "版本回退风险".to_string()
         }
@@ -2503,7 +2576,12 @@ fn validation_status_from_json(value: &serde_json::Value) -> Option<String> {
 
 fn validation_failed(status: Option<&str>) -> bool {
     status
-        .map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "" | "passed" | "ok" | "success"))
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "passed" | "ok" | "success"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -2717,25 +2795,18 @@ fn admin_audit_target(
         "saveMarketProject" | "deleteMarketProject" => {
             audit_field_string(value, payload, &["slug", "projectSlug", "project_slug"])
         }
-        "saveMarketCategory" | "deleteMarketCategory" => audit_field_string(
-            value,
-            payload,
-            &["categoryId", "category_id", "id"],
-        )
-        .or_else(|| {
-            payload
-                .get("category")
-                .and_then(|category| {
+        "saveMarketCategory" | "deleteMarketCategory" => {
+            audit_field_string(value, payload, &["categoryId", "category_id", "id"]).or_else(|| {
+                payload.get("category").and_then(|category| {
                     audit_value_string(category, "id")
                         .or_else(|| audit_value_string(category, "categoryId"))
                 })
-        }),
-        "savePublishMeta" => audit_field_string(
-            value,
-            payload,
-            &["gitlabSourcePath", "gitlab_source_path"],
-        )
-        .or_else(|| namespace_skill_target(payload)),
+            })
+        }
+        "savePublishMeta" => {
+            audit_field_string(value, payload, &["gitlabSourcePath", "gitlab_source_path"])
+                .or_else(|| namespace_skill_target(payload))
+        }
         "publishDraft" => value
             .get("state")
             .and_then(namespace_skill_target)
@@ -2760,7 +2831,8 @@ fn admin_audit_target(
 
 fn namespace_skill_target(value: &serde_json::Value) -> Option<String> {
     let namespace = audit_value_string(value, "namespace")?;
-    let skill_id = audit_value_string(value, "skillId").or_else(|| audit_value_string(value, "skill_id"))?;
+    let skill_id =
+        audit_value_string(value, "skillId").or_else(|| audit_value_string(value, "skill_id"))?;
     let base = format!("{namespace}/{skill_id}");
     let version = audit_value_string(value, "version")
         .or_else(|| audit_value_string(value, "publishedVersion"))
@@ -2793,7 +2865,12 @@ fn audit_action_from_path(object_path: &str) -> String {
     object_path
         .rsplit('/')
         .next()
-        .and_then(|file| file.strip_suffix(".json").unwrap_or(file).rsplit_once('-').map(|(action, _)| action))
+        .and_then(|file| {
+            file.strip_suffix(".json")
+                .unwrap_or(file)
+                .rsplit_once('-')
+                .map(|(action, _)| action)
+        })
         .filter(|action| !action.trim().is_empty())
         .unwrap_or("unknown")
         .to_string()
@@ -2824,7 +2901,8 @@ fn should_republish_existing_version(
     if version_exists && already_in_catalog {
         Err(anyhow!(
             "版本已在市场中，禁止重复发布: {}@{}",
-            meta.skill_id, version
+            meta.skill_id,
+            version
         ))
     } else {
         Ok(version_exists)
@@ -2878,10 +2956,7 @@ fn publish_categories(meta: &PublishMeta) -> Vec<String> {
             meta.publish_project_slug.as_deref().unwrap_or("")
         )]
     } else {
-        vec![meta
-            .publish_category_slug
-            .clone()
-            .unwrap_or_default()]
+        vec![meta.publish_category_slug.clone().unwrap_or_default()]
     }
 }
 
@@ -2960,7 +3035,9 @@ async fn save_remote_projects(
     client: &AdminObjectClient,
     projects: &[MarketProject],
 ) -> Result<()> {
-    client.put_json(PROJECTS_OBJECT, &projects_doc(projects.to_vec())).await
+    client
+        .put_json(PROJECTS_OBJECT, &projects_doc(projects.to_vec()))
+        .await
 }
 
 fn projects_doc(projects: Vec<MarketProject>) -> ProjectsDoc {
@@ -3011,7 +3088,9 @@ async fn write_all_market_indexes(client: &AdminObjectClient, catalog: &CatalogD
     let categories = rebuild_catalog_categories(&catalog.skills);
     let search_index = build_search_lite_index(catalog);
     write_market_indexes_for_categories(client, catalog, &categories).await?;
-    client.put_json("indexes/search-lite.v1.json", &search_index).await?;
+    client
+        .put_json("indexes/search-lite.v1.json", &search_index)
+        .await?;
     client.put_json(CATALOG_OBJECT, catalog).await?;
     Ok(())
 }
@@ -3046,7 +3125,10 @@ async fn write_admin_audit(
         new_id()
     );
     client
-        .put_json(&audit_path, &admin_audit_envelope(action, authorization, payload))
+        .put_json(
+            &audit_path,
+            &admin_audit_envelope(action, authorization, payload),
+        )
         .await
 }
 
@@ -3056,10 +3138,9 @@ async fn find_draft_source_for_skill(
     skill_id: &str,
 ) -> Result<Option<String>> {
     let objects = client.list_objects(DRAFT_ADMIN_PREFIX).await?;
-    for object in objects
-        .iter()
-        .filter(|object| object.ends_with("/state.v1.json") && object.starts_with(DRAFT_ADMIN_PREFIX))
-    {
+    for object in objects.iter().filter(|object| {
+        object.ends_with("/state.v1.json") && object.starts_with(DRAFT_ADMIN_PREFIX)
+    }) {
         let state = client
             .get_optional_json::<serde_json::Value>(object)
             .await?
@@ -3463,12 +3544,7 @@ impl AdminObjectClient {
             .await
     }
 
-    async fn put_bytes(
-        &self,
-        object_path: &str,
-        bytes: Vec<u8>,
-        content_type: &str,
-    ) -> Result<()> {
+    async fn put_bytes(&self, object_path: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
         let url = object_url(&self.source, object_path)?;
         let signed = signed_request_headers("PUT", &url, self.source.region.as_deref(), &bytes)?;
         let mut request = self
@@ -3559,7 +3635,9 @@ fn signed_request_headers(
     let request_time = Utc::now();
     let amz_date = request_time.format("%Y%m%dT%H%M%SZ").to_string();
     let short_date = request_time.format("%Y%m%d").to_string();
-    let region = region.filter(|value| !value.trim().is_empty()).unwrap_or("us-east-1");
+    let region = region
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("us-east-1");
     let host = url_host(url)?;
     let payload_hash = sha256_hex(payload);
 
@@ -4196,7 +4274,11 @@ fn preview_file_from_bytes(
     max_bytes: usize,
 ) -> Option<SkillPreviewFile> {
     let truncated = bytes.len() > max_bytes;
-    let slice = if truncated { &bytes[..max_bytes] } else { bytes };
+    let slice = if truncated {
+        &bytes[..max_bytes]
+    } else {
+        bytes
+    };
     let Ok(content) = String::from_utf8(slice.to_vec()) else {
         return None;
     };
@@ -4627,8 +4709,14 @@ author: "Skill Hub"
 # Demo
 "#;
 
-        assert_eq!(parse_skill_markdown_field(content, "version").as_deref(), Some("1.2.3"));
-        assert_eq!(parse_skill_markdown_field(content, "author").as_deref(), Some("Skill Hub"));
+        assert_eq!(
+            parse_skill_markdown_field(content, "version").as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            parse_skill_markdown_field(content, "author").as_deref(),
+            Some("Skill Hub")
+        );
     }
 
     #[test]
@@ -4726,7 +4814,9 @@ author: "Skill Hub"
             }],
             ..empty_catalog
         };
-        assert!(should_republish_existing_version(&manifest, &active_catalog, &meta, "1.0.0").is_err());
+        assert!(
+            should_republish_existing_version(&manifest, &active_catalog, &meta, "1.0.0").is_err()
+        );
     }
 
     #[test]
@@ -4955,9 +5045,12 @@ Content here.
         tauri::async_runtime::block_on(async {
             let admin_key = admin_config::ADMIN_KEY.to_string();
             let local_macs = admin_config::local_mac_addresses();
-            unlock_admin_mode_inner(AdminUnlockRequest {
-                admin_key: admin_key.clone(),
-            }, &local_macs)
+            unlock_admin_mode_inner(
+                AdminUnlockRequest {
+                    admin_key: admin_key.clone(),
+                },
+                &local_macs,
+            )
             .await
             .expect("admin mode should unlock against live MinIO");
 
@@ -4974,7 +5067,9 @@ Content here.
             let mut projects = load_remote_projects(&client).await.expect("load projects");
             projects.retain(|item| item.slug != project.slug);
             projects.push(project);
-        save_remote_projects(&client, &projects).await.expect("save projects");
+            save_remote_projects(&client, &projects)
+                .await
+                .expect("save projects");
 
             let source_path = "product/minio-live-draft".to_string();
             let drafts = list_admin_drafts_inner(&admin_key, &local_macs)
@@ -4983,7 +5078,8 @@ Content here.
             assert!(
                 drafts
                     .iter()
-                .any(|draft| draft.gitlab_source_path == source_path && draft.version.as_deref() == Some("0.1.0")),
+                    .any(|draft| draft.gitlab_source_path == source_path
+                        && draft.version.as_deref() == Some("0.1.0")),
                 "live draft should be visible"
             );
 
@@ -5003,19 +5099,25 @@ Content here.
                 updated_by: None,
             };
 
-            save_publish_meta_inner(SavePublishMetaRequest {
-                admin_key: admin_key.clone(),
-                gitlab_source_path: source_path.clone(),
-                meta,
-            }, &local_macs)
+            save_publish_meta_inner(
+                SavePublishMetaRequest {
+                    admin_key: admin_key.clone(),
+                    gitlab_source_path: source_path.clone(),
+                    meta,
+                },
+                &local_macs,
+            )
             .await
             .expect("save publish metadata");
 
-            let preview = preview_admin_draft_inner(AdminDraftPreviewRequest {
-                admin_key: admin_key.clone(),
-                gitlab_source_path: source_path.clone(),
-                file_path: None,
-            }, &local_macs)
+            let preview = preview_admin_draft_inner(
+                AdminDraftPreviewRequest {
+                    admin_key: admin_key.clone(),
+                    gitlab_source_path: source_path.clone(),
+                    file_path: None,
+                },
+                &local_macs,
+            )
             .await
             .expect("preview draft");
             assert_eq!(preview.title, "MinIO Live Draft");
@@ -5033,10 +5135,13 @@ Content here.
                 return;
             }
 
-            publish_draft_inner(PublishDraftRequest {
-                admin_key,
-                gitlab_source_path: source_path,
-            }, &local_macs)
+            publish_draft_inner(
+                PublishDraftRequest {
+                    admin_key,
+                    gitlab_source_path: source_path,
+                },
+                &local_macs,
+            )
             .await
             .expect("publish draft");
 
@@ -5060,9 +5165,12 @@ Content here.
         tauri::async_runtime::block_on(async {
             let admin_key = admin_config::ADMIN_KEY.to_string();
             let local_macs = admin_config::local_mac_addresses();
-            unlock_admin_mode_inner(AdminUnlockRequest {
-                admin_key: admin_key.clone(),
-            }, &local_macs)
+            unlock_admin_mode_inner(
+                AdminUnlockRequest {
+                    admin_key: admin_key.clone(),
+                },
+                &local_macs,
+            )
             .await
             .expect("admin mode should unlock against live MinIO");
 
@@ -5079,7 +5187,9 @@ Content here.
             let mut projects = load_remote_projects(&client).await.expect("load projects");
             projects.retain(|item| item.slug != project.slug);
             projects.push(project);
-            save_remote_projects(&client, &projects).await.expect("save projects");
+            save_remote_projects(&client, &projects)
+                .await
+                .expect("save projects");
 
             let source_path = "product/minio-live-draft".to_string();
             let meta = PublishMeta {
@@ -5097,11 +5207,14 @@ Content here.
                 updated_at: None,
                 updated_by: None,
             };
-            save_publish_meta_inner(SavePublishMetaRequest {
-                admin_key: admin_key.clone(),
-                gitlab_source_path: source_path.clone(),
-                meta,
-            }, &local_macs)
+            save_publish_meta_inner(
+                SavePublishMetaRequest {
+                    admin_key: admin_key.clone(),
+                    gitlab_source_path: source_path.clone(),
+                    meta,
+                },
+                &local_macs,
+            )
             .await
             .expect("save publish metadata");
 
@@ -5111,24 +5224,32 @@ Content here.
                 .iter()
                 .any(|skill| skill.namespace == "live" && skill.id == "minio-live-draft");
             if !currently_listed {
-                publish_draft_inner(PublishDraftRequest {
-                    admin_key: admin_key.clone(),
-                    gitlab_source_path: source_path.clone(),
-                }, &local_macs)
+                publish_draft_inner(
+                    PublishDraftRequest {
+                        admin_key: admin_key.clone(),
+                        gitlab_source_path: source_path.clone(),
+                    },
+                    &local_macs,
+                )
                 .await
                 .expect("publish existing draft before archive");
             }
 
-            archive_market_skill_inner(ArchiveMarketSkillRequest {
-                admin_key: admin_key.clone(),
-                namespace: "live".to_string(),
-                skill_id: "minio-live-draft".to_string(),
-                reason: Some("live integration archive test".to_string()),
-            }, &local_macs)
+            archive_market_skill_inner(
+                ArchiveMarketSkillRequest {
+                    admin_key: admin_key.clone(),
+                    namespace: "live".to_string(),
+                    skill_id: "minio-live-draft".to_string(),
+                    reason: Some("live integration archive test".to_string()),
+                },
+                &local_macs,
+            )
             .await
             .expect("archive market skill");
 
-            let archived_catalog = load_remote_catalog(&client).await.expect("load catalog after archive");
+            let archived_catalog = load_remote_catalog(&client)
+                .await
+                .expect("load catalog after archive");
             assert!(
                 !archived_catalog
                     .skills
@@ -5137,7 +5258,9 @@ Content here.
                 "skill should disappear from market catalog after archive"
             );
 
-            let drafts = list_admin_drafts_inner(&admin_key, &local_macs).await.expect("list drafts");
+            let drafts = list_admin_drafts_inner(&admin_key, &local_macs)
+                .await
+                .expect("list drafts");
             assert!(
                 drafts.iter().any(|draft| {
                     draft.gitlab_source_path == source_path
@@ -5147,14 +5270,19 @@ Content here.
                 "archived GitLab draft should be visible in draft list"
             );
 
-            publish_draft_inner(PublishDraftRequest {
-                admin_key,
-                gitlab_source_path: source_path,
-            }, &local_macs)
+            publish_draft_inner(
+                PublishDraftRequest {
+                    admin_key,
+                    gitlab_source_path: source_path,
+                },
+                &local_macs,
+            )
             .await
             .expect("republish archived existing version");
 
-            let republished_catalog = load_remote_catalog(&client).await.expect("load catalog after republish");
+            let republished_catalog = load_remote_catalog(&client)
+                .await
+                .expect("load catalog after republish");
             assert!(
                 republished_catalog
                     .skills

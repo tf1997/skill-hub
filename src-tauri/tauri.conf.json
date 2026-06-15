@@ -35,8 +35,7 @@
       "targets": "all",
       "windows": {
         "webviewInstallMode": {
-          "type": "downloadBootstrapper",
-          "silent": true
+          "type": "skip"
         }
       }
     },

@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod admin_config;
 mod commands;
 mod crash_report;
-mod admin_config;
 mod db;
 mod minio_config;
 mod models;
 mod process_util;
 mod updater;
+mod webview_prereq;
 
 use tauri::api::{dialog, shell};
 use tauri::{CustomMenuItem, Manager, Menu, Submenu};
@@ -57,6 +58,7 @@ fn show_about_window(window: &tauri::Window) {
 fn main() {
     crash_report::install();
     updater::relaunch_latest_portable_if_needed();
+    webview_prereq::ensure_webview2_runtime_or_exit();
 
     if let Err(error) = tauri::Builder::default()
         .menu(app_menu())

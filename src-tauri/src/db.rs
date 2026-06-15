@@ -178,7 +178,7 @@ pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
         "DELETE FROM catalog_cache WHERE source_id <> ?1",
         params![COMPILED_SOURCE_ID],
     )?;
-        conn.execute(
+    conn.execute(
         "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)
          ON CONFLICT(id) DO UPDATE SET

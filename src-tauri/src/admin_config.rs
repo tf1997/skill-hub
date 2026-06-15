@@ -123,7 +123,12 @@ pub fn admin_authorization(
 }
 
 fn normalize_role(value: Option<&str>) -> String {
-    match value.unwrap_or("project").trim().to_ascii_lowercase().as_str() {
+    match value
+        .unwrap_or("project")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "project" | "project_admin" | "project-admin" => "project".to_string(),
         _ => "system".to_string(),
     }
@@ -197,9 +202,9 @@ fn extract_mac_addresses(output: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut macs = Vec::new();
 
-    for token in output.split(|ch: char| {
-        !(ch.is_ascii_hexdigit() || ch == '-' || ch == ':' || ch == '.')
-    }) {
+    for token in
+        output.split(|ch: char| !(ch.is_ascii_hexdigit() || ch == '-' || ch == ':' || ch == '.'))
+    {
         let Some(mac) = normalize_mac(token) else {
             continue;
         };
@@ -252,12 +257,9 @@ mod tests {
         .expect("allowlist should parse");
 
         assert!(admin_authorization(&[String::from("AA:BB:CC:DD:EE:FF")], &allowlist).is_some());
-        assert!(
-            admin_authorization(&[String::from("22-33-44-55-66-77")], &allowlist).is_some()
-        );
-        let authorization =
-            admin_authorization(&[String::from("22-33-44-55-66-77")], &allowlist)
-                .expect("project admin should match");
+        assert!(admin_authorization(&[String::from("22-33-44-55-66-77")], &allowlist).is_some());
+        let authorization = admin_authorization(&[String::from("22-33-44-55-66-77")], &allowlist)
+            .expect("project admin should match");
         assert_eq!(authorization.role, "project");
         assert!(authorization.can_manage_project("live-project"));
         assert!(authorization.can_manage_project("other-project"));
