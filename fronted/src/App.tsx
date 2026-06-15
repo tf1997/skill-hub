@@ -24,7 +24,6 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  SlidersHorizontal,
   ScrollText,
   Sun,
   Trash2,
@@ -209,6 +208,44 @@ function normalizeCategoryList(categories: Category[]) {
 
 function nextCategoryOrder(categories: Category[]) {
   return categories.reduce((max, category) => Math.max(max, category.order), 0) + 10;
+}
+
+function projectOrder(project: MarketProject) {
+  return Number.isFinite(project.order) ? project.order : 0;
+}
+
+function compareMarketProjects(first: MarketProject, second: MarketProject) {
+  const firstOrder = projectOrder(first);
+  const secondOrder = projectOrder(second);
+  if (firstOrder !== secondOrder) return firstOrder - secondOrder;
+  return first.slug.localeCompare(second.slug, "en");
+}
+
+function normalizeProjectList(projects: MarketProject[]) {
+  const bySlug = new Map<string, MarketProject>();
+  for (const project of projects) {
+    const slug = project.slug.trim();
+    if (!slug) continue;
+    bySlug.set(slug, {
+      ...project,
+      slug,
+      name: project.name.trim() || slug,
+      description: project.description.trim(),
+      order: projectOrder(project)
+    });
+  }
+
+  const normalized = [...bySlug.values()].sort(compareMarketProjects);
+  let nextOrder = 10;
+  return normalized.map((project) => {
+    const order = project.order >= nextOrder ? project.order : nextOrder;
+    nextOrder = order + 10;
+    return { ...project, order };
+  });
+}
+
+function nextProjectOrder(projects: MarketProject[]) {
+  return projects.reduce((max, project) => Math.max(max, projectOrder(project)), 0) + 10;
 }
 
 function App() {
@@ -518,7 +555,7 @@ function App() {
     setError(null);
     try {
       const next = await api.bootstrap();
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       if (next.metadataSyncError) {
         setError(`市场元数据同步失败，显示本地缓存：${next.metadataSyncError}`);
         setNotice("已载入本地缓存");
@@ -538,7 +575,7 @@ function App() {
     setNotice("正在从 MinIO 拉取市场元数据...");
     try {
       const next = await api.refreshCatalog();
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       setNotice("市场元数据已从 MinIO 同步");
     } catch (err) {
       setError(`市场索引刷新失败：${readError(err)}`);
@@ -634,7 +671,7 @@ function App() {
     setError(null);
     try {
       const result = await api.upgradeSkillBinding(bindingId);
-      setData(result);
+      setData((current) => ({ ...current, ...result, marketProjects: normalizeProjectList(result.marketProjects) }));
       setNotice("Skill 已升级到最新版本");
     } catch (err) {
       setError(readError(err));
@@ -1031,7 +1068,7 @@ function App() {
       const saved = await api.savePublishMeta(adminKey, selectedDraftPath, normalizeMetaForSave(draftMeta));
       setDraftMeta(saved);
       const next = await api.publishDraft(adminKey, selectedDraftPath);
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       await refreshAdminDrafts();
       await refreshAdminAuditLogs(false);
       setNotice("草稿已发布到市场");
@@ -1072,7 +1109,7 @@ function App() {
 
       // 快速重新上架
       const next = await api.quickRepublishArchivedSkill(adminKey, selectedDraftPath);
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       await refreshAdminDrafts();
       await refreshAdminAuditLogs(false);
       setNotice("已快速重新上架到市场");
@@ -1089,7 +1126,7 @@ function App() {
     setGovernanceDialogError(null);
     try {
       const projects = await api.saveMarketProjectRemote(adminKey, remoteProjectDraft);
-      setData((current) => ({ ...current, marketProjects: projects }));
+      setData((current) => ({ ...current, marketProjects: normalizeProjectList(projects) }));
       setRemoteProjectDraft(emptyMarketProject());
       setGovernanceDialog(null);
       await refreshAdminAuditLogs(false);
@@ -1107,7 +1144,7 @@ function App() {
     setGovernanceDialogError(null);
     try {
       const next = await api.deleteMarketProjectRemote(adminKey, project.slug);
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       if (selectedMarketProjectSlug === project.slug) {
         setSelectedMarketProjectSlug("");
       }
@@ -1145,7 +1182,7 @@ function App() {
     setGovernanceDialogError(null);
     try {
       const next = await api.deleteMarketCategoryRemote(adminKey, category.id);
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       setGovernanceDialog(null);
       await refreshAdminAuditLogs(false);
       setNotice(`${category.name} 已删除`);
@@ -1161,7 +1198,7 @@ function App() {
     setError(null);
     try {
       const next = await api.archiveMarketSkill(adminKey, skill.namespace, skill.id);
-      setData(next);
+      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
       await refreshAdminDrafts();
       await refreshAdminAuditLogs(false);
       setNotice(`${skill.name} 已下架并回到草稿区`);
@@ -1504,87 +1541,36 @@ function MarketView(props: {
         props.installProjectPath
       )
     : { label: "安装并启用", disabled: false, tone: "install" as const };
+  const filterProjects = normalizeProjectList(props.marketProjects);
+  const changeMarketFilter = (value: string) => {
+    if (props.mode === "project") {
+      props.onSelectedMarketProjectSlug(value);
+      return;
+    }
+    props.onSelectCategory(value);
+  };
 
   return (
     <section className="market-grid">
-      <div className="filter-rail">
-        <div className="market-mode-panel">
-          <div className="segmented market-mode-switch" aria-label="市场范围">
-            <button
-              className={props.mode === "public" ? "active" : ""}
-              onClick={() => props.onMode("public")}
-            >
-              公共
-            </button>
-            <button
-              className={props.mode === "project" ? "active" : ""}
-              onClick={() => props.onMode("project")}
-            >
-              项目
-            </button>
-          </div>
-          <p>{props.mode === "project" ? "按项目查看专属 skill" : "按公共分类筛选市场 skill"}</p>
-        </div>
-        <div className="rail-title">
-          <SlidersHorizontal size={16} />
-          <span>{props.mode === "project" ? "项目" : "分类"}</span>
-          <b>
-            {props.mode === "project"
-              ? props.marketProjects.length + 1
-              : props.categories.length + 1}
-          </b>
-        </div>
-        {props.mode === "public" ? (
-          <>
-            <button
-              className={`category-button ${props.selectedCategory === "all" ? "active" : ""}`}
-              onClick={() => props.onSelectCategory("all")}
-            >
-              全部
-            </button>
-            {props.categories.map((category) => (
-              <button
-                key={category.id}
-                className={`category-button ${
-                  props.selectedCategory === category.id ? "active" : ""
-                }`}
-                onClick={() => props.onSelectCategory(category.id)}
-              >
-                {category.name}
-              </button>
-            ))}
-          </>
-        ) : (
-          <>
-            <button
-              className={`category-button ${
-                props.selectedMarketProjectSlug === "" ? "active" : ""
-              }`}
-              onClick={() => props.onSelectedMarketProjectSlug("")}
-            >
-              全部
-            </button>
-            {props.marketProjects.map((project) => (
-              <button
-                key={project.slug}
-                className={`category-button ${
-                  props.selectedMarketProjectSlug === project.slug ? "active" : ""
-                }`}
-                onClick={() => props.onSelectedMarketProjectSlug(project.slug)}
-              >
-                {project.name}
-              </button>
-            ))}
-            {props.marketProjects.length === 0 ? (
-              <div className="empty-state compact">暂无远程市场项目。</div>
-            ) : null}
-          </>
-        )}
-      </div>
-
       <div className="list-pane">
-        <div className="pane-toolbar">
-          <label className="search-box">
+        <div className="pane-toolbar market-toolbar">
+          <div className="market-filter-controls">
+            <div className="segmented market-mode-switch" aria-label="市场范围">
+              <button
+                className={props.mode === "public" ? "active" : ""}
+                onClick={() => props.onMode("public")}
+              >
+                公共
+              </button>
+              <button
+                className={props.mode === "project" ? "active" : ""}
+                onClick={() => props.onMode("project")}
+              >
+                项目
+              </button>
+            </div>
+          </div>
+          <label className="search-box market-search">
             <Search size={17} />
             <input
               value={props.query}
@@ -1592,52 +1578,93 @@ function MarketView(props: {
               placeholder="搜索 skill、标签或命名空间"
             />
           </label>
-          <button className="primary-soft" onClick={props.onRefresh}>
+          <button className="primary-soft icon-only" onClick={props.onRefresh} title="刷新" aria-label="刷新">
             <RefreshCw size={17} />
-            刷新
           </button>
         </div>
+        <div className="market-list-body">
+          <nav className="market-filter-rail" aria-label={props.mode === "project" ? "项目筛选" : "分类筛选"}>
+            <button
+              className={`market-filter-chip ${
+                props.mode === "project"
+                  ? props.selectedMarketProjectSlug === ""
+                    ? "active"
+                    : ""
+                  : props.selectedCategory === "all"
+                    ? "active"
+                    : ""
+              }`}
+              onClick={() => changeMarketFilter(props.mode === "project" ? "" : "all")}
+              title={props.mode === "project" ? "全部项目" : "全部分类"}
+            >
+              <span>{props.mode === "project" ? "全部项目" : "全部分类"}</span>
+            </button>
+            {props.mode === "project"
+              ? filterProjects.map((project) => (
+                  <button
+                    key={project.slug}
+                    className={`market-filter-chip ${
+                      props.selectedMarketProjectSlug === project.slug ? "active" : ""
+                    }`}
+                    onClick={() => changeMarketFilter(project.slug)}
+                    title={project.name}
+                  >
+                    <span>{project.name}</span>
+                  </button>
+                ))
+              : props.categories.map((category) => (
+                  <button
+                    key={category.id}
+                    className={`market-filter-chip ${props.selectedCategory === category.id ? "active" : ""}`}
+                    onClick={() => changeMarketFilter(category.id)}
+                    title={category.name}
+                  >
+                    <span>{category.name}</span>
+                  </button>
+                ))}
+          </nav>
 
-        <div className="skill-list">
-          {props.skills.length > 0 ? (
-            props.skills.map((skill) => {
-              const bindings = props.bindingsBySkill.get(`${skill.namespace}/${skill.id}`) ?? [];
-              return (
-                <button
-                  key={skillKey(skill)}
-                  className={`skill-row ${
-                    props.selectedSkill && skillKey(props.selectedSkill) === skillKey(skill)
-                      ? "active"
-                      : ""
-                  }`}
-                  onClick={() => props.onSelectSkill(skillKey(skill))}
-                >
-                  <span className="skill-row-icon" aria-hidden="true">
-                    <Layers3 size={16} />
-                  </span>
-                  <div className="skill-row-main">
-                    <strong>{skill.name}</strong>
-                    <small>{skill.namespace}/{skill.id}</small>
-                  </div>
-                  <div className="row-meta">
-                    <Badge>{skill.latestVersion}</Badge>
-                    <Badge strong={isInstalledSkill(skill, bindings)}>
-                      {marketStatusLabel(skill, bindings)}
-                    </Badge>
-                    <BindingDots bindings={bindings} />
-                    <ChevronRight size={17} />
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="empty-state compact">
-              {props.marketSkillCount === 0
-                ? "还没有从 MinIO 同步到 skill。请确认 MinIO 可连接，并已上传 catalog.v1.json。"
-                : "没有匹配当前筛选条件的 skill。"}
-            </div>
-          )}
+          <div className="skill-list">
+            {props.skills.length > 0 ? (
+              props.skills.map((skill) => {
+                const bindings = props.bindingsBySkill.get(`${skill.namespace}/${skill.id}`) ?? [];
+                return (
+                  <button
+                    key={skillKey(skill)}
+                    className={`skill-row ${
+                      props.selectedSkill && skillKey(props.selectedSkill) === skillKey(skill)
+                        ? "active"
+                        : ""
+                    }`}
+                    onClick={() => props.onSelectSkill(skillKey(skill))}
+                  >
+                    <span className="skill-row-icon" aria-hidden="true">
+                      <Layers3 size={16} />
+                    </span>
+                    <div className="skill-row-main">
+                      <strong>{skill.name}</strong>
+                      <small>{skill.namespace}/{skill.id}</small>
+                    </div>
+                    <div className="row-meta">
+                      <Badge strong={isInstalledSkill(skill, bindings)}>
+                        {marketStatusLabel(skill, bindings)}
+                      </Badge>
+                      <BindingDots bindings={bindings} />
+                      <ChevronRight size={17} />
+                    </div>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="empty-state compact">
+                {props.marketSkillCount === 0
+                  ? "还没有从 MinIO 同步到 skill。请确认 MinIO 可连接，并已上传 catalog.v1.json。"
+                  : "没有匹配当前筛选条件的 skill。"}
+              </div>
+            )}
+          </div>
         </div>
+
       </div>
 
       <aside className="detail-pane">
@@ -2517,7 +2544,7 @@ function AdminView(props: {
   const [archiveQuery, setArchiveQuery] = useState("");
   const selectedDraft = props.drafts.find((draft) => draft.gitlabSourcePath === props.selectedDraftPath);
   const isSystem = props.session?.role === "system";
-  const manageableProjects = props.projects.filter((project) => props.canManageProject(project.slug));
+  const manageableProjects = normalizeProjectList(props.projects).filter((project) => props.canManageProject(project.slug));
   const manageableSkills = props.skills.filter((skill) => props.canManageSkill(skill));
   const updateMeta = <K extends keyof PublishMeta>(key: K, value: PublishMeta[K]) =>
     props.onMeta({ ...props.meta, [key]: value });
@@ -2691,7 +2718,7 @@ function AdminView(props: {
                       <button
                         className="primary-action compact"
                         onClick={() => {
-                          props.onProjectDraft(emptyMarketProject());
+                          props.onProjectDraft({ ...emptyMarketProject(), order: nextProjectOrder(props.projects) });
                           props.onGovernanceDialog({ kind: "project-create" });
                         }}
                       >
@@ -2705,7 +2732,7 @@ function AdminView(props: {
                           <div>
                             <strong>{project.name}</strong>
                             <span>
-                              {project.slug} · {project.description || "无描述"}
+                              {project.slug} · 排序 {project.order} · {project.description || "无描述"}
                             </span>
                           </div>
                           <div className="row-actions">
@@ -3296,6 +3323,14 @@ function GovernanceDialogView(props: {
                   value={props.projectDraft.description}
                   onChange={(event) => updateProject("description", event.target.value)}
                   placeholder="项目市场说明"
+                />
+              </label>
+              <label className="text-field">
+                <span>排序</span>
+                <input
+                  type="number"
+                  value={props.projectDraft.order}
+                  onChange={(event) => updateProject("order", Number(event.target.value) || 10)}
                 />
               </label>
               <button className="primary-action compact" onClick={props.onSaveProject} disabled={props.busy}>
@@ -4056,7 +4091,8 @@ function emptyMarketProject(): MarketProject {
   return {
     slug: "",
     name: "",
-    description: ""
+    description: "",
+    order: 10
   };
 }
 

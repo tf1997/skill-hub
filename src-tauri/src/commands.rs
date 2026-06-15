@@ -630,6 +630,9 @@ async fn save_market_project_remote_inner(
     if project.name.is_empty() {
         project.name = project.slug.clone();
     }
+    if project.order <= 0 {
+        project.order = 10 + projects.len() as i64 * 10;
+    }
     let timestamp = now();
     if project.created_at.is_none() {
         project.created_at = Some(timestamp.clone());
@@ -642,13 +645,14 @@ async fn save_market_project_remote_inner(
         "slug": project.slug.clone(),
         "name": project.name.clone(),
         "description": project.description.clone(),
+        "order": project.order,
         "createdAt": project.created_at.clone(),
         "updatedAt": project.updated_at.clone()
     });
 
     projects.retain(|item| item.slug != project.slug);
     projects.push(project);
-    projects.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.slug.cmp(&b.slug)));
+    projects = normalize_market_projects(projects);
     save_remote_projects(&client, &projects).await?;
     write_admin_audit(&client, &authorization, "saveMarketProject", audit_payload).await?;
     fs::write(
@@ -2948,6 +2952,7 @@ async fn load_remote_projects(client: &AdminObjectClient) -> Result<Vec<MarketPr
         .get_optional_json::<ProjectsDoc>(PROJECTS_OBJECT)
         .await?
         .map(ProjectsDoc::into_projects)
+        .map(normalize_market_projects)
         .unwrap_or_default())
 }
 
@@ -2962,9 +2967,44 @@ fn projects_doc(projects: Vec<MarketProject>) -> ProjectsDoc {
     ProjectsDoc {
         schema: "skillhub.projects.v1".to_string(),
         generated_at: Some(now()),
-        projects,
+        projects: normalize_market_projects(projects),
         items: Vec::new(),
     }
+}
+
+fn normalize_market_projects(projects: Vec<MarketProject>) -> Vec<MarketProject> {
+    let mut by_slug = BTreeMap::new();
+    for mut project in projects {
+        project.slug = project.slug.trim().to_string();
+        if !is_valid_object_segment_value(&project.slug) {
+            continue;
+        }
+        project.name = project.name.trim().to_string();
+        if project.name.is_empty() {
+            project.name = project.slug.clone();
+        }
+        project.description = project.description.trim().to_string();
+        by_slug.insert(project.slug.clone(), project);
+    }
+
+    let mut items = by_slug.into_values().collect::<Vec<_>>();
+    items.sort_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then_with(|| a.slug.cmp(&b.slug))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut next_order = 10;
+    for item in &mut items {
+        if item.order < next_order {
+            item.order = next_order;
+        }
+        next_order = item.order + 10;
+    }
+
+    items.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.slug.cmp(&b.slug)));
+    items
 }
 
 async fn write_all_market_indexes(client: &AdminObjectClient, catalog: &CatalogDoc) -> Result<()> {
@@ -4925,6 +4965,7 @@ Content here.
                 slug: "live-project".to_string(),
                 name: "Live Project".to_string(),
                 description: "Created by live MinIO integration test".to_string(),
+                order: 10,
                 created_at: None,
                 updated_at: None,
                 updated_by: None,
@@ -5030,6 +5071,7 @@ Content here.
                 slug: "live-project".to_string(),
                 name: "Live Project".to_string(),
                 description: "Created by live MinIO integration test".to_string(),
+                order: 10,
                 created_at: None,
                 updated_at: None,
                 updated_by: None,

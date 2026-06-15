@@ -121,27 +121,32 @@ const mockBootstrap: AppBootstrap = {
     {
       slug: "live-project",
       name: "Live Project",
-      description: "Created by live MinIO integration test"
+      description: "Created by live MinIO integration test",
+      order: 10
     },
     {
       slug: "alpha",
       name: "Alpha",
-      description: "Internal alpha workspace"
+      description: "Internal alpha workspace",
+      order: 20
     },
     {
       slug: "ops",
       name: "Ops",
-      description: "Operations workflow skills"
+      description: "Operations workflow skills",
+      order: 30
     },
     {
       slug: "research",
       name: "Research",
-      description: "Research and analysis skills"
+      description: "Research and analysis skills",
+      order: 40
     },
     {
       slug: "archive-demo",
       name: "Archive Demo",
-      description: "Project example"
+      description: "Project example",
+      order: 50
     }
   ],
   bindings: mockBindings,
@@ -391,7 +396,7 @@ const browserMockApi = {
   savePublishMeta: async (_adminKey: string, _gitlabSourcePath: string, meta: PublishMeta) => meta,
   saveMarketProjectRemote: async (_adminKey: string, project: MarketProject) => {
     const next = mockBootstrap.marketProjects.filter((item) => item.slug !== project.slug);
-    return [project, ...next].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    return [project, ...next].sort((a, b) => a.order - b.order || a.slug.localeCompare(b.slug, "zh-Hans-CN"));
   },
   deleteMarketProjectRemote: async (_adminKey: string, _slug: string) => mockBootstrap,
   saveMarketCategoryRemote: async (_adminKey: string, category: Category) => {

@@ -154,6 +154,8 @@ pub struct MarketProject {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub order: i64,
     #[serde(default, alias = "created_at")]
     pub created_at: Option<String>,
     #[serde(default, alias = "updated_at")]

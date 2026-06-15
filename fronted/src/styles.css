@@ -663,6 +663,12 @@ select:focus-visible {
   font-size: 13px;
 }
 
+.primary-soft.icon-only {
+  width: 38px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
 .primary-soft:hover,
 .icon-text-button:hover {
   background: var(--surface);
@@ -753,7 +759,7 @@ select:focus-visible {
 
 .market-grid {
   display: grid;
-  grid-template-columns: 168px minmax(340px, 0.9fr) minmax(380px, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 1.05fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   flex: 1 1 auto;
@@ -761,7 +767,6 @@ select:focus-visible {
   overflow: hidden;
 }
 
-.filter-rail,
 .list-pane,
 .detail-pane,
 .settings-form,
@@ -775,79 +780,95 @@ select:focus-visible {
   box-shadow: var(--shadow-panel);
 }
 
-.filter-rail,
 .settings-form,
 .target-root-list,
 .local-scan {
   padding: 14px;
 }
 
-.filter-rail {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  min-height: 0;
-  overflow: auto;
+.market-toolbar {
+  gap: 12px;
 }
 
-.market-mode-panel {
-  display: grid;
-  gap: 10px;
-  padding: 10px;
-  background: var(--control-bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-}
-
-.market-mode-panel p {
-  margin: 0;
-  color: var(--subtle);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.market-mode-switch {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
-}
-
-.market-mode-switch button {
-  min-width: 0;
-  font-weight: 700;
-}
-
-.rail-title {
+.market-filter-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 4px 2px 0;
-  color: var(--subtle);
-  font-size: 12px;
-  text-transform: uppercase;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
-.rail-title b {
+.market-filter-controls .segmented {
+  flex: none;
+}
+
+.market-list-body {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.market-filter-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(245, 248, 252, 0.8), rgba(255, 255, 255, 0));
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.market-filter-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  margin-left: auto;
-  padding: 0 6px;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
   color: var(--muted);
-  background: rgba(116, 138, 164, 0.12);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.market-filter-chip:hover {
+  color: var(--text);
+  background: rgba(76, 120, 255, 0.08);
+  border-color: rgba(76, 120, 255, 0.16);
+}
+
+.market-filter-chip.active {
+  color: var(--accent);
+  background: var(--nav-active);
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px rgba(76, 120, 255, 0.08);
+}
+
+.market-filter-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-search {
+  min-width: min(32vw, 360px);
 }
 
 .category-button {
-  justify-content: flex-start;
-  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-height: 38px;
-  margin-bottom: 0;
-  padding: 0 11px;
+  padding: 0 12px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
@@ -924,6 +945,10 @@ select:focus-visible {
   transition: all 0.2s ease;
 }
 
+.search-box.market-search {
+  min-width: 240px;
+}
+
 .search-box:focus-within {
   border-color: var(--accent-primary);
   background: var(--surface);
@@ -958,11 +983,11 @@ select:focus-visible {
 
 .skill-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) max-content;
   align-items: center;
-  gap: 12px;
-  min-height: 76px;
-  padding: 12px 14px;
+  gap: 10px;
+  min-height: 80px;
+  padding: 12px;
   color: var(--text);
   background: transparent;
   border-bottom: 1px solid var(--line);
@@ -1004,6 +1029,7 @@ select:focus-visible {
 .skill-row-main strong {
   margin-bottom: 4px;
   font-size: 15px;
+  line-height: 1.25;
 }
 
 .skill-row-main span,
@@ -1020,11 +1046,18 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.skill-row-main strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .row-meta {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -3904,8 +3937,8 @@ select:focus-visible {
 
 @media (max-width: 1160px) {
   .market-grid {
-    grid-template-columns: 140px minmax(320px, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(0, 0.72fr);
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 0.78fr);
   }
 
   .detail-pane {
@@ -4048,23 +4081,39 @@ select:focus-visible {
   }
 
   .market-grid {
-    grid-template-rows: auto minmax(0, 0.9fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 0.9fr);
     overflow: auto;
   }
 
-  .filter-rail {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-    gap: 8px;
-    overflow: visible;
+  .pane-toolbar.market-toolbar {
+    flex-wrap: wrap;
   }
 
-  .market-mode-panel {
-    grid-column: 1 / -1;
+  .market-filter-controls {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
-  .rail-title {
-    grid-column: 1 / -1;
+  .search-box.market-search {
+    flex: 1 1 100%;
+  }
+
+  .market-list-body {
+    grid-template-columns: 1fr;
+  }
+
+  .market-filter-rail {
+    flex-direction: row;
+    padding: 8px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+  }
+
+  .market-filter-chip {
+    width: auto;
+    max-width: 160px;
+    flex: 0 0 auto;
   }
 
   .project-form,
