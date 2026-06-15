@@ -125,12 +125,14 @@ export type UpdateCheckResult = {
   current_version: string;
   latest_version?: string | null;
   available: boolean;
+  downloadable: boolean;
   distribution: string;
   platform: string;
   arch: string;
   package?: UpdatePackage | null;
   notes?: string | null;
   message?: string | null;
+  manifest_url?: string | null;
 };
 
 export type DownloadUpdateResult = {

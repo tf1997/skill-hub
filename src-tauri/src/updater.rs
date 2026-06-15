@@ -47,12 +47,14 @@ pub struct UpdateCheckResult {
     pub current_version: String,
     pub latest_version: Option<String>,
     pub available: bool,
+    pub downloadable: bool,
     pub distribution: String,
     pub platform: String,
     pub arch: String,
     pub package: Option<UpdatePackage>,
     pub notes: Option<String>,
     pub message: Option<String>,
+    pub manifest_url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,7 +107,8 @@ pub fn relaunch_latest_portable_if_needed() {
 }
 
 pub async fn check_for_updates() -> Result<UpdateCheckResult> {
-    let manifest = fetch_manifest().await?;
+    let manifest_url = update_manifest_url();
+    let manifest = fetch_manifest(&manifest_url).await?;
     let current_version =
         Version::parse(env!("CARGO_PKG_VERSION")).context("invalid current app version")?;
     let latest_version = Version::parse(&manifest.version).context("invalid manifest version")?;
@@ -134,13 +137,15 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult> {
     Ok(UpdateCheckResult {
         current_version: current_version.to_string(),
         latest_version: Some(latest_version.to_string()),
-        available: package.is_some(),
+        available: newer_version_available,
+        downloadable: package.is_some(),
         distribution,
         platform,
         arch,
         package,
         notes: manifest.notes,
         message,
+        manifest_url,
     })
 }
 
@@ -205,9 +210,9 @@ pub fn restart_after_update(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_manifest() -> Result<UpdateManifest> {
+async fn fetch_manifest(manifest_url: &str) -> Result<UpdateManifest> {
     let manifest = reqwest::Client::new()
-        .get(update_manifest_url())
+        .get(manifest_url)
         .send()
         .await
         .context("failed to request update manifest")?

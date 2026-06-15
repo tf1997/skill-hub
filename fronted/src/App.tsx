@@ -117,14 +117,27 @@ const emptyBootstrap: AppBootstrap = {
 
 const canUseTauriEvents = typeof window !== "undefined" && "__TAURI_IPC__" in window;
 const ADMIN_ENTRY_CLICK_THRESHOLD = 5;
+const THEME_STORAGE_KEY = "skill-hub-theme";
 
-function formatUpdatePrompt(result: UpdateCheckResult) {
-  const version = result.latest_version || "";
-  const notes = result.notes?.trim();
-  if (!notes) {
-    return `发现新版本 ${version}，是否现在下载？`;
+function initialTheme(): "light" | "dark" {
+  if (typeof document !== "undefined" && document.documentElement.dataset.theme === "dark") {
+    return "dark";
   }
-  return `发现新版本 ${version}，是否现在下载？\n\n更新说明：\n${notes}`;
+  if (typeof window !== "undefined") {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    } catch {
+      stored = null;
+    }
+    if (stored === "dark" || stored === "light") {
+      return stored;
+    }
+    if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
+  }
+  return "light";
 }
 
 const targetLabels: Record<string, string> = {
@@ -212,7 +225,7 @@ function App() {
   const [updatePolicy, setUpdatePolicy] = useState("follow_latest");
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(() => initialTheme());
   const [targetRootDrafts, setTargetRootDrafts] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<SkillPreview | null>(null);
   const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
@@ -338,6 +351,15 @@ function App() {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Storage can be unavailable in constrained WebView environments.
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!canUseTauriEvents) return;
@@ -3383,6 +3405,8 @@ function AppUpdateDialog(props: {
   const downloaded = props.state.downloaded;
   const notes = result?.notes?.trim();
   const latestVersion = result?.latest_version || downloaded?.version || result?.current_version || "";
+  const hasDownloadablePackage = Boolean(result?.downloadable ?? result?.package);
+  const updateMessage = result?.message?.trim();
   const title =
     props.state.phase === "current"
       ? "已是最新版本"
@@ -3391,7 +3415,9 @@ function AppUpdateDialog(props: {
         : props.state.phase === "error"
           ? "更新检查失败"
           : props.state.phase === "available"
-            ? "发现新版本"
+            ? hasDownloadablePackage
+              ? "发现新版本"
+              : "发现新版本，缺少更新包"
             : props.state.phase === "downloading"
               ? "正在下载更新"
               : "正在检查更新";
@@ -3403,10 +3429,24 @@ function AppUpdateDialog(props: {
         : props.state.phase === "error"
           ? props.state.error ?? "暂时无法完成更新检查。"
           : props.state.phase === "available"
-            ? `新版本 ${latestVersion} 可用，建议在空闲时完成更新。`
+            ? hasDownloadablePackage
+              ? `新版本 ${latestVersion} 可用，建议在空闲时完成更新。`
+              : updateMessage ?? `新版本 ${latestVersion} 已发布，但当前设备没有匹配的更新包。`
             : props.state.phase === "downloading"
               ? "正在获取更新包，请保持网络连接。"
               : "正在连接更新源并校验可用版本。";
+  const statusSummary =
+    props.state.phase === "available"
+      ? hasDownloadablePackage
+        ? "已匹配更新包"
+        : "版本已更新，包未匹配"
+      : props.state.phase === "current"
+        ? "当前已是最新"
+        : props.state.phase === "downloaded"
+          ? "更新包已下载"
+          : props.state.phase === "error"
+            ? "检查失败"
+            : "正在检查";
 
   return (
     <div className="modal-backdrop app-update-backdrop" role="presentation">
@@ -3446,6 +3486,13 @@ function AppUpdateDialog(props: {
             </div>
           </div>
 
+          <div className="app-update-status-strip">
+            <span>{statusSummary}</span>
+            {result?.distribution ? <b>{result.distribution}</b> : null}
+            {result?.platform ? <b>{result.platform}</b> : null}
+            {result?.arch ? <b>{result.arch}</b> : null}
+          </div>
+
           {props.state.phase === "downloading" ? (
             <div className="app-update-progress" aria-label="正在下载更新">
               <span />
@@ -3459,6 +3506,16 @@ function AppUpdateDialog(props: {
             </div>
           ) : null}
 
+          {props.state.phase === "available" && !hasDownloadablePackage ? (
+            <div className="app-update-manual-tip">
+              <AlertCircle size={16} />
+              <span>
+                请检查 manifest 中是否存在 {result?.distribution ?? "当前分发"} / {result?.platform ?? "当前平台"} /{" "}
+                {result?.arch ?? "当前架构"} 的包。更新源：{result?.manifest_url ?? "未返回"}
+              </span>
+            </div>
+          ) : null}
+
           {props.state.phase === "downloaded" ? (
             <div className="app-update-manual-tip">
               <AlertCircle size={16} />
@@ -3467,10 +3524,16 @@ function AppUpdateDialog(props: {
           ) : null}
 
           <div className="app-update-actions">
-            {props.state.phase === "available" ? (
+            {props.state.phase === "available" && hasDownloadablePackage ? (
               <button className="primary-soft app-update-primary" onClick={props.onDownload}>
                 <Download size={17} />
                 下载更新
+              </button>
+            ) : null}
+            {props.state.phase === "available" && !hasDownloadablePackage ? (
+              <button className="primary-soft" onClick={props.onCheck}>
+                <RefreshCw size={17} />
+                重新检查
               </button>
             ) : null}
             {props.state.phase === "downloaded" && downloaded?.ready_to_restart ? (

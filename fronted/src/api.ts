@@ -450,12 +450,14 @@ const browserMockApi = {
       current_version: "0.1.0",
       latest_version: "0.1.0",
       available: false,
+      downloadable: false,
       distribution: "browser",
       platform: "browser",
       arch: "browser",
       package: null,
       notes: null,
-      message: "当前已是最新版本 0.1.0"
+      message: "当前已是最新版本 0.1.0",
+      manifest_url: `${mockMinioEndpoint}/${mockMinioBucket}/updates/stable/latest.json`
     }) as UpdateCheckResult,
   downloadUpdate: async () =>
     ({

@@ -3247,6 +3247,34 @@ select:focus-visible {
   color: var(--accent-primary);
 }
 
+.app-update-status-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.app-update-status-strip span {
+  margin-right: auto;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.app-update-status-strip b {
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  font-weight: 700;
+}
+
 .app-update-progress {
   position: relative;
   height: 8px;
@@ -3948,7 +3976,7 @@ select:focus-visible {
   }
 
   .nav-stack {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   }
 
   .nav-item {
