@@ -7,11 +7,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::api::dialog::{
-    blocking::MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
-};
 use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
@@ -76,7 +72,6 @@ struct PortableVersionMarker {
 
 const PORTABLE_MARKER: &str = "portable.json";
 const CURRENT_MARKER: &str = "current.json";
-static MANUAL_UPDATE_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn relaunch_latest_portable_if_needed() {
     if std::env::var("SKILL_HUB_SKIP_PORTABLE_RELAUNCH")
@@ -192,70 +187,6 @@ pub fn spawn_background_update_check(app: AppHandle) {
     });
 }
 
-pub fn spawn_manual_update_check(app: AppHandle) {
-    if MANUAL_UPDATE_CHECK_RUNNING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(err) = run_manual_update_check(app.clone()).await {
-            show_update_dialog(
-                &app,
-                "Skill Hub 更新失败",
-                &err.to_string(),
-                MessageDialogKind::Error,
-                MessageDialogButtons::OkWithLabel("确定".to_string()),
-            );
-        }
-        MANUAL_UPDATE_CHECK_RUNNING.store(false, Ordering::SeqCst);
-    });
-}
-
-async fn run_manual_update_check(app: AppHandle) -> Result<()> {
-    let result = check_for_updates().await?;
-    if !result.available {
-        let body = result
-            .message
-            .clone()
-            .unwrap_or_else(|| format!("当前已是最新版本 {}", result.current_version));
-        show_update_dialog(
-            &app,
-            "Skill Hub 更新",
-            &body,
-            MessageDialogKind::Info,
-            MessageDialogButtons::OkWithLabel("确定".to_string()),
-        );
-        return Ok(());
-    }
-
-    let should_download = show_update_dialog(
-        &app,
-        "Skill Hub 更新",
-        &format_update_prompt(&result),
-        MessageDialogKind::Info,
-        MessageDialogButtons::OkCancelWithLabels("下载".to_string(), "稍后".to_string()),
-    );
-    if !should_download {
-        return Ok(());
-    }
-
-    let downloaded = download_update(app.clone()).await?;
-    let confirmed = show_update_dialog(
-        &app,
-        "Skill Hub 更新",
-        &downloaded.message,
-        MessageDialogKind::Info,
-        MessageDialogButtons::OkWithLabel("确定".to_string()),
-    );
-    if confirmed && downloaded.ready_to_restart {
-        restart_after_update(&app)?;
-    }
-    Ok(())
-}
-
 pub fn restart_after_update(app: &AppHandle) -> Result<()> {
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let root = portable_root_from_exe(&current_exe)
@@ -272,37 +203,6 @@ pub fn restart_after_update(app: &AppHandle) -> Result<()> {
     spawn_portable_executable(&latest_exe).context("failed to launch updated app")?;
     app.exit(0);
     Ok(())
-}
-
-fn format_update_prompt(result: &UpdateCheckResult) -> String {
-    let version = result.latest_version.as_deref().unwrap_or("");
-    let notes = result.notes.as_deref().map(str::trim).unwrap_or("");
-    if notes.is_empty() {
-        return format!("发现新版本 {}，是否现在下载？", version);
-    }
-
-    format!("发现新版本 {}，是否现在下载？\n\n更新说明：\n{}", version, notes)
-}
-
-fn show_update_dialog(
-    app: &AppHandle,
-    title: &str,
-    body: &str,
-    kind: MessageDialogKind,
-    buttons: MessageDialogButtons,
-) -> bool {
-    let mut builder = MessageDialogBuilder::new(title, body)
-        .kind(kind)
-        .buttons(buttons);
-    if let Some(window) = visible_main_window(app) {
-        builder = builder.parent(&window);
-    }
-    builder.show()
-}
-
-fn visible_main_window(app: &AppHandle) -> Option<tauri::Window> {
-    app.get_window("main")
-        .filter(|window| window.is_visible().unwrap_or(true))
 }
 
 async fn fetch_manifest() -> Result<UpdateManifest> {

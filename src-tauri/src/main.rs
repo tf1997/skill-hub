@@ -9,31 +9,49 @@ mod models;
 mod process_util;
 mod updater;
 
-use tauri::api::dialog;
+use tauri::api::{dialog, shell};
 use tauri::{CustomMenuItem, Manager, Menu, Submenu};
 
 const MENU_CHECK_UPDATE: &str = "check_update";
 const MENU_ABOUT: &str = "about";
+const MENU_ONLINE_DOCS: &str = "online_docs";
+const ONLINE_DOCS_URL: &str = "https://github.com/tf1997/skill-hub/blob/main/docs/operation-guide.md";
+const DEVELOPMENT_TEAM: &str = "Skill Hub Team";
+const FEEDBACK_EMAIL: &str = "support@skill-hub.dev";
 
 fn app_menu() -> Menu {
     Menu::os_default("Skill Hub").add_submenu(Submenu::new(
         "帮助",
         Menu::new()
+            .add_item(CustomMenuItem::new(MENU_ONLINE_DOCS, "在线文档"))
             .add_item(CustomMenuItem::new(MENU_CHECK_UPDATE, "检查更新"))
             .add_item(CustomMenuItem::new(MENU_ABOUT, "关于")),
     ))
 }
 
-fn show_about_dialog(window: &tauri::Window) {
-    let body = format!(
-        "{name}\n\n{description}\n\n开发维护：{authors}\n当前版本：{version}",
-        name = env!("CARGO_PKG_NAME"),
-        description = "Claude / Codex skills 的桌面市场、安装、更新与管理工具。",
-        authors = env!("CARGO_PKG_AUTHORS"),
-        version = env!("CARGO_PKG_VERSION")
-    );
+#[derive(Clone, serde::Serialize)]
+struct AboutPayload {
+    name: &'static str,
+    description: &'static str,
+    authors: &'static str,
+    version: &'static str,
+    docs_url: &'static str,
+    team: &'static str,
+    feedback_email: &'static str,
+}
 
-    dialog::message(Some(window), "关于", body);
+fn show_about_window(window: &tauri::Window) {
+    let payload = AboutPayload {
+        name: env!("CARGO_PKG_NAME"),
+        description: "Claude / Codex skills 的桌面市场、安装、更新与管理工具。",
+        authors: env!("CARGO_PKG_AUTHORS"),
+        version: env!("CARGO_PKG_VERSION"),
+        docs_url: ONLINE_DOCS_URL,
+        team: DEVELOPMENT_TEAM,
+        feedback_email: FEEDBACK_EMAIL,
+    };
+
+    let _ = window.emit("show-about", payload);
 }
 
 fn main() {
@@ -44,9 +62,22 @@ fn main() {
         .menu(app_menu())
         .on_menu_event(|event| match event.menu_item_id() {
             MENU_CHECK_UPDATE => {
-                updater::spawn_manual_update_check(event.window().app_handle().clone());
+                let _ = event.window().emit("open-app-update", ());
             }
-            MENU_ABOUT => show_about_dialog(event.window()),
+            MENU_ABOUT => show_about_window(event.window()),
+            MENU_ONLINE_DOCS => {
+                if let Err(error) = shell::open(
+                    &event.window().shell_scope(),
+                    ONLINE_DOCS_URL.to_string(),
+                    None,
+                ) {
+                    dialog::message(
+                        Some(event.window()),
+                        "打开在线文档失败",
+                        format!("无法打开在线文档：{error}"),
+                    );
+                }
+            }
             _ => {}
         })
         .setup(|app| {

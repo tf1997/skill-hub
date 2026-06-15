@@ -30,8 +30,9 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { ask, message, open } from "@tauri-apps/api/dialog";
+import { message, open } from "@tauri-apps/api/dialog";
 import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/api/shell";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
@@ -52,6 +53,7 @@ import type {
   TargetRoot,
   UpdateCandidate,
   UpdateCheckResult,
+  DownloadUpdateResult,
   SkillPreview,
   SkillPreviewRequest
 } from "./types";
@@ -71,6 +73,23 @@ type GovernanceDialog =
 type PreviewContext =
   | { kind: "skill"; request: SkillPreviewRequest }
   | { kind: "adminDraft"; request: AdminDraftPreviewRequest };
+type AboutPayload = {
+  name: string;
+  description: string;
+  authors: string;
+  version: string;
+  docs_url: string;
+  team: string;
+  feedback_email: string;
+};
+type AppUpdateDialogState = {
+  open: boolean;
+  phase: "checking" | "current" | "available" | "downloading" | "downloaded" | "error";
+  result?: UpdateCheckResult | null;
+  downloaded?: DownloadUpdateResult | null;
+  error?: string | null;
+  manual: boolean;
+};
 type CachedSkillItem = {
   key: string;
   package: CachedSkillPackage;
@@ -176,6 +195,12 @@ function App() {
   const [governanceTab, setGovernanceTab] = useState<GovernanceTab>("project");
   const [governanceDialog, setGovernanceDialog] = useState<GovernanceDialog | null>(null);
   const [governanceDialogError, setGovernanceDialogError] = useState<string | null>(null);
+  const [about, setAbout] = useState<AboutPayload | null>(null);
+  const [appUpdateDialog, setAppUpdateDialog] = useState<AppUpdateDialogState>({
+    open: false,
+    phase: "checking",
+    manual: false
+  });
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
   const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
   const [remoteProjectDraft, setRemoteProjectDraft] = useState<MarketProject>(emptyMarketProject());
@@ -187,23 +212,72 @@ function App() {
   const checkingAppUpdateRef = useRef(false);
   const adminEntryClickCountRef = useRef(0);
 
-  const promptAndDownloadAppUpdate = useCallback(async (result: UpdateCheckResult) => {
-    const shouldDownload = await ask(formatUpdatePrompt(result), {
-      title: "Skill Hub 更新",
-      type: "info",
-      okLabel: "下载",
-      cancelLabel: "稍后"
+  const openAppUpdateDialog = useCallback((manual = true) => {
+    setAppUpdateDialog({
+      open: true,
+      phase: "checking",
+      manual
     });
-    if (!shouldDownload) return;
+    void api
+      .checkForUpdates()
+      .then((result) => {
+        setAppUpdateDialog({
+          open: true,
+          phase: result.available ? "available" : "current",
+          result,
+          manual
+        });
+      })
+      .catch((err) => {
+        setAppUpdateDialog({
+          open: true,
+          phase: "error",
+          error: readError(err),
+          manual
+        });
+      });
+  }, []);
 
-    const downloaded = await api.downloadUpdate();
-    await message(downloaded.message, {
-      title: "Skill Hub 更新",
-      type: "info",
-      okLabel: "确定"
+  const showAvailableAppUpdate = useCallback((result: UpdateCheckResult, manual = false) => {
+    setAppUpdateDialog({
+      open: true,
+      phase: "available",
+      result,
+      manual
     });
-    if (downloaded.ready_to_restart) {
+  }, []);
+
+  const downloadAppUpdate = useCallback(async () => {
+    setAppUpdateDialog((current) => ({
+      ...current,
+      phase: "downloading",
+      error: null
+    }));
+    try {
+      const downloaded = await api.downloadUpdate();
+      setAppUpdateDialog((current) => ({
+        ...current,
+        phase: "downloaded",
+        downloaded
+      }));
+    } catch (err) {
+      setAppUpdateDialog((current) => ({
+        ...current,
+        phase: "error",
+        error: readError(err)
+      }));
+    }
+  }, []);
+
+  const restartAfterAppUpdate = useCallback(async () => {
+    try {
       await api.restartAfterUpdate();
+    } catch (err) {
+      setAppUpdateDialog((current) => ({
+        ...current,
+        phase: "error",
+        error: readError(err)
+      }));
     }
   }, []);
 
@@ -212,7 +286,7 @@ function App() {
       if (!result.available || checkingAppUpdateRef.current) return;
       checkingAppUpdateRef.current = true;
       try {
-        await promptAndDownloadAppUpdate(result);
+        showAvailableAppUpdate(result, false);
       } catch (err) {
         await message(readError(err), {
           title: "Skill Hub 更新失败",
@@ -223,7 +297,7 @@ function App() {
         checkingAppUpdateRef.current = false;
       }
     },
-    [promptAndDownloadAppUpdate]
+    [showAvailableAppUpdate]
   );
 
   useEffect(() => {
@@ -233,15 +307,29 @@ function App() {
   useEffect(() => {
     if (!canUseTauriEvents) return;
     let unlistenUpdate: (() => void) | undefined;
+    let unlistenAbout: (() => void) | undefined;
+    let unlistenAppUpdate: (() => void) | undefined;
     void listen<UpdateCheckResult>("update-available", (event) => {
       void handleBackgroundAppUpdateAvailable(event.payload);
     }).then((fn) => {
       unlistenUpdate = fn;
     });
+    void listen<AboutPayload>("show-about", (event) => {
+      setAbout(event.payload);
+    }).then((fn) => {
+      unlistenAbout = fn;
+    });
+    void listen("open-app-update", () => {
+      openAppUpdateDialog(true);
+    }).then((fn) => {
+      unlistenAppUpdate = fn;
+    });
     return () => {
       unlistenUpdate?.();
+      unlistenAbout?.();
+      unlistenAppUpdate?.();
     };
-  }, [handleBackgroundAppUpdateAvailable]);
+  }, [handleBackgroundAppUpdateAvailable, openAppUpdateDialog]);
 
   const publicCategories = useMemo(
     () => normalizeCategoryList(data.categories),
@@ -1244,6 +1332,31 @@ function App() {
             onClose={() => {
               setPreview(null);
               setPreviewContext(null);
+            }}
+          />
+        ) : null}
+
+        {about ? (
+          <AboutDialog
+            about={about}
+            onOpenDocs={() => void openExternal(about.docs_url)}
+            onFeedback={() => void openExternal(`mailto:${about.feedback_email}`)}
+            onClose={() => setAbout(null)}
+          />
+        ) : null}
+
+        {appUpdateDialog.open ? (
+          <AppUpdateDialog
+            state={appUpdateDialog}
+            onCheck={() => openAppUpdateDialog(true)}
+            onDownload={() => void downloadAppUpdate()}
+            onRestart={() => void restartAfterAppUpdate()}
+            onClose={() => {
+              setAppUpdateDialog((current) => ({
+                ...current,
+                open: false
+              }));
+              checkingAppUpdateRef.current = false;
             }}
           />
         ) : null}
@@ -3158,6 +3271,218 @@ function AdminUnlockDialog(props: {
             </button>
             <button className="primary-soft" onClick={props.onClose}>
               取消
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AppUpdateDialog(props: {
+  state: AppUpdateDialogState;
+  onCheck: () => void;
+  onDownload: () => void;
+  onRestart: () => void;
+  onClose: () => void;
+}) {
+  const result = props.state.result;
+  const downloaded = props.state.downloaded;
+  const notes = result?.notes?.trim();
+  const latestVersion = result?.latest_version || downloaded?.version || result?.current_version || "";
+  const title =
+    props.state.phase === "current"
+      ? "已是最新版本"
+      : props.state.phase === "downloaded"
+        ? "更新已准备就绪"
+        : props.state.phase === "error"
+          ? "更新检查失败"
+          : props.state.phase === "available"
+            ? "发现新版本"
+            : props.state.phase === "downloading"
+              ? "正在下载更新"
+              : "正在检查更新";
+  const subtitle =
+    props.state.phase === "current"
+      ? `当前版本 ${result?.current_version ?? ""} 已可放心使用。`
+      : props.state.phase === "downloaded"
+        ? "下载完成后会尝试自动切换到新版本。"
+        : props.state.phase === "error"
+          ? props.state.error ?? "暂时无法完成更新检查。"
+          : props.state.phase === "available"
+            ? `新版本 ${latestVersion} 可用，建议在空闲时完成更新。`
+            : props.state.phase === "downloading"
+              ? "正在获取更新包，请保持网络连接。"
+              : "正在连接更新源并校验可用版本。";
+
+  return (
+    <div className="modal-backdrop app-update-backdrop" role="presentation">
+      <section className="app-update-dialog" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
+        <button className="icon-button app-update-close" onClick={props.onClose} title="关闭">
+          <X size={17} />
+        </button>
+        <div className="app-update-hero">
+          <div className={`app-update-orb ${props.state.phase}`}>
+            {props.state.phase === "current" ? (
+              <CheckCircle2 size={30} />
+            ) : props.state.phase === "error" ? (
+              <AlertCircle size={30} />
+            ) : props.state.phase === "downloaded" ? (
+              <Download size={30} />
+            ) : (
+              <RefreshCw size={30} />
+            )}
+          </div>
+          <div className="app-update-title-block">
+            <span>Skill Hub Application Update</span>
+            <h2 id="app-update-title">{title}</h2>
+            <p>{subtitle}</p>
+          </div>
+        </div>
+
+        <div className="app-update-body">
+          <div className="app-update-version-card">
+            <div>
+              <span>当前版本</span>
+              <strong>{result?.current_version ?? "未知"}</strong>
+            </div>
+            <ChevronRight size={18} />
+            <div>
+              <span>目标版本</span>
+              <strong>{latestVersion || "等待检查"}</strong>
+            </div>
+          </div>
+
+          {props.state.phase === "downloading" ? (
+            <div className="app-update-progress" aria-label="正在下载更新">
+              <span />
+            </div>
+          ) : null}
+
+          {notes ? (
+            <div className="app-update-notes">
+              <strong>更新说明</strong>
+              <p>{notes}</p>
+            </div>
+          ) : null}
+
+          {props.state.phase === "downloaded" ? (
+            <div className="app-update-manual-tip">
+              <AlertCircle size={16} />
+              <span>如果应用没有自动重启，请关闭当前窗口后手动启动 Skill Hub。</span>
+            </div>
+          ) : null}
+
+          <div className="app-update-actions">
+            {props.state.phase === "available" ? (
+              <button className="primary-soft app-update-primary" onClick={props.onDownload}>
+                <Download size={17} />
+                下载更新
+              </button>
+            ) : null}
+            {props.state.phase === "downloaded" && downloaded?.ready_to_restart ? (
+              <button className="primary-soft app-update-primary" onClick={props.onRestart}>
+                <Power size={17} />
+                立即重启
+              </button>
+            ) : null}
+            {props.state.phase === "current" || props.state.phase === "error" ? (
+              <button className="primary-soft" onClick={props.onCheck}>
+                <RefreshCw size={17} />
+                重新检查
+              </button>
+            ) : null}
+            <button className="primary-soft" onClick={props.onClose}>
+              {props.state.phase === "downloaded" ? "稍后处理" : "关闭"}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AboutDialog(props: { about: AboutPayload; onOpenDocs: () => void; onFeedback: () => void; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop about-backdrop" role="presentation">
+      <section className="about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title">
+        <div className="about-hero">
+          <button className="icon-button about-close" onClick={props.onClose} title="关闭">
+            <X size={17} />
+          </button>
+          <div className="about-brand-mark">
+            <Layers3 size={32} />
+          </div>
+          <div className="about-title-block">
+            <span>Skill Switchboard</span>
+            <h2 id="about-title">Skill Hub</h2>
+            <p>{props.about.description}</p>
+          </div>
+          <div className="about-version-pill">v{props.about.version}</div>
+        </div>
+
+        <div className="about-content">
+          <div className="about-feature-grid">
+            <div className="about-feature">
+              <BookOpen size={18} />
+              <div>
+                <strong>Skill 市场</strong>
+                <span>浏览团队沉淀的 skill，快速找到适合当前任务的能力。</span>
+              </div>
+            </div>
+            <div className="about-feature">
+              <PackageCheck size={18} />
+              <div>
+                <strong>本地安装</strong>
+                <span>统一安装、启停、缓存和项目绑定，减少手动维护成本。</span>
+              </div>
+            </div>
+            <div className="about-feature">
+              <RefreshCw size={18} />
+              <div>
+                <strong>持续更新</strong>
+                <span>检测应用版本和 skill 更新，保持工作区同步。</span>
+              </div>
+            </div>
+            <div className="about-feature">
+              <Rocket size={18} />
+              <div>
+                <strong>工作流加速</strong>
+                <span>把常用能力带到 Codex / Claude 工作区，降低切换成本。</span>
+              </div>
+            </div>
+          </div>
+
+          <aside className="about-info-panel">
+            <div className="about-info-row">
+              <span>当前版本</span>
+              <strong>v{props.about.version}</strong>
+            </div>
+            <div className="about-info-row">
+              <span>支持目标</span>
+              <strong>Codex / Claude</strong>
+            </div>
+            <div className="about-info-row">
+              <span>开发团队</span>
+              <strong>{props.about.team || props.about.authors || "Skill Hub Team"}</strong>
+            </div>
+            <div className="about-info-row">
+              <span>问题反馈</span>
+              <strong>{props.about.feedback_email}</strong>
+            </div>
+            <button className="primary-soft about-docs-button" onClick={props.onOpenDocs}>
+              <BookOpen size={17} />
+              在线文档
+            </button>
+            <button className="primary-soft about-feedback-button" onClick={props.onFeedback}>
+              <ScrollText size={17} />
+              问题反馈
+            </button>
+          </aside>
+
+          <div className="about-actions">
+            <button className="primary-soft" onClick={props.onClose}>
+              关闭
             </button>
           </div>
         </div>
