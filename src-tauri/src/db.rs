@@ -10,9 +10,12 @@ use rusqlite::{params, Connection};
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use crate::models::{
-    AppBootstrap, CachedSkillPackage, Category, LocalSkill, MarketProject, MarketSkill, Project,
-    SkillBinding, Source, TargetRoot, UpdateCandidate,
+use crate::{
+    admin_config,
+    models::{
+        AppBootstrap, CachedSkillPackage, Category, LocalSkill, MarketProject, MarketSkill,
+        Project, SkillBinding, Source, TargetRoot, UpdateCandidate,
+    },
 };
 
 pub use crate::minio_config::{
@@ -24,6 +27,7 @@ pub use crate::minio_config::{
 pub struct AppState {
     pub conn: Arc<Mutex<Connection>>,
     pub app_dir: PathBuf,
+    pub local_macs: Vec<String>,
 }
 
 pub fn init_state(app: &AppHandle) -> Result<AppState> {
@@ -50,6 +54,7 @@ pub fn init_state(app: &AppHandle) -> Result<AppState> {
     Ok(AppState {
         conn: Arc::new(Mutex::new(conn)),
         app_dir,
+        local_macs: admin_config::local_mac_addresses(),
     })
 }
 

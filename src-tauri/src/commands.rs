@@ -102,12 +102,18 @@ pub async fn save_source(
 }
 
 #[tauri::command]
-pub async fn unlock_admin_mode(request: AdminUnlockRequest) -> CommandResult<AdminSession> {
-    map_result(unlock_admin_mode_inner(request).await)
+pub async fn unlock_admin_mode(
+    request: AdminUnlockRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AdminSession> {
+    map_result(unlock_admin_mode_inner(request, &state.local_macs).await)
 }
 
-async fn unlock_admin_mode_inner(request: AdminUnlockRequest) -> Result<AdminSession> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn unlock_admin_mode_inner(
+    request: AdminUnlockRequest,
+    local_macs: &[String],
+) -> Result<AdminSession> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
 
     Ok(AdminSession {
         enabled: true,
@@ -121,14 +127,16 @@ async fn unlock_admin_mode_inner(request: AdminUnlockRequest) -> Result<AdminSes
     })
 }
 
-async fn ensure_admin_allowed(admin_key: &str) -> Result<admin_config::AdminAuthorization> {
+async fn ensure_admin_allowed(
+    admin_key: &str,
+    local_macs: &[String],
+) -> Result<admin_config::AdminAuthorization> {
     if !admin_config::is_admin_key_valid(admin_key) {
         return Err(anyhow!("管理员密钥错误"));
     }
 
     let allowlist = fetch_admin_mac_allowlist().await?;
-    let local_macs = admin_config::local_mac_addresses();
-    authorize_admin_from_allowlist(admin_key, &local_macs, &allowlist)
+    authorize_admin_from_allowlist(admin_key, local_macs, &allowlist)
 }
 
 fn authorize_admin_from_allowlist(
@@ -157,32 +165,33 @@ fn authorize_admin_from_allowlist(
 #[tauri::command]
 pub async fn list_admin_drafts(
     admin_key: String,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> CommandResult<Vec<AdminDraftSkill>> {
-    map_result(list_admin_drafts_inner(&admin_key).await)
+    map_result(list_admin_drafts_inner(&admin_key, &state.local_macs).await)
 }
 
 #[tauri::command]
 pub async fn list_admin_audit_logs(
     request: ListAdminAuditLogsRequest,
+    state: State<'_, AppState>,
 ) -> CommandResult<Vec<AdminAuditLog>> {
-    map_result(list_admin_audit_logs_inner(request).await)
+    map_result(list_admin_audit_logs_inner(request, &state.local_macs).await)
 }
 
 #[tauri::command]
 pub async fn preview_admin_draft(
     request: AdminDraftPreviewRequest,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> CommandResult<SkillPreview> {
-    map_result(preview_admin_draft_inner(request).await)
+    map_result(preview_admin_draft_inner(request, &state.local_macs).await)
 }
 
 #[tauri::command]
 pub async fn save_publish_meta(
     request: SavePublishMetaRequest,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> CommandResult<PublishMeta> {
-    map_result(save_publish_meta_inner(request).await)
+    map_result(save_publish_meta_inner(request, &state.local_macs).await)
 }
 
 #[tauri::command]
@@ -190,7 +199,7 @@ pub async fn save_market_project_remote(
     request: SaveMarketProjectRequest,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<MarketProject>> {
-    map_result(save_market_project_remote_inner(request, &state).await)
+    map_result(save_market_project_remote_inner(request, &state, &state.local_macs).await)
 }
 
 #[tauri::command]
@@ -199,7 +208,7 @@ pub async fn delete_market_project_remote(
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
-        delete_market_project_remote_inner(request, &state).await?;
+        delete_market_project_remote_inner(request, &state, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -210,9 +219,9 @@ pub async fn delete_market_project_remote(
 #[tauri::command]
 pub async fn save_market_category_remote(
     request: SaveMarketCategoryRequest,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> CommandResult<Vec<Category>> {
-    map_result(save_market_category_remote_inner(request).await)
+    map_result(save_market_category_remote_inner(request, &state.local_macs).await)
 }
 
 #[tauri::command]
@@ -221,7 +230,7 @@ pub async fn delete_market_category_remote(
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
-        delete_market_category_remote_inner(request).await?;
+        delete_market_category_remote_inner(request, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -235,7 +244,7 @@ pub async fn archive_market_skill(
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
-        archive_market_skill_inner(request).await?;
+        archive_market_skill_inner(request, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -249,7 +258,7 @@ pub async fn publish_draft(
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
-        publish_draft_inner(request).await?;
+        publish_draft_inner(request, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -263,7 +272,7 @@ pub async fn quick_republish_archived_skill(
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
-        quick_republish_archived_skill_inner(request).await?;
+        quick_republish_archived_skill_inner(request, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -271,8 +280,11 @@ pub async fn quick_republish_archived_skill(
     map_result(result)
 }
 
-async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>> {
-    ensure_admin_allowed(admin_key).await?;
+async fn list_admin_drafts_inner(
+    admin_key: &str,
+    local_macs: &[String],
+) -> Result<Vec<AdminDraftSkill>> {
+    ensure_admin_allowed(admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let objects = client.list_objects(DRAFT_GITLAB_PREFIX).await?;
     let mut drafts = Vec::new();
@@ -456,8 +468,9 @@ async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>
 
 async fn list_admin_audit_logs_inner(
     request: ListAdminAuditLogsRequest,
+    local_macs: &[String],
 ) -> Result<Vec<AdminAuditLog>> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_can_view_admin_audit(&authorization)?;
     let limit = request.limit.unwrap_or(100).clamp(1, 200);
     let client = AdminObjectClient::new();
@@ -485,8 +498,11 @@ async fn list_admin_audit_logs_inner(
     Ok(records)
 }
 
-async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<SkillPreview> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn preview_admin_draft_inner(
+    request: AdminDraftPreviewRequest,
+    local_macs: &[String],
+) -> Result<SkillPreview> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
@@ -561,8 +577,11 @@ async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<
     })
 }
 
-async fn save_publish_meta_inner(request: SavePublishMetaRequest) -> Result<PublishMeta> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn save_publish_meta_inner(
+    request: SavePublishMetaRequest,
+    local_macs: &[String],
+) -> Result<PublishMeta> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
     let mut meta = normalize_publish_meta_for_source(request.meta, &source_path);
@@ -595,8 +614,9 @@ async fn save_publish_meta_inner(request: SavePublishMetaRequest) -> Result<Publ
 async fn save_market_project_remote_inner(
     request: SaveMarketProjectRequest,
     state: &AppState,
+    local_macs: &[String],
 ) -> Result<Vec<MarketProject>> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let project_slug = request.project.slug.trim().to_string();
     validate_object_segment("project slug", &project_slug)?;
     ensure_can_manage_project(&authorization, &project_slug)?;
@@ -641,8 +661,9 @@ async fn save_market_project_remote_inner(
 async fn delete_market_project_remote_inner(
     request: DeleteMarketProjectRequest,
     state: &AppState,
+    local_macs: &[String],
 ) -> Result<()> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let slug = request.slug.trim().to_string();
     validate_object_segment("project slug", &slug)?;
     ensure_can_manage_project(&authorization, &slug)?;
@@ -687,8 +708,9 @@ async fn delete_market_project_remote_inner(
 
 async fn save_market_category_remote_inner(
     request: SaveMarketCategoryRequest,
+    local_macs: &[String],
 ) -> Result<Vec<Category>> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_system_admin(&authorization)?;
     let category_id = request.category.id.trim().to_string();
     validate_object_segment("category slug", &category_id)?;
@@ -724,8 +746,9 @@ async fn save_market_category_remote_inner(
 
 async fn delete_market_category_remote_inner(
     request: DeleteMarketCategoryRequest,
+    local_macs: &[String],
 ) -> Result<()> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_system_admin(&authorization)?;
     let category_id = request.category_id.trim().to_string();
     validate_object_segment("category slug", &category_id)?;
@@ -759,8 +782,11 @@ async fn delete_market_category_remote_inner(
     Ok(())
 }
 
-async fn publish_draft_inner(request: PublishDraftRequest) -> Result<()> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn publish_draft_inner(
+    request: PublishDraftRequest,
+    local_macs: &[String],
+) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
     let skill_md_path = format!("{}{}/SKILL.md", DRAFT_GITLAB_PREFIX, source_path);
@@ -979,8 +1005,11 @@ async fn publish_draft_inner(request: PublishDraftRequest) -> Result<()> {
     Ok(())
 }
 
-async fn quick_republish_archived_skill_inner(request: QuickRepublishRequest) -> Result<()> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn quick_republish_archived_skill_inner(
+    request: QuickRepublishRequest,
+    local_macs: &[String],
+) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
 
@@ -1156,8 +1185,11 @@ async fn quick_republish_archived_skill_inner(request: QuickRepublishRequest) ->
     Ok(())
 }
 
-async fn archive_market_skill_inner(request: ArchiveMarketSkillRequest) -> Result<()> {
-    let authorization = ensure_admin_allowed(&request.admin_key).await?;
+async fn archive_market_skill_inner(
+    request: ArchiveMarketSkillRequest,
+    local_macs: &[String],
+) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     validate_object_segment("namespace", &request.namespace)?;
     validate_object_segment("skill id", &request.skill_id)?;
 
@@ -4882,9 +4914,10 @@ Content here.
     fn live_minio_admin_publish_flow() {
         tauri::async_runtime::block_on(async {
             let admin_key = admin_config::ADMIN_KEY.to_string();
+            let local_macs = admin_config::local_mac_addresses();
             unlock_admin_mode_inner(AdminUnlockRequest {
                 admin_key: admin_key.clone(),
-            })
+            }, &local_macs)
             .await
             .expect("admin mode should unlock against live MinIO");
 
@@ -4903,7 +4936,7 @@ Content here.
         save_remote_projects(&client, &projects).await.expect("save projects");
 
             let source_path = "product/minio-live-draft".to_string();
-            let drafts = list_admin_drafts_inner(&admin_key)
+            let drafts = list_admin_drafts_inner(&admin_key, &local_macs)
                 .await
                 .expect("drafts should list");
             assert!(
@@ -4933,7 +4966,7 @@ Content here.
                 admin_key: admin_key.clone(),
                 gitlab_source_path: source_path.clone(),
                 meta,
-            })
+            }, &local_macs)
             .await
             .expect("save publish metadata");
 
@@ -4941,7 +4974,7 @@ Content here.
                 admin_key: admin_key.clone(),
                 gitlab_source_path: source_path.clone(),
                 file_path: None,
-            })
+            }, &local_macs)
             .await
             .expect("preview draft");
             assert_eq!(preview.title, "MinIO Live Draft");
@@ -4962,7 +4995,7 @@ Content here.
             publish_draft_inner(PublishDraftRequest {
                 admin_key,
                 gitlab_source_path: source_path,
-            })
+            }, &local_macs)
             .await
             .expect("publish draft");
 
@@ -4985,9 +5018,10 @@ Content here.
     fn live_minio_archive_then_republish_flow() {
         tauri::async_runtime::block_on(async {
             let admin_key = admin_config::ADMIN_KEY.to_string();
+            let local_macs = admin_config::local_mac_addresses();
             unlock_admin_mode_inner(AdminUnlockRequest {
                 admin_key: admin_key.clone(),
-            })
+            }, &local_macs)
             .await
             .expect("admin mode should unlock against live MinIO");
 
@@ -5025,7 +5059,7 @@ Content here.
                 admin_key: admin_key.clone(),
                 gitlab_source_path: source_path.clone(),
                 meta,
-            })
+            }, &local_macs)
             .await
             .expect("save publish metadata");
 
@@ -5038,7 +5072,7 @@ Content here.
                 publish_draft_inner(PublishDraftRequest {
                     admin_key: admin_key.clone(),
                     gitlab_source_path: source_path.clone(),
-                })
+                }, &local_macs)
                 .await
                 .expect("publish existing draft before archive");
             }
@@ -5048,7 +5082,7 @@ Content here.
                 namespace: "live".to_string(),
                 skill_id: "minio-live-draft".to_string(),
                 reason: Some("live integration archive test".to_string()),
-            })
+            }, &local_macs)
             .await
             .expect("archive market skill");
 
@@ -5061,7 +5095,7 @@ Content here.
                 "skill should disappear from market catalog after archive"
             );
 
-            let drafts = list_admin_drafts_inner(&admin_key).await.expect("list drafts");
+            let drafts = list_admin_drafts_inner(&admin_key, &local_macs).await.expect("list drafts");
             assert!(
                 drafts.iter().any(|draft| {
                     draft.gitlab_source_path == source_path
@@ -5074,7 +5108,7 @@ Content here.
             publish_draft_inner(PublishDraftRequest {
                 admin_key,
                 gitlab_source_path: source_path,
-            })
+            }, &local_macs)
             .await
             .expect("republish archived existing version");
 
