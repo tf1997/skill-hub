@@ -15,7 +15,7 @@ use tauri::{CustomMenuItem, Manager, Menu, Submenu};
 const MENU_CHECK_UPDATE: &str = "check_update";
 const MENU_ABOUT: &str = "about";
 const MENU_ONLINE_DOCS: &str = "online_docs";
-const ONLINE_DOCS_URL: &str = "https://github.com/tf1997/skill-hub/blob/main/docs/operation-guide.md";
+const ONLINE_DOCS_URL: &str = "https://github.com";
 const DEVELOPMENT_TEAM: &str = "Skill Hub Team";
 const FEEDBACK_EMAIL: &str = "support@skill-hub.dev";
 

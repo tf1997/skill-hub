@@ -137,6 +137,32 @@ const isProjectMarketSkill = (skill: MarketSkill) =>
 
 const isPublishedDraft = (draft?: AdminDraftSkill | null) => draft?.status.trim() === "已发布";
 
+function publishMetaMissingFields(meta: PublishMeta) {
+  const missing: string[] = [];
+  if (!meta.name.trim()) {
+    missing.push("名称");
+  }
+  if (!meta.summary.trim()) {
+    missing.push("摘要");
+  }
+  if (meta.publishScope === "project") {
+    if (!meta.publishProjectSlug) {
+      missing.push("项目");
+    }
+  } else if (!meta.publishCategorySlug) {
+    missing.push("公共分类");
+  }
+  return missing;
+}
+
+function publishMetaMissingMessage(meta: PublishMeta) {
+  const missing = publishMetaMissingFields(meta);
+  if (missing.length === 0) {
+    return "";
+  }
+  return `请补齐${missing.join("、")}`;
+}
+
 function normalizeCategoryList(categories: Category[]) {
   const byId = new Map<string, Category>();
   for (const category of categories) {
@@ -205,7 +231,6 @@ function App() {
   const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
   const [remoteProjectDraft, setRemoteProjectDraft] = useState<MarketProject>(emptyMarketProject());
   const [marketCategoryDraft, setMarketCategoryDraft] = useState<Category>(emptyMarketCategory());
-  const [archiveReason, setArchiveReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
   const [error, setError] = useState<string | null>(null);
@@ -942,26 +967,9 @@ function App() {
       return;
     }
 
-    // 校验元数据
-    if (draftMeta.publishScope === "project") {
-      if (!draftMeta.publishProjectSlug) {
-        setError("发布元数据不完整：请选择项目");
-        return;
-      }
-    } else if (draftMeta.publishScope === "public") {
-      if (!draftMeta.publishCategorySlug) {
-        setError("发布元数据不完整：请选择公共分类");
-        return;
-      }
-    }
-
-    if (!draftMeta.name || !draftMeta.name.trim()) {
-      setError("发布元数据不完整：请填写名称");
-      return;
-    }
-
-    if (!draftMeta.summary || !draftMeta.summary.trim()) {
-      setError("发布元数据不完整：请填写摘要");
+    const missingMetaMessage = publishMetaMissingMessage(draftMeta);
+    if (missingMetaMessage) {
+      setError(`发布元数据不完整：${missingMetaMessage}`);
       return;
     }
 
@@ -997,26 +1005,9 @@ function App() {
 
     // 不在前端检查状态，让后端来验证（因为前端显示的是翻译后的中文状态）
 
-    // 校验元数据
-    if (draftMeta.publishScope === "project") {
-      if (!draftMeta.publishProjectSlug) {
-        setError("发布元数据不完整：请选择项目");
-        return;
-      }
-    } else if (draftMeta.publishScope === "public") {
-      if (!draftMeta.publishCategorySlug) {
-        setError("发布元数据不完整：请选择公共分类");
-        return;
-      }
-    }
-
-    if (!draftMeta.name || !draftMeta.name.trim()) {
-      setError("发布元数据不完整：请填写名称");
-      return;
-    }
-
-    if (!draftMeta.summary || !draftMeta.summary.trim()) {
-      setError("发布元数据不完整：请填写摘要");
+    const missingMetaMessage = publishMetaMissingMessage(draftMeta);
+    if (missingMetaMessage) {
+      setError(`发布元数据不完整：${missingMetaMessage}`);
       return;
     }
 
@@ -1117,9 +1108,8 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const next = await api.archiveMarketSkill(adminKey, skill.namespace, skill.id, archiveReason);
+      const next = await api.archiveMarketSkill(adminKey, skill.namespace, skill.id);
       setData(next);
-      setArchiveReason("");
       await refreshAdminDrafts();
       await refreshAdminAuditLogs(false);
       setNotice(`${skill.name} 已下架并回到草稿区`);
@@ -1309,8 +1299,6 @@ function App() {
             skills={data.skills}
             canManageProject={canManageProject}
             canManageSkill={canManageSkill}
-            archiveReason={archiveReason}
-            onArchiveReason={setArchiveReason}
             onArchiveSkill={(skill) => void archiveMarketSkill(skill)}
           />
         ) : null}
@@ -2443,10 +2431,9 @@ function AdminView(props: {
   skills: MarketSkill[];
   canManageProject: (slug: string) => boolean;
   canManageSkill: (skill: MarketSkill) => boolean;
-  archiveReason: string;
-  onArchiveReason: (value: string) => void;
   onArchiveSkill: (skill: MarketSkill) => void;
 }) {
+  const [archiveQuery, setArchiveQuery] = useState("");
   const selectedDraft = props.drafts.find((draft) => draft.gitlabSourcePath === props.selectedDraftPath);
   const isSystem = props.session?.role === "system";
   const manageableProjects = props.projects.filter((project) => props.canManageProject(project.slug));
@@ -2457,11 +2444,8 @@ function AdminView(props: {
   const activeGovernanceTab: GovernanceTab = isSystem ? props.governanceTab : "project";
   const selectedDraftPublished = isPublishedDraft(selectedDraft);
   const selectedDraftNeedsSource = Boolean(selectedDraft && !selectedDraft.sourceAvailable);
-  const publishTargetMissing =
-    props.meta.publishScope === "project" ? !props.meta.publishProjectSlug : !props.meta.publishCategorySlug;
-  const metaIncomplete = Boolean(
-    selectedDraft && (!props.meta.name.trim() || !props.meta.summary.trim() || publishTargetMissing)
-  );
+  const missingMetaMessage = publishMetaMissingMessage(props.meta);
+  const metaIncomplete = Boolean(selectedDraft && missingMetaMessage);
   const canPublishSelectedDraft = Boolean(
     selectedDraft && selectedDraft.sourceAvailable && !selectedDraftPublished && !metaIncomplete
   );
@@ -2482,8 +2466,57 @@ function AdminView(props: {
       : selectedDraftPublished
         ? "当前版本已发布"
         : metaIncomplete
-          ? "请补齐名称、摘要和发布目标"
+          ? missingMetaMessage
           : "发布到市场";
+  const normalizedArchiveQuery = archiveQuery.trim().toLocaleLowerCase();
+  const archiveProjectName = (slug: string) =>
+    props.projects.find((project) => project.slug === slug)?.name ?? slug;
+  const archivePublicCategoryName = (slug: string) =>
+    props.categories.find((category) => category.id === slug)?.name ?? categoryNameFromSlug(slug);
+  const archiveMatchesQuery = (skill: MarketSkill) => {
+    if (!normalizedArchiveQuery) return true;
+    return [
+      skill.name,
+      skill.id,
+      skill.namespace,
+      skill.summary,
+      skill.latestVersion,
+      skill.tags.join(" "),
+      skill.categories.join(" "),
+      ...skill.categories.map((category) =>
+        category.startsWith("project:")
+          ? archiveProjectName(category.slice("project:".length))
+          : archivePublicCategoryName(category)
+      )
+    ]
+      .join(" ")
+      .toLocaleLowerCase()
+      .includes(normalizedArchiveQuery);
+  };
+  const archiveSkills = manageableSkills
+    .filter(archiveMatchesQuery)
+    .sort((first, second) => first.name.localeCompare(second.name, undefined, { sensitivity: "base" }));
+  const archivePublicGroups = new Map<string, MarketSkill[]>();
+  const archiveProjectGroups = new Map<string, MarketSkill[]>();
+  for (const skill of archiveSkills) {
+    const projectCategory = skill.categories.find((category) => category.startsWith("project:"));
+    if (projectCategory) {
+      const slug = projectCategory.slice("project:".length);
+      if (!archiveProjectGroups.has(slug)) {
+        archiveProjectGroups.set(slug, []);
+      }
+      archiveProjectGroups.get(slug)!.push(skill);
+      continue;
+    }
+
+    const publicCategories = skill.categories.filter((category) => !category.startsWith("project:"));
+    const category = publicCategories[0] ?? "uncategorized";
+    if (!archivePublicGroups.has(category)) {
+      archivePublicGroups.set(category, []);
+    }
+    archivePublicGroups.get(category)!.push(skill);
+  }
+  const archiveTotalCount = archiveSkills.length;
 
   return (
     <section className="admin-console">
@@ -2803,7 +2836,7 @@ function AdminView(props: {
                           {metaIncomplete ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}
                           <span>
                             {metaIncomplete
-                              ? "请补齐名称、摘要和发布目标后再发布。"
+                              ? `${missingMetaMessage}后再发布。`
                               : "发布元数据已具备基础信息，可以预览或发布。"}
                           </span>
                         </div>
@@ -2863,44 +2896,45 @@ function AdminView(props: {
 
           {props.activeTab === "archive" ? (
             <div className="admin-panels archive">
-              <section className="admin-panel">
+              <section className="admin-panel archive-panel">
                 <div className="section-toolbar">
                   <div>
                     <h2>市场下架</h2>
-                    <p>{isSystem ? "可下架公共和项目 skill" : "可下架所有项目 skill"}</p>
+                    <p>{isSystem ? "按公共分类和项目查看可下架 skill" : "按项目查看可下架 skill"}</p>
                   </div>
+                  <Badge strong>{archiveTotalCount} skills</Badge>
                 </div>
-                <label className="text-field">
-                  <span>下架原因</span>
-                  <input
-                    value={props.archiveReason}
-                    onChange={(event) => props.onArchiveReason(event.target.value)}
-                    placeholder="例如：版本过期、迁移到新 skill、内容需修订"
-                  />
-                </label>
-                <div className="archive-skill-list">
-                  {props.skills.map((skill) => {
-                    const allowed = props.canManageSkill(skill);
-                    return (
-                      <article className={`archive-skill-row ${allowed ? "" : "disabled"}`} key={`${skill.namespace}/${skill.id}`}>
-                        <div>
-                          <strong>{skill.name}</strong>
-                          <span>{skill.namespace}/{skill.id} · {skill.latestVersion}</span>
-                          <small>{skill.categories.join(", ") || "无分类"}</small>
-                        </div>
-                        <button
-                          className="primary-soft danger"
-                          onClick={() => props.onArchiveSkill(skill)}
-                          disabled={!allowed}
-                        >
-                          <Archive size={16} />
-                          下架
-                        </button>
-                      </article>
-                    );
-                  })}
+                <div className="archive-controls">
+                  <label className="search-box archive-search-box">
+                    <Search size={16} />
+                    <input
+                      value={archiveQuery}
+                      onChange={(event) => setArchiveQuery(event.target.value)}
+                      placeholder="搜索 skill、命名空间、分类或项目"
+                    />
+                  </label>
+                </div>
+                <div className="archive-market-list">
+                  {isSystem && archivePublicGroups.size > 0 ? (
+                    <ArchiveScopeGroup
+                      title="公共市场"
+                      groups={archivePublicGroups}
+                      labelForGroup={archivePublicCategoryName}
+                      onArchiveSkill={props.onArchiveSkill}
+                    />
+                  ) : null}
+                  {archiveProjectGroups.size > 0 ? (
+                    <ArchiveScopeGroup
+                      title="项目市场"
+                      groups={archiveProjectGroups}
+                      labelForGroup={archiveProjectName}
+                      onArchiveSkill={props.onArchiveSkill}
+                    />
+                  ) : null}
                   {manageableSkills.length === 0 ? (
                     <div className="empty-state compact">当前角色没有可下架的市场 skill。</div>
+                  ) : archiveTotalCount === 0 ? (
+                    <div className="empty-state compact">没有匹配搜索条件的可下架 skill。</div>
                   ) : null}
                 </div>
               </section>
@@ -3698,6 +3732,64 @@ function Badge(props: { children: React.ReactNode; strong?: boolean }) {
   return <em className={`badge ${props.strong ? "strong" : ""}`}>{props.children}</em>;
 }
 
+function ArchiveScopeGroup(props: {
+  title: string;
+  groups: Map<string, MarketSkill[]>;
+  labelForGroup: (key: string) => string;
+  onArchiveSkill: (skill: MarketSkill) => void;
+}) {
+  const entries = Array.from(props.groups.entries()).sort((first, second) =>
+    props
+      .labelForGroup(first[0])
+      .localeCompare(props.labelForGroup(second[0]), undefined, { sensitivity: "base" })
+  );
+  const total = entries.reduce((sum, [, skills]) => sum + skills.length, 0);
+
+  return (
+    <section className="archive-scope-group">
+      <div className="archive-scope-head">
+        <Layers3 size={16} />
+        <strong>{props.title}</strong>
+        <span>{total}</span>
+      </div>
+      <div className="archive-category-stack">
+        {entries.map(([groupKey, skills]) => (
+          <div className="archive-category-group" key={`${props.title}:${groupKey}`}>
+            <div className="archive-category-header">
+              <FolderGit2 size={16} />
+              <strong>{props.labelForGroup(groupKey)}</strong>
+              <span>{skills.length}</span>
+            </div>
+            <div className="archive-skill-list">
+              {skills.map((skill) => (
+                <div className="archive-market-row" key={skillKey(skill)}>
+                  <span className="archive-skill-icon" aria-hidden="true">
+                    <FileText size={15} />
+                  </span>
+                  <div className="archive-skill-main">
+                    <strong>{skill.name}</strong>
+                    <span>
+                      {skill.namespace}/{skill.id} · {skill.latestVersion}
+                    </span>
+                  </div>
+                  <button
+                    className="archive-action-button"
+                    onClick={() => props.onArchiveSkill(skill)}
+                    title={`下架 ${skill.name}`}
+                  >
+                    <Archive size={15} />
+                    下架
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function BindingDots(props: { bindings: SkillBinding[] }) {
   if (props.bindings.length === 0) {
     return <span className="mini-status">未启用</span>;
@@ -3784,6 +3876,15 @@ function getInstallState(
 
 function skillKey(skill: MarketSkill) {
   return `${skill.sourceId ?? "local"}:${skill.namespace}/${skill.id}`;
+}
+
+function categoryNameFromSlug(slug: string) {
+  if (slug === "uncategorized") return "未分类";
+  return slug
+    .split(/[-_/]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toLocaleUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function scopeConflict(bindings: SkillBinding[], target: string, level: LevelChoice) {
