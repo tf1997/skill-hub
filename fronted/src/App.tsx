@@ -90,6 +90,11 @@ type AppUpdateDialogState = {
   error?: string | null;
   manual: boolean;
 };
+type ContextMenuState = {
+  open: boolean;
+  x: number;
+  y: number;
+};
 type CachedSkillItem = {
   key: string;
   package: CachedSkillPackage;
@@ -227,6 +232,11 @@ function App() {
     phase: "checking",
     manual: false
   });
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({
+    open: false,
+    x: 0,
+    y: 0
+  });
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
   const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
   const [remoteProjectDraft, setRemoteProjectDraft] = useState<MarketProject>(emptyMarketProject());
@@ -355,6 +365,26 @@ function App() {
       unlistenAppUpdate?.();
     };
   }, [handleBackgroundAppUpdateAvailable, openAppUpdateDialog]);
+
+  useEffect(() => {
+    if (!contextMenu.open) return;
+
+    const closeContextMenu = () => setContextMenu((current) => ({ ...current, open: false }));
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    };
+
+    window.addEventListener("click", closeContextMenu);
+    window.addEventListener("blur", closeContextMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", closeContextMenu);
+      window.removeEventListener("blur", closeContextMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu.open]);
 
   const publicCategories = useMemo(
     () => normalizeCategoryList(data.categories),
@@ -1132,8 +1162,23 @@ function App() {
       : [])
   ];
 
+  function openContextMenu(event: React.MouseEvent) {
+    event.preventDefault();
+    const menuWidth = 156;
+    const menuHeight = 46;
+    setContextMenu({
+      open: true,
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 8)
+    });
+  }
+
+  function reloadWindow() {
+    window.location.reload();
+  }
+
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div className="app-shell" data-theme={theme} onContextMenu={openContextMenu}>
       <aside className="sidebar">
         <button className="brand-block" onClick={revealAdminEntry} type="button" title="Skill Hub">
           <div className="brand-mark">
@@ -1349,6 +1394,20 @@ function App() {
           />
         ) : null}
       </main>
+      {contextMenu.open ? (
+        <AppContextMenu x={contextMenu.x} y={contextMenu.y} onRefresh={reloadWindow} />
+      ) : null}
+    </div>
+  );
+}
+
+function AppContextMenu(props: { x: number; y: number; onRefresh: () => void }) {
+  return (
+    <div className="app-context-menu" style={{ left: props.x, top: props.y }} role="menu">
+      <button type="button" onClick={props.onRefresh} role="menuitem">
+        <RefreshCw size={15} />
+        刷新
+      </button>
     </div>
   );
 }
