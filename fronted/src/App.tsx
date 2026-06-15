@@ -1990,25 +1990,152 @@ function EmptyState(props: { title: string; body: string }) {
   );
 }
 
+function draftCategoryPath(draft: AdminDraftSkill) {
+  const path = draft.gitlabCategoryPath?.map((item) => item.trim()).filter(Boolean) ?? [];
+  if (path.length > 0) {
+    return path;
+  }
+  return (draft.gitlabCategoryCode ?? "")
+    .split("/")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function draftPrimaryCategory(draft: AdminDraftSkill) {
+  return draftCategoryPath(draft)[0] ?? "未分类";
+}
+
+function draftSecondaryCategory(draft: AdminDraftSkill) {
+  const path = draftCategoryPath(draft);
+  return path.length > 1 ? path.slice(1).join("/") : null;
+}
+
+function draftCategoryLabel(category: string) {
+  return category.includes("/") ? category.split("/").join(" / ") : category;
+}
+
+function draftSkillLabel(draft: AdminDraftSkill) {
+  return draft.draftSlug ?? draft.gitlabSourcePath.split("/").pop() ?? draft.gitlabSourcePath;
+}
+
+function draftSearchText(draft: AdminDraftSkill) {
+  return [
+    draftSkillLabel(draft),
+    draft.gitlabSourcePath,
+    draftCategoryPath(draft).join("/"),
+    draftCategoryPath(draft).map(draftCategoryLabel).join(" "),
+    draft.status,
+    draft.validationStatus ?? "",
+    draft.version ?? "",
+    draft.author ?? "",
+    draft.publishMeta?.name ?? "",
+    draft.publishMeta?.summary ?? "",
+    draft.publishMeta?.tags.join(" ") ?? ""
+  ]
+    .join(" ")
+    .toLocaleLowerCase();
+}
+
+function draftStatusClass(draft: AdminDraftSkill) {
+  const status = draft.status.trim();
+  const validation = (draft.validationStatus ?? "").trim().toLocaleLowerCase();
+  const failedValidation = ["failed", "failure", "error", "invalid"].some((keyword) => validation.includes(keyword));
+  const incompleteValidation = ["incomplete", "missing", "metadata"].some((keyword) => validation.includes(keyword));
+
+  if (status === "已下架") {
+    return "archived";
+  }
+  if (status.includes("校验失败") || failedValidation) {
+    return "failed";
+  }
+  if (status.includes("元数据待补充") || status.includes("待补充") || incompleteValidation) {
+    return "incomplete";
+  }
+  if (status.includes("版本回退风险") || status.includes("风险")) {
+    return "risk";
+  }
+  if (!draft.sourceAvailable) {
+    return "missing-source";
+  }
+  if (status === "已发布") {
+    return "published";
+  }
+  if (status === "可升级") {
+    return "upgradable";
+  }
+  return "draft";
+}
+
+function sortDrafts(drafts: AdminDraftSkill[]) {
+  return [...drafts].sort((first, second) =>
+    draftSkillLabel(first).localeCompare(draftSkillLabel(second), undefined, {
+      numeric: true,
+      sensitivity: "base"
+    })
+  );
+}
+
 function DraftList(props: {
   drafts: AdminDraftSkill[];
   selectedDraftPath: string | null;
   onSelectDraft: (draft: AdminDraftSkill) => void;
 }) {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [collapsedSubcategories, setCollapsedSubcategories] = useState<Set<string>>(new Set());
+  const [draftQuery, setDraftQuery] = useState("");
 
-  // 按 category 分组
-  const grouped = new Map<string, AdminDraftSkill[]>();
+  const grouped = new Map<string, { direct: AdminDraftSkill[]; secondary: Map<string, AdminDraftSkill[]> }>();
+  const normalizedQuery = draftQuery.trim().toLocaleLowerCase();
   for (const draft of props.drafts) {
-    const category = draft.gitlabCategoryCode || "未分类";
-    if (!grouped.has(category)) {
-      grouped.set(category, []);
+    const category = draftPrimaryCategory(draft);
+    const secondary = draftSecondaryCategory(draft);
+    const categoryText = draftCategoryLabel(category).toLocaleLowerCase();
+    const secondaryText = secondary
+      ? `${secondary} ${draftCategoryLabel(secondary)} ${category}/${secondary}`.toLocaleLowerCase()
+      : "";
+    const matchesQuery =
+      !normalizedQuery ||
+      categoryText.includes(normalizedQuery) ||
+      secondaryText.includes(normalizedQuery) ||
+      draftSearchText(draft).includes(normalizedQuery);
+    if (!matchesQuery) {
+      continue;
     }
-    grouped.get(category)!.push(draft);
+
+    if (!grouped.has(category)) {
+      grouped.set(category, { direct: [], secondary: new Map() });
+    }
+    const group = grouped.get(category)!;
+    if (!secondary) {
+      group.direct.push(draft);
+      continue;
+    }
+    if (!group.secondary.has(secondary)) {
+      group.secondary.set(secondary, []);
+    }
+    group.secondary.get(secondary)!.push(draft);
   }
 
-  // 排序 category
   const categories = Array.from(grouped.keys()).sort();
+  const secondaryKey = (category: string, secondary: string) => `${category}/${secondary}`;
+  const allSecondaryKeys = categories.flatMap((category) =>
+    Array.from(grouped.get(category)!.secondary.keys()).map((secondary) => secondaryKey(category, secondary))
+  );
+  const visibleDraftCount = categories.reduce((sum, category) => {
+    const group = grouped.get(category)!;
+    return (
+      sum +
+      group.direct.length +
+      Array.from(group.secondary.values()).reduce((subtotal, drafts) => subtotal + drafts.length, 0)
+    );
+  }, 0);
+
+  useEffect(() => {
+    if (normalizedQuery) {
+      setCollapsedCategories(new Set());
+      setCollapsedSubcategories(new Set());
+    }
+  }, [normalizedQuery]);
 
   const toggleCategory = (category: string) => {
     const newSet = new Set(collapsedCategories);
@@ -2020,47 +2147,146 @@ function DraftList(props: {
     setCollapsedCategories(newSet);
   };
 
+  const toggleSubcategory = (key: string) => {
+    const newSet = new Set(collapsedSubcategories);
+    if (newSet.has(key)) {
+      newSet.delete(key);
+    } else {
+      newSet.add(key);
+    }
+    setCollapsedSubcategories(newSet);
+  };
+
+  const expandAllDraftGroups = () => {
+    setCollapsedCategories(new Set());
+    setCollapsedSubcategories(new Set());
+  };
+
+  const collapseAllDraftGroups = () => {
+    setCollapsedCategories(new Set(categories));
+    setCollapsedSubcategories(new Set(allSecondaryKeys));
+  };
+  const allDraftGroupsCollapsed =
+    categories.length > 0 && categories.every((category) => collapsedCategories.has(category));
+  const toggleAllDraftGroups = () => {
+    if (allDraftGroupsCollapsed) {
+      expandAllDraftGroups();
+    } else {
+      collapseAllDraftGroups();
+    }
+  };
+
+  const renderDraftRow = (draft: AdminDraftSkill, nested = false) => (
+    <button
+      type="button"
+      key={draft.gitlabSourcePath}
+      className={`draft-row ${nested ? "nested" : ""} ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""} ${!draft.sourceAvailable ? "no-source" : ""}`}
+      onClick={() => props.onSelectDraft(draft)}
+      title={!draft.sourceAvailable ? "未关联 GitLab 源，无法预览" : undefined}
+    >
+      <span className="draft-icon">
+        <FileText size={16} />
+      </span>
+      <span className="draft-row-main">
+        <strong>{draftSkillLabel(draft)}</strong>
+      </span>
+      <span className={`badge badge-status ${draftStatusClass(draft)}`}>
+        {!draft.sourceAvailable && <AlertCircle size={12} className="badge-inline-icon" />}
+        {draft.status}
+      </span>
+    </button>
+  );
+
   return (
     <>
+      <div className="draft-list-tools">
+        <div className="search-box draft-search-box">
+          <Search size={15} />
+          <input
+            value={draftQuery}
+            onChange={(event) => setDraftQuery(event.target.value)}
+            placeholder="搜索分类、二级分类或 skill"
+            aria-label="搜索草稿分类和 skill"
+          />
+          {draftQuery ? (
+            <button
+              type="button"
+              className="draft-search-clear"
+              onClick={() => setDraftQuery("")}
+              title="清空搜索"
+              aria-label="清空搜索"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+        <div className="draft-list-actions">
+          <span className="draft-list-count">
+            {normalizedQuery ? `${visibleDraftCount}/${props.drafts.length}` : `${props.drafts.length}`}
+          </span>
+          <button
+            type="button"
+            className="draft-fold-button"
+            onClick={toggleAllDraftGroups}
+            disabled={categories.length === 0}
+          >
+            {allDraftGroupsCollapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {allDraftGroupsCollapsed ? "展开" : "折叠"}
+          </button>
+        </div>
+      </div>
+      {categories.length === 0 ? (
+        <div className="empty-state compact draft-empty-results">
+          <strong>没有匹配的草稿</strong>
+          <span>换个分类、路径或 skill 名称试试。</span>
+        </div>
+      ) : null}
       {categories.map((category) => {
         const isCollapsed = collapsedCategories.has(category);
+        const group = grouped.get(category)!;
+        const secondaryCategories = Array.from(group.secondary.keys()).sort();
+        const count = group.direct.length + secondaryCategories.reduce((sum, key) => sum + group.secondary.get(key)!.length, 0);
         return (
           <div key={category} className="draft-category-group">
             <button
+              type="button"
               className={`draft-category-header ${isCollapsed ? "collapsed" : ""}`}
               onClick={() => toggleCategory(category)}
+              aria-expanded={!isCollapsed}
             >
               <FolderGit2 size={18} />
-              <strong>{category}</strong>
-              <span className="badge">{grouped.get(category)!.length}</span>
+              <strong className="draft-category-title">{draftCategoryLabel(category)}</strong>
+              <span className="badge">{count}</span>
               <ChevronRight size={16} className="category-toggle" />
             </button>
             <div className={`draft-items ${isCollapsed ? "collapsed" : ""}`}>
-              {grouped.get(category)!.map((draft) => (
-                <button
-                  key={draft.gitlabSourcePath}
-                  className={`draft-row ${props.selectedDraftPath === draft.gitlabSourcePath ? "active" : ""} ${!draft.sourceAvailable ? "no-source" : ""}`}
-                  onClick={() => props.onSelectDraft(draft)}
-                  title={!draft.sourceAvailable ? "未关联 GitLab 源，无法预览" : undefined}
-                >
-                  <span className="draft-icon">
-                    <FileText size={16} />
-                  </span>
-                  <span className="draft-row-main">
-                    <strong>{draft.draftSlug ?? draft.gitlabSourcePath}</strong>
-                    <small>{draft.gitlabSourcePath}</small>
-                  </span>
-                  <span className={`badge badge-status ${
-                    draft.status === "已发布" ? "published" :
-                    draft.status === "已下架" ? "archived" :
-                    draft.status === "可升级" ? "upgradable" :
-                    "draft"
-                  }`}>
-                    {!draft.sourceAvailable && <AlertCircle size={12} className="badge-inline-icon" />}
-                    {draft.status}
-                  </span>
-                </button>
-              ))}
+              {group.direct.length > 0 ? (
+                <div className="draft-direct-items">
+                  {sortDrafts(group.direct).map((draft) => renderDraftRow(draft, true))}
+                </div>
+              ) : null}
+              {secondaryCategories.map((secondary) => {
+                const key = secondaryKey(category, secondary);
+                const isSecondaryCollapsed = collapsedSubcategories.has(key);
+                return (
+                  <div key={key} className="draft-subcategory-group">
+                    <button
+                      type="button"
+                      className={`draft-subcategory-label ${isSecondaryCollapsed ? "collapsed" : ""}`}
+                      onClick={() => toggleSubcategory(key)}
+                      aria-expanded={!isSecondaryCollapsed}
+                    >
+                      <FolderGit2 size={16} className="draft-subcategory-icon" />
+                      <span className="draft-subcategory-title">{draftCategoryLabel(secondary)}</span>
+                      <small>{group.secondary.get(secondary)!.length}</small>
+                      <ChevronRight size={14} className="subcategory-toggle" />
+                    </button>
+                    <div className={`draft-subcategory-items ${isSecondaryCollapsed ? "collapsed" : ""}`}>
+                      {sortDrafts(group.secondary.get(secondary)!).map((draft) => renderDraftRow(draft, true))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         );
@@ -2346,7 +2572,6 @@ function AdminView(props: {
                 <div className="section-toolbar">
                   <div>
                     <h2>草稿区</h2>
-                    <p>MinIO draft/gitlab/skills 下的 SKILL.md。</p>
                   </div>
                   <button className="icon-button" onClick={props.onRefreshDrafts} title="刷新草稿列表">
                     <RefreshCw size={16} />
@@ -2368,7 +2593,7 @@ function AdminView(props: {
               <section className="admin-panel publish-editor">
                 <div className="section-toolbar">
                   <div>
-                    <h2>{selectedDraft?.draftSlug ?? "发布元数据"}</h2>
+                    <h2>{selectedDraft ? draftSkillLabel(selectedDraft) : "发布元数据"}</h2>
                     <p>{selectedDraft?.version ? `version ${selectedDraft.version}` : "选择草稿后编辑"}</p>
                   </div>
                   <Badge>{selectedDraft?.author ?? "等待选择"}</Badge>
@@ -3296,7 +3521,7 @@ function emptyMarketCategory(): Category {
 }
 
 function defaultMetaFromDraft(draft: AdminDraftSkill): PublishMeta {
-  const slug = draft.draftSlug ?? draft.gitlabSourcePath.split("/").pop() ?? "";
+  const slug = draftSkillLabel(draft);
   return {
     ...emptyPublishMeta(),
     skillId: slug,

@@ -271,6 +271,7 @@ const mockAdminDrafts: AdminDraftSkill[] = [
     gitlabSourcePath: "product/minio-live-draft",
     draftSlug: "minio-live-draft",
     gitlabCategoryCode: "product",
+    gitlabCategoryPath: ["product"],
     sourceAvailable: true,
     version: "0.1.0",
     author: "Skill Hub Test",
@@ -295,6 +296,7 @@ const mockAdminDrafts: AdminDraftSkill[] = [
     gitlabSourcePath: "ops/backend-release-helper",
     draftSlug: "backend-release-helper",
     gitlabCategoryCode: "ops",
+    gitlabCategoryPath: ["ops"],
     sourceAvailable: false,
     version: "1.2.0",
     author: "Ops Team",
@@ -317,9 +319,10 @@ const mockAdminDrafts: AdminDraftSkill[] = [
     }
   },
   {
-    gitlabSourcePath: "general/prompt-audit-kit",
+    gitlabSourcePath: "general/product/prompt-audit-kit",
     draftSlug: "prompt-audit-kit",
-    gitlabCategoryCode: "general",
+    gitlabCategoryCode: "general/product",
+    gitlabCategoryPath: ["general", "product"],
     sourceAvailable: true,
     version: "0.3.0",
     author: "Market Admin",

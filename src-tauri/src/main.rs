@@ -6,6 +6,7 @@ mod admin_config;
 mod db;
 mod minio_config;
 mod models;
+mod process_util;
 mod updater;
 
 use tauri::api::dialog;

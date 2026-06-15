@@ -1,6 +1,8 @@
-use std::{collections::HashSet, process::Command};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+
+use crate::process_util::hidden_command;
 
 pub const ADMIN_KEY: &str = "skillhub-admin";
 pub const MINIO_PUBLISHER_ACCESS_KEY: &str = "minioadmin";
@@ -182,7 +184,7 @@ fn platform_mac_output() -> String {
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
+    let output = hidden_command(program).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     if text.trim().is_empty() {
         None

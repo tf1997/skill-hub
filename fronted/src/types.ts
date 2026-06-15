@@ -270,6 +270,7 @@ export type AdminDraftSkill = {
   gitlabSourcePath: string;
   draftSlug?: string | null;
   gitlabCategoryCode?: string | null;
+  gitlabCategoryPath?: string[] | null;
   sourceAvailable: boolean;
   version?: string | null;
   author?: string | null;

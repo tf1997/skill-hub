@@ -15,7 +15,7 @@ arch     x64 | aarch64
 默认 MinIO endpoint/bucket 在 `src-tauri/src/minio_config.rs`，应用更新 manifest 默认由同一套配置拼出：
 
 ```text
-http://192.168.1.4:9000/skill-market/skill-hub/updates/stable/latest.json
+http://192.168.1.4:9000/skill-market/updates/stable/latest.json
 ```
 
 构建时可统一覆盖 MinIO 源：
@@ -28,7 +28,7 @@ $env:SKILL_HUB_MINIO_BUCKET="skill-market"
 也可以只覆盖完整更新 manifest URL：
 
 ```powershell
-$env:SKILL_HUB_BUILT_IN_UPDATE_MANIFEST_URL="https://minio.example.com/skill-market/skill-hub/updates/stable/latest.json"
+$env:SKILL_HUB_BUILT_IN_UPDATE_MANIFEST_URL="https://minio.example.com/skill-market/updates/stable/latest.json"
 ```
 
 ## Version
@@ -47,7 +47,7 @@ fronted/package.json       version
 ## Windows Portable
 
 ```powershell
-.\scripts\package-windows-portable.ps1 -Build -Arch x64
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-windows-portable.ps1 -Build -Arch x64
 ```
 
 生成的 zip 包含：
@@ -59,6 +59,10 @@ portable.json
 ```
 
 脚本会输出 `sha256` 和 `size`，把它们填入 `latest.json`。
+
+## Windows Installer
+
+安装版在 `src-tauri/tauri.conf.json` 中显式使用 `webviewInstallMode: downloadBootstrapper`。生成 MSI 时，安装器会在目标机器缺少 WebView2 Runtime 时静默下载并安装 Runtime。便携包仍使用 DLL 随包方式，确保当前 GNU 构建产物可以直接运行。
 
 ## Windows Crash Event Log
 
@@ -85,7 +89,7 @@ Level:  Error
 1. 更新版本号。
 2. 构建安装包或便携包。
 3. 生成 SHA256 和文件大小。
-4. 上传包到 `skill-hub/updates/stable/<version>/`。
-5. 最后上传 `skill-hub/updates/stable/latest.json`。
+4. 上传包到 `updates/stable/<version>/`。
+5. 最后上传 `updates/stable/latest.json`。
 
 最后上传 `latest.json` 可以避免旧客户端看到尚未完整上传的新版本。

@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Cursor, Read, Write};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::api::dialog::{
@@ -18,6 +16,7 @@ use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
 use crate::minio_config;
+use crate::process_util::hidden_command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -560,14 +559,9 @@ fn find_latest_portable_executable(root: &Path) -> Option<(Version, PathBuf)> {
 }
 
 fn spawn_portable_executable(executable: &Path) -> std::io::Result<Child> {
-    let mut command = Command::new(executable);
+    let mut command = hidden_command(executable);
     command.args(std::env::args_os().skip(1));
     command.env("SKILL_HUB_SKIP_PORTABLE_RELAUNCH", "1");
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
     command.spawn()
 }
 

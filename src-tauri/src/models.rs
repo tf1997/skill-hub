@@ -417,6 +417,8 @@ pub struct AdminDraftSkill {
     pub draft_slug: Option<String>,
     pub gitlab_category_code: Option<String>,
     #[serde(default)]
+    pub gitlab_category_path: Vec<String>,
+    #[serde(default)]
     pub source_available: bool,
     pub version: Option<String>,
     pub author: Option<String>,

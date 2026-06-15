@@ -332,12 +332,13 @@ async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>
             publish_meta.as_ref(),
             validation_status.as_deref(),
         );
-        let (gitlab_category_code, draft_slug) = split_gitlab_source_path(&source_path);
+        let draft_location = parse_gitlab_source_path(&source_path);
 
         drafts.push(AdminDraftSkill {
             gitlab_source_path: source_path,
-            draft_slug,
-            gitlab_category_code,
+            draft_slug: draft_location.draft_slug.clone(),
+            gitlab_category_code: draft_location.category_code(),
+            gitlab_category_path: draft_location.category_path,
             source_available: true,
             version,
             author,
@@ -403,10 +404,19 @@ async fn list_admin_drafts_inner(admin_key: &str) -> Result<Vec<AdminDraftSkill>
             .and_then(|value| value.as_str())
             .map(ToString::to_string);
 
+        let mut draft_location = parse_gitlab_source_path(&source_path);
+        if draft_location.draft_slug.is_none() && !skill_id.is_empty() {
+            draft_location.draft_slug = Some(skill_id.to_string());
+        }
+        if draft_location.category_path.is_empty() && !namespace.is_empty() {
+            draft_location.category_path.push(namespace.to_string());
+        }
+
         drafts.push(AdminDraftSkill {
             gitlab_source_path: source_path,
-            draft_slug: if skill_id.is_empty() { None } else { Some(skill_id.to_string()) },
-            gitlab_category_code: if namespace.is_empty() { None } else { Some(namespace.to_string()) },
+            draft_slug: draft_location.draft_slug.clone(),
+            gitlab_category_code: draft_location.category_code(),
+            gitlab_category_path: draft_location.category_path,
             source_available: false,
             version: None,
             author: state_json
@@ -488,7 +498,7 @@ async fn preview_admin_draft_inner(request: AdminDraftPreviewRequest) -> Result<
     }
 
     let skill_md = client.get_text(&skill_md_path).await?;
-    let (_, draft_slug) = split_gitlab_source_path(&source_path);
+    let draft_slug = parse_gitlab_source_path(&source_path).draft_slug;
     let meta_path = admin_object_path(&source_path, "publish-meta.v1.json")?;
     let meta = client
         .get_optional_json::<PublishMeta>(&meta_path)
@@ -2274,8 +2284,8 @@ fn normalize_publish_meta_for_source(meta: PublishMeta, source_path: &str) -> Pu
 }
 
 fn draft_skill_id_from_source_path(source_path: &str) -> String {
-    let (_, draft_slug) = split_gitlab_source_path(source_path);
-    draft_slug
+    parse_gitlab_source_path(source_path)
+        .draft_slug
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "skill".to_string())
@@ -2384,15 +2394,33 @@ fn parse_skill_markdown_field(content: &str, field: &str) -> Option<String> {
     None
 }
 
-fn split_gitlab_source_path(source_path: &str) -> (Option<String>, Option<String>) {
-    let parts = source_path.split('/').collect::<Vec<_>>();
-    match parts.as_slice() {
-        [] => (None, None),
-        [single] => (None, Some((*single).to_string())),
-        [category, rest @ ..] => (
-            Some((*category).to_string()),
-            rest.last().map(|value| (*value).to_string()),
-        ),
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitlabDraftLocation {
+    category_path: Vec<String>,
+    draft_slug: Option<String>,
+}
+
+impl GitlabDraftLocation {
+    fn category_code(&self) -> Option<String> {
+        if self.category_path.is_empty() {
+            None
+        } else {
+            Some(self.category_path.join("/"))
+        }
+    }
+}
+
+fn parse_gitlab_source_path(source_path: &str) -> GitlabDraftLocation {
+    let mut parts = source_path
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let draft_slug = parts.pop();
+    GitlabDraftLocation {
+        category_path: parts,
+        draft_slug,
     }
 }
 
@@ -4635,6 +4663,24 @@ author: "Skill Hub"
         assert!(validate_object_segment("namespace", "../team").is_err());
         assert!(normalize_relative_object_path("cat/demo").is_ok());
         assert!(normalize_relative_object_path("cat/../demo").is_err());
+    }
+
+    #[test]
+    fn parses_gitlab_draft_category_paths_from_skill_location() {
+        let single = parse_gitlab_source_path("product/prd-shaper");
+        assert_eq!(single.category_path, vec!["product".to_string()]);
+        assert_eq!(single.category_code().as_deref(), Some("product"));
+        assert_eq!(single.draft_slug.as_deref(), Some("prd-shaper"));
+
+        let nested = parse_gitlab_source_path("general/product/prd-shaper");
+        assert_eq!(
+            nested.category_path,
+            vec!["general".to_string(), "product".to_string()]
+        );
+        assert_eq!(nested.category_code().as_deref(), Some("general/product"));
+        assert_eq!(nested.draft_slug.as_deref(), Some("prd-shaper"));
+
+        assert_ne!(single.category_code(), nested.category_code());
     }
 
     #[test]
