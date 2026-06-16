@@ -491,7 +491,7 @@ select:focus-visible {
   min-height: 0;
   height: 100vh;
   overflow: hidden;
-  padding: 22px 24px 24px;
+  padding: 20px 24px 24px;
 }
 
 .topbar {
@@ -500,8 +500,8 @@ select:focus-visible {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 14px;
+  margin-bottom: 14px;
 }
 
 .topbar p,
@@ -517,9 +517,9 @@ select:focus-visible {
 }
 
 .topbar h1 {
-  margin-top: 4px;
-  font-size: 32px;
-  line-height: 1.08;
+  margin-top: 3px;
+  font-size: 30px;
+  line-height: 1.12;
   font-weight: 750;
   letter-spacing: 0;
 }
@@ -539,8 +539,8 @@ select:focus-visible {
   gap: 8px;
   min-width: 0;
   max-width: min(420px, 44vw);
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 34px;
+  padding: 0 12px;
   color: var(--text-secondary);
   background: var(--surface-elevated);
   border: 1px solid var(--border-light);
@@ -612,10 +612,11 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 38px;
+  min-height: 34px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 500;
+  font-size: 13px;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
@@ -629,7 +630,9 @@ select:focus-visible {
 }
 
 .icon-button {
-  width: 38px;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border-light);
@@ -654,8 +657,8 @@ select:focus-visible {
 
 .primary-soft,
 .icon-text-button {
-  padding: 0 16px;
-  min-height: 38px;
+  padding: 0 12px;
+  min-height: 34px;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border-light);
@@ -664,7 +667,7 @@ select:focus-visible {
 }
 
 .primary-soft.icon-only {
-  width: 38px;
+  width: 34px;
   padding: 0;
   flex: 0 0 auto;
 }
@@ -677,13 +680,15 @@ select:focus-visible {
 }
 
 .primary-action {
-  width: 100%;
-  min-height: 44px;
-  padding: 0 16px;
+  width: fit-content;
+  min-width: 148px;
+  min-height: 40px;
+  padding: 0 14px;
   color: #fff;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
   border: 1px solid var(--accent-primary);
   box-shadow: 0 4px 12px rgba(79, 124, 255, 0.24);
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -694,7 +699,10 @@ select:focus-visible {
 
 .primary-action.compact {
   width: auto;
-  min-width: 132px;
+  min-width: 112px;
+  min-height: 36px;
+  padding: 0 13px;
+  font-size: 13px;
 }
 
 .primary-action:disabled {
@@ -759,7 +767,7 @@ select:focus-visible {
 
 .market-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(380px, 1.05fr);
+  grid-template-columns: minmax(420px, 1fr) minmax(360px, 0.92fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   flex: 1 1 auto;
@@ -888,7 +896,7 @@ select:focus-visible {
   display: inline-grid;
   grid-auto-flow: column;
   gap: 4px;
-  padding: 4px;
+  padding: 3px;
   background: var(--control-bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -900,10 +908,11 @@ select:focus-visible {
 }
 
 .segmented button {
-  min-height: 30px;
-  padding: 0 10px;
+  min-height: 28px;
+  padding: 0 9px;
   color: var(--muted);
   background: transparent;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -1111,6 +1120,20 @@ select:focus-visible {
 }
 
 .detail-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+.detail-pane > .empty-state {
+  margin: auto;
+}
+
+.detail-scroll {
+  flex: 1 1 auto;
   min-height: 0;
   padding: 20px;
   overflow: auto;
@@ -1144,12 +1167,15 @@ select:focus-visible {
 
 .detail-heading h2 {
   margin-top: 0;
-  font-size: 25px;
-  line-height: 1.12;
+  font-size: 26px;
+  line-height: 1.2;
+  font-weight: 750;
 }
 
 .detail-summary {
   color: var(--muted);
+  margin: 14px 0 0;
+  font-size: 14px;
   line-height: 1.55;
   max-width: 68ch;
 }
@@ -1172,9 +1198,17 @@ select:focus-visible {
 
 .binding-panel,
 .install-box {
-  margin-top: 16px;
-  padding-top: 16px;
+  margin-top: 18px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
+}
+
+.install-box h3,
+.binding-panel h3 {
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 750;
 }
 
 .binding-line {
@@ -1199,14 +1233,35 @@ select:focus-visible {
 
 .install-box {
   display: grid;
-  gap: 13px;
+  gap: 12px;
+}
+
+.install-box > :not(.primary-action):not(.secondary-action) {
+  grid-column: 1 / -1;
+}
+
+.detail-action-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 58px;
+  padding: 10px 20px;
+  background: var(--panel-header);
+  border-top: 1px solid var(--line);
+}
+
+.detail-action-bar .primary-action,
+.detail-action-bar .secondary-action {
+  flex: 0 0 auto;
 }
 
 .field-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .field-row > span,
@@ -1225,12 +1280,13 @@ select:focus-visible {
 
 .text-field input,
 .text-field select {
-  height: 38px;
+  height: 36px;
   min-width: 0;
-  padding: 0 14px;
+  padding: 0 12px;
   background: var(--control-bg);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
+  font-size: 13px;
   font-weight: 500;
   transition: all 0.2s ease;
 }
@@ -1270,12 +1326,15 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 14px;
+  width: fit-content;
+  min-height: 36px;
+  padding: 0 12px;
   color: var(--text);
   background: var(--control-bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -1340,8 +1399,9 @@ select:focus-visible {
 }
 
 .section-toolbar h2 {
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 750;
   color: var(--text-primary);
   display: flex;
   align-items: center;
@@ -1349,10 +1409,11 @@ select:focus-visible {
 }
 
 .section-toolbar p {
-  margin: 6px 0 0;
+  margin: 5px 0 0;
   color: var(--muted);
   overflow-wrap: anywhere;
   font-size: 13px;
+  line-height: 1.45;
 }
 
 .toolbar-actions {
@@ -1369,7 +1430,7 @@ select:focus-visible {
   gap: 4px;
   width: max-content;
   max-width: 100%;
-  min-height: 44px;
+  min-height: 40px;
   padding: 4px;
   overflow: auto;
   background: var(--control-bg);
@@ -1382,12 +1443,13 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 0 10px;
   color: var(--muted);
   background: transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -1718,9 +1780,9 @@ select:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  min-height: 56px;
-  padding: 12px 18px;
+  gap: 14px;
+  min-height: 52px;
+  padding: 10px 14px;
   background: var(--surface-elevated);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
@@ -1737,20 +1799,21 @@ select:focus-visible {
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 .admin-title h2 {
   margin: 2px 0 0;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  line-height: 1.16;
+  font-weight: 750;
   color: var(--text-primary);
 }
 
 .admin-session-compact {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -1759,7 +1822,8 @@ select:focus-visible {
   align-items: center;
   gap: 8px;
   max-width: min(420px, 36vw);
-  padding: 6px 12px;
+  min-height: 30px;
+  padding: 0 10px;
   background: var(--surface-muted);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-sm);
@@ -1769,6 +1833,11 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-indicator,
+.session-info-btn {
+  min-width: 0;
 }
 
 .session-dot {
@@ -1783,7 +1852,8 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  min-height: 30px;
+  padding: 0 10px;
   background: var(--surface-muted);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-sm);
@@ -1839,9 +1909,9 @@ select:focus-visible {
 .admin-rail {
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: 5px;
   min-height: 0;
-  padding: 10px;
+  padding: 8px;
   background: var(--surface-elevated);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
@@ -1852,13 +1922,14 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 9px;
-  min-height: 40px;
-  padding: 0 11px;
+  min-height: 36px;
+  padding: 0 10px;
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
+  font-size: 13px;
   text-align: left;
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
@@ -2437,16 +2508,16 @@ select:focus-visible {
 
 .draft-browser > .section-toolbar,
 .publish-editor > .section-toolbar {
-  min-height: 72px;
+  min-height: 68px;
   margin: 0;
-  padding: 16px 18px;
+  padding: 14px 16px;
   background: var(--panel-header);
   border-bottom: 1px solid var(--line);
 }
 
 .draft-browser > .section-toolbar {
-  min-height: 58px;
-  padding: 14px 18px;
+  min-height: 54px;
+  padding: 12px 16px;
 }
 
 .draft-list {
@@ -2966,7 +3037,9 @@ select:focus-visible {
 .publish-actions {
   align-items: center;
   margin: 0;
-  padding: 14px 18px;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
   background: var(--panel-header);
   border-top: 1px solid var(--line);
 }
@@ -2977,7 +3050,11 @@ select:focus-visible {
 
 .publish-actions .primary-soft,
 .publish-actions .primary-action {
-  min-height: 40px;
+  min-height: 36px;
+}
+
+.publish-actions .primary-action {
+  min-width: 116px;
 }
 
 .publish-empty-state {
@@ -3054,7 +3131,9 @@ select:focus-visible {
 }
 
 .target-root-list h2 {
-  font-size: 19px;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 750;
 }
 
 .target-root-list p {
@@ -3938,7 +4017,7 @@ select:focus-visible {
 @media (max-width: 1160px) {
   .market-grid {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 0.78fr);
+    grid-template-rows: minmax(220px, 0.76fr) minmax(330px, 1fr);
   }
 
   .detail-pane {
@@ -4042,6 +4121,16 @@ select:focus-visible {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+
+  .admin-session-compact {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .session-indicator {
+    max-width: 100%;
+    flex: 1 1 180px;
   }
 
   .session-indicator {

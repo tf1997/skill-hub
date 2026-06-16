@@ -1723,6 +1723,7 @@ function MarketView(props: {
       <aside className="detail-pane">
         {props.selectedSkill ? (
           <>
+            <div className="detail-scroll">
             <div className="detail-heading">
               <div>
                 <h2>{props.selectedSkill.name}</h2>
@@ -1843,6 +1844,13 @@ function MarketView(props: {
                 </div>
               ) : null}
 
+            </div>
+            </div>
+            <div className="detail-action-bar">
+              <button className="secondary-action" onClick={() => props.onPreview(props.selectedSkill!)}>
+                <BookOpen size={18} />
+                预览内容
+              </button>
               <button
                 className="primary-action"
                 onClick={props.onInstall}
@@ -1855,12 +1863,6 @@ function MarketView(props: {
                 )}
                 {installState.label}
               </button>
-
-              <button className="secondary-action" onClick={() => props.onPreview(props.selectedSkill!)}>
-                <BookOpen size={18} />
-                预览内容
-              </button>
-
             </div>
           </>
         ) : (

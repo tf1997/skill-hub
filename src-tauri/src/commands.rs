@@ -2406,6 +2406,9 @@ fn draft_skill_id_from_source_path(source_path: &str) -> String {
 
 fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
     let mut metadata = DraftSkillMetadata::default();
+    let mut metadata_tags = Vec::new();
+    let mut metadata_tags_present = false;
+    let mut tag_list_source: Option<bool> = None;
     let mut lines = content.lines();
     if lines.next().map(str::trim) != Some("---") {
         return metadata;
@@ -2423,13 +2426,19 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
 
         let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
         if let Some(item) = trimmed.strip_prefix("- ") {
-            if section.as_deref() == Some("tags") {
+            if let Some(is_metadata_tags) = tag_list_source {
                 if let Some(tag) = clean_frontmatter_value(item) {
-                    push_unique_tag(&mut metadata.tags, tag);
+                    if is_metadata_tags {
+                        metadata_tags_present = true;
+                        push_unique_tag(&mut metadata_tags, tag);
+                    } else {
+                        push_unique_tag(&mut metadata.tags, tag);
+                    }
                 }
             }
             continue;
         }
+        tag_list_source = None;
 
         let Some((key, value)) = trimmed.split_once(':') else {
             continue;
@@ -2446,6 +2455,7 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
                 for tag in parse_frontmatter_tags(value) {
                     push_unique_tag(&mut metadata.tags, tag);
                 }
+                tag_list_source = Some(false);
             }
             (true, _, "version") => metadata.version = clean_frontmatter_value(value),
             (true, _, "author") => metadata.author = clean_frontmatter_value(value),
@@ -2453,8 +2463,19 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
                 metadata.version = clean_frontmatter_value(value)
             }
             (false, Some("metadata"), "author") => metadata.author = clean_frontmatter_value(value),
+            (false, Some("metadata"), "tags") => {
+                metadata_tags_present = true;
+                for tag in parse_frontmatter_tags(value) {
+                    push_unique_tag(&mut metadata_tags, tag);
+                }
+                tag_list_source = Some(true);
+            }
             _ => {}
         }
+    }
+
+    if metadata_tags_present {
+        metadata.tags = metadata_tags;
     }
 
     metadata
@@ -5020,6 +5041,26 @@ Content here.
         assert_eq!(metadata.name.as_deref(), Some("Array Tags Test"));
         assert_eq!(metadata.tags, vec!["frontend", "react", "ui"]);
         assert_eq!(metadata.version.as_deref(), Some("1.0.0"));
+        assert_eq!(metadata.author.as_deref(), Some("Test Author"));
+    }
+
+    #[test]
+    fn metadata_tags_take_priority_over_top_level_tags() {
+        let content = r#"---
+name: Metadata Tags Test
+description: Metadata tags should win
+tags: legacy, draft
+metadata:
+  version: 2.0.0
+  author: Test Author
+  tags:
+    - curated
+    - verified
+---"#;
+
+        let metadata = parse_skill_frontmatter(content);
+        assert_eq!(metadata.tags, vec!["curated", "verified"]);
+        assert_eq!(metadata.version.as_deref(), Some("2.0.0"));
         assert_eq!(metadata.author.as_deref(), Some("Test Author"));
     }
 
