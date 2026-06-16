@@ -1,5 +1,6 @@
 import React, { Component, type ErrorInfo, type ReactNode } from "react";
 import ReactDOM, { type Root } from "react-dom/client";
+import { appWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import "./styles.css";
 
@@ -9,6 +10,7 @@ type StartupErrorState = {
 };
 
 let appRoot: Root | null = null;
+const canUseTauriWindow = typeof window !== "undefined" && "__TAURI_IPC__" in window;
 
 class StartupErrorBoundary extends Component<{ children: ReactNode }, StartupErrorState> {
   state: StartupErrorState = {
@@ -57,6 +59,11 @@ function StartupFailure(props: { error: Error; detail: string }) {
 function renderStartupError(reason: unknown) {
   const error = reason instanceof Error ? reason : new Error(String(reason));
   getAppRoot().render(<StartupFailure error={error} detail={error.stack ?? error.message} />);
+  if (canUseTauriWindow) {
+    requestAnimationFrame(() => {
+      void appWindow.show();
+    });
+  }
 }
 
 function getAppRoot() {
@@ -73,6 +80,17 @@ function getAppRoot() {
   return appRoot;
 }
 
+function ShowWindowWhenReady() {
+  React.useEffect(() => {
+    if (!canUseTauriWindow) return;
+    requestAnimationFrame(() => {
+      void appWindow.show();
+    });
+  }, []);
+
+  return null;
+}
+
 window.addEventListener("error", (event) => {
   renderStartupError(event.error ?? event.message);
 });
@@ -85,6 +103,7 @@ try {
   getAppRoot().render(
     <React.StrictMode>
       <StartupErrorBoundary>
+        <ShowWindowWhenReady />
         <App />
       </StartupErrorBoundary>
     </React.StrictMode>

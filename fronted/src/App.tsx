@@ -294,6 +294,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("正在载入 Skill Hub...");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const checkingAppUpdateRef = useRef(false);
   const adminEntryClickCountRef = useRef(0);
 
@@ -386,10 +387,6 @@ function App() {
   );
 
   useEffect(() => {
-    void load();
-  }, []);
-
-  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme);
@@ -444,6 +441,19 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [contextMenu.open]);
+
+  useEffect(() => {
+    async function init() {
+      try {
+        await load();
+      } catch (err) {
+        console.error("Failed to initialize:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    void init();
+  }, []);
 
   const publicCategories = useMemo(
     () => normalizeCategoryList(data.categories),
@@ -1234,6 +1244,49 @@ function App() {
 
   function reloadWindow() {
     window.location.reload();
+  }
+
+  if (loading) {
+    return (
+      <main className="boot-screen" aria-label="Skill Hub 正在启动">
+        <aside className="boot-rail">
+          <div className="boot-brand">
+            <div className="boot-mark" aria-hidden="true">
+              <Layers3 size={22} />
+            </div>
+            <div>
+              <strong>Skill Hub</strong>
+              <span>Skill Switchboard</span>
+            </div>
+          </div>
+          <div className="boot-nav" aria-hidden="true">
+            <i></i>
+            <i></i>
+            <i></i>
+            <i></i>
+          </div>
+        </aside>
+        <section className="boot-workspace">
+          <header className="boot-topbar">
+            <div className="boot-title">
+              <small>Starting workspace</small>
+              <strong>正在启动</strong>
+            </div>
+            <div className="boot-status">
+              <span className="boot-dot" aria-hidden="true"></span>
+              <span>正在载入</span>
+            </div>
+          </header>
+          <div className="boot-panel">
+            <div className="boot-card">
+              <div className="boot-spinner" aria-hidden="true"></div>
+              <strong>准备 Skill Hub 工作区</strong>
+              <span>正在连接本地配置、市场缓存与技能索引。</span>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -3545,8 +3598,8 @@ function AppUpdateDialog(props: {
             <div className="app-update-manual-tip">
               <AlertCircle size={16} />
               <span>
-                请检查 manifest 中是否存在 {result?.distribution ?? "当前分发"} / {result?.platform ?? "当前平台"} /{" "}
-                {result?.arch ?? "当前架构"} 的包。更新源：{result?.manifest_url ?? "未返回"}
+                请联系管理员检查 manifest 中是否存在 {result?.distribution ?? "当前分发"} / {result?.platform ?? "当前平台"} /{" "}
+                {result?.arch ?? "当前架构"} 的包。
               </span>
             </div>
           ) : null}

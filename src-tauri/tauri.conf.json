@@ -22,6 +22,10 @@
       "shell": {
         "all": false,
         "open": true
+      },
+      "window": {
+        "all": false,
+        "show": true
       }
     },
     "bundle": {
@@ -51,6 +55,7 @@
         "minWidth": 1040,
         "resizable": true,
         "title": "Skill Hub",
+        "visible": false,
         "width": 1240
       }
     ]
