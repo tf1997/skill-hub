@@ -9,10 +9,10 @@
       "target": "portable",
       "platform": "windows",
       "arch": "x64",
-      "url": "http://192.168.1.4:9000/skill-market/windows-x64/SkillHub-0.1.0-windows-x64-portable.zip",
-      "sha256": "48be07f49c046e8a7c236e76ac099d514caeba0c316a738b5d62bf636a592722",
+      "url": "http://192.168.1.4:9000/skill-market/updates/stable/SkillHub-0.2.0-windows-x64-portable.zip",
+      "sha256": "a0e27d4ff1717e3949248ca1d5ba9c1e0cb192016dc2a7f0b040d60cc1056f08",
       "signature": null,
-      "size": 9961708
+      "size": 63004049
     },
     {
       "target": "installer",

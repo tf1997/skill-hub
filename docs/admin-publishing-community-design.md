@@ -38,7 +38,7 @@ MinIO 的 `skill-market` bucket 是唯一共享存储：
 - 客户端后端校验管理员密钥。
 - 客户端后端使用写死的 MinIO 发布凭证读取 `admin/security/mac-allowlist.v1.json`。
 - 客户端后端读取本机 MAC 地址，与 MinIO 白名单对象中的明文 MAC 比对。
-- 管理员密钥和 MAC 白名单同时通过后，客户端才启用 MinIO 写能力，并把命中的角色、授权项目返回给前端用于 UI 裁剪。
+- 管理员密钥和 MAC 白名单同时通过后，客户端才启用 MinIO 写能力，并把命中的角色返回给前端用于 UI 裁剪。
 - 校验失败时不进入管理员模式。
 
 写操作不能只依赖前端 UI 裁剪。每个后端管理员命令都必须重新执行管理员密钥、MAC 角色和目标范围校验。
@@ -104,7 +104,7 @@ skill-market bucket
 
 ```text
 system   -- 系统管理员，位于项目管理员之上，可以治理公共市场、所有市场项目和所有 skill
-project  -- 项目管理员，只能治理 MAC 白名单授权项目及这些项目下的 skill
+project  -- 项目管理员，可以治理所有市场项目及项目 skill，但不能配置公共分类
 ```
 
 权限边界必须以后端校验为准，前端只做展示裁剪。
@@ -115,16 +115,16 @@ project  -- 项目管理员，只能治理 MAC 白名单授权项目及这些项
 | 浏览项目市场 skill | 可以 | 可以 | 可以 | 不适用 |
 | 安装 / 缓存 skill | 可以 | 可以 | 可以 | 不适用 |
 | 本地扫描 skill | 可以 | 可以 | 可以 | 不适用 |
-| 新增 / 编辑 / 删除授权市场项目 | 不可以 | 可以，仅限授权项目 | 可以，所有项目 | 不适用 |
+| 新增 / 编辑 / 删除市场项目 | 不可以 | 可以，所有项目 | 可以，所有项目 | 不适用 |
 | 新增 / 编辑 / 删除公共分类 | 不可以 | 不可以 | 可以 | 不适用 |
 | 查看草稿区 | 不可以 | 可以 | 可以 | 不适用 |
 | 查看草稿详情 | 不可以 | 可以 | 可以 | 不适用 |
 | 生成草稿预览 | 不可以 | 可以 | 可以 | 不适用 |
-| 编辑草稿发布目标 | 不可以 | 只能选择授权项目 | 可以选择公共分类或任意项目 | 不适用 |
+| 编辑草稿发布目标 | 不可以 | 可以选择任意项目 | 可以选择公共分类或任意项目 | 不适用 |
 | 发布 skill 到公共市场 | 不可以 | 不可以 | 可以 | 不可以 |
-| 发布 skill 到项目市场 | 不可以 | 只能发布到授权项目 | 可以发布到任意项目 | 不可以 |
+| 发布 skill 到项目市场 | 不可以 | 可以发布到任意项目 | 可以发布到任意项目 | 不可以 |
 | 下架公共市场 skill | 不可以 | 不可以 | 可以 | 不适用 |
-| 下架项目市场 skill | 不可以 | 只能下架授权项目 skill | 可以下架任意项目 skill | 不适用 |
+| 下架项目市场 skill | 不可以 | 可以下架任意项目 skill | 可以下架任意项目 skill | 不适用 |
 | 写入 MinIO 草稿前缀 | 不可以 | 不可以 | 不可以 | 可以 |
 | 写入 MinIO 正式市场前缀 | 不可以 | 可以，受后端角色限制 | 可以 | 不可以 |
 
@@ -140,7 +140,7 @@ market-publisher    -- 客户端管理员模式，读草稿并写市场、项目
 
 - `src-tauri/src/admin_config.rs` 写死管理员密钥。
 - `src-tauri/src/admin_config.rs` 写死 `market-publisher` 的 MinIO Access Key / Secret Key。
-- MAC 白名单放在 MinIO 的 `admin/security/mac-allowlist.v1.json`，使用明文 MAC，并在条目中维护 `role` 和 `projects`。
+- MAC 白名单放在 MinIO 的 `admin/security/mac-allowlist.v1.json`，使用明文 MAC，并在条目中维护 `role`；`projects` 字段仅作为兼容旧配置的可选元数据，不再限制项目管理员范围。
 - 前端只传管理员密钥；Access Key / Secret Key 不返回前端，不进入普通 UI 状态。
 
 该方式适合内网 MVP 和小团队维护；如果客户端需要外发、多人轮换凭证或面向不可信终端，应改为安全存储 / 加密凭证对象，并收紧 MinIO policy。
@@ -367,18 +367,16 @@ admin/backups/categories/{timestamp}.categories.v1.json
   "version": 1,
   "entries": [
     {
-      "mac": "AA-BB-CC-DD-EE-FF",
+      "mac": "<SYSTEM_ADMIN_MAC>",
       "status": "active",
       "role": "system",
-      "projects": ["*"],
       "name": "ops-admin"
     },
     {
-      "mac": "11:22:33:44:55:66",
+      "mac": "<PROJECT_ADMIN_MAC>",
       "status": "active",
       "role": "project",
-      "projects": ["project-a", "project-b"],
-      "name": "project-admin-a"
+      "name": "project-admin"
     }
   ]
 }
@@ -390,7 +388,7 @@ admin/backups/categories/{timestamp}.categories.v1.json
 {
   "version": 1,
   "macs": [
-    "AA-BB-CC-DD-EE-FF"
+    "<SYSTEM_ADMIN_MAC>"
   ]
 }
 ```
@@ -399,16 +397,16 @@ admin/backups/categories/{timestamp}.categories.v1.json
 
 - `entries[].status` 缺省按 `active` 处理，非 `active` 不允许进入管理员模式。
 - `entries[].role` 仅支持 `system` 和 `project`，缺省按 `project` 处理。
-- `entries[].projects` 对系统管理员可为 `["*"]` 或空；对项目管理员必须至少包含一个项目 slug。
+- `entries[].projects` 为兼容旧配置保留，可省略；项目管理员默认可管理所有市场项目。
 - 旧格式 `macs[]` 等价于 `role = system`、`projects = ["*"]`，避免已有内网部署升级后立即失效。
 - 后端校验时会先把本机 MAC 和配置 MAC 规范化为统一格式再比对。
-- 解锁成功后返回角色和授权项目给前端；后端每次写操作仍必须重新读取 allowlist 并校验角色。
+- 解锁成功后返回角色给前端；后端每次写操作仍必须重新读取 allowlist 并校验角色。
 
 后端权限判断：
 
 ```text
 can_manage_public(role) = role == system
-can_manage_project(role, projects, slug) = role == system || projects contains slug || projects contains "*"
+can_manage_project(role, slug) = role == system || role == project
 ```
 
 项目管理员没有公共分类、公共 skill 的增删和下架权限。
@@ -424,7 +422,6 @@ projects[]
   name
   slug
   description
-  status              -- active / archived
   created_at
   updated_at
   updated_by
@@ -555,7 +552,7 @@ MVP 可以限制同一时间只有一个管理员执行发布。后续可增加�
 
 - 管理员在草稿区选择该草稿。
 - 确认或修改 `publish-meta.v1.json`。
-- 项目管理员只能选择授权项目。
+- 项目管理员可以选择任意项目。
 - 系统管理员可以选择公共分类或任意项目。
 - 点击发布后，skill 重新进入正式市场或项目分类。
 
@@ -629,9 +626,9 @@ MVP 可以先不物理删除版本对象；后续如需彻底删除，应单独�
 
 管理页采用不拥挤的工作台布局，避免把项目、草稿、发布表单挤在同一列：
 
-- 顶部权限条：显示当前角色、授权项目、MinIO bucket、刷新按钮。
+- 顶部权限条：显示当前角色、MinIO bucket、刷新按钮。
 - 左侧工作区导航：项目治理、草稿发布、市场下架、审计记录。
-- 项目治理：系统管理员可新增 / 编辑 / 删除所有项目；项目管理员只能编辑 / 删除授权项目，不显示公共分类管理。
+- 项目治理：系统管理员可新增 / 编辑 / 删除所有项目并配置公共分类；项目管理员可新增 / 编辑 / 删除所有项目，但不显示公共分类管理。
 - 草稿发布：左侧草稿列表，中间元数据表单，右侧发布目标和预览操作。
 - 市场下架：列出当前正式市场 skill，按公共 / 项目过滤，显示可操作范围；不可操作项置灰并提示所需角色。
 - 审计记录：MVP 可先展示最近操作入口，后续读取 `admin/audit/...`。

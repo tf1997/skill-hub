@@ -612,7 +612,56 @@ updates/stable/latest.json
 - 先上传更新包，最后上传 `latest.json`。
 - 用一台旧版本客户端执行 `帮助 -> 检查更新` 验证完整流程。
 
-## 11. 常见检查项
+## 11. WebView2 离线部署
+
+Skill Hub 依赖 Windows 的 Microsoft Edge WebView2 Runtime。若目标机器缺少该组件，应用会在启动前进入原生安装引导：先让用户确认安装，再打开一个原生进度窗口，从内网地址下载安装包到临时目录，随后启动安装程序，并在安装完成后尝试重新打开应用。
+
+默认优先级：
+
+1. 环境变量 `SKILL_HUB_WEBVIEW2_INSTALLER_URL`
+2. 同目录文件 `webview2-installer-url.txt`
+3. 编译期环境变量 `SKILL_HUB_WEBVIEW2_INSTALLER_URL`
+4. 内置默认占位地址
+
+安装参数也可配置，默认是 `/silent /install`：
+
+```powershell
+$env:SKILL_HUB_WEBVIEW2_INSTALLER_ARGS = "/silent /install"
+```
+
+推荐部署方式是把 `MicrosoftEdgeWebView2RuntimeInstallerX64.exe` 放到内网服务器，然后将安装包地址配置到环境变量或同目录文本文件中。
+
+示例：
+
+```powershell
+$env:SKILL_HUB_WEBVIEW2_INSTALLER_URL = "http://intranet.example.com/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+```
+
+或在程序目录旁放置 `webview2-installer-url.txt`，文件内容就是安装包完整 URL。
+
+已有 WebView2 的开发机可以用测试开关强制进入安装引导：
+
+```powershell
+$env:SKILL_HUB_FORCE_WEBVIEW2_SETUP = "1"
+$env:SKILL_HUB_WEBVIEW2_INSTALLER_URL = "http://intranet.example.com/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+.\skill-hub.exe
+```
+
+测试结束后清除：
+
+```powershell
+Remove-Item Env:\SKILL_HUB_FORCE_WEBVIEW2_SETUP
+```
+
+启动时若未检测到 WebView2 Runtime：
+
+- 会弹出原生确认窗口，用户确认后才开始下载和安装。
+- 会打开安装进度窗口；下载阶段显示百分比和已下载大小，服务器没有返回文件大小时显示连续进度。
+- 会把安装包下载到 `%TEMP%\SkillHub\`。
+- 会启动 WebView2 安装程序；安装阶段显示“安装中”和检测状态。
+- 安装成功后会尝试重新打开 Skill Hub；如果自动重启失败，会提示用户手动重新打开。
+
+## 12. 常见检查项
 
 管理员无法进入：
 
