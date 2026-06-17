@@ -17,20 +17,22 @@ use crate::{
     admin_config,
     db::{
         app_bootstrap, canonical_display_path, enforce_compiled_source, insert_audit,
-        list_bindings_inner, list_cached_versions_inner, list_local_skills_inner,
-        list_market_skills_inner, list_projects_inner, list_sources_inner, list_target_roots_inner,
-        list_update_candidates_inner, market_project_cache_path, new_id, now, AppState,
-        COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION,
+        list_bindings_inner, list_cached_packages_inner, list_cached_versions_inner,
+        list_local_skills_inner, list_market_skills_inner, list_projects_inner, list_sources_inner,
+        list_target_roots_inner, list_update_candidates_inner, market_project_cache_path, new_id,
+        now, AppState, COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION,
+        LOCAL_SOURCE_ID,
     },
     models::{
         AdminAuditLog, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession, AdminUnlockRequest,
-        AppBootstrap, ArchiveMarketSkillRequest, CatalogDoc, CategoriesDoc, Category, CommandError,
-        DeleteCachedSkillRequest, DeleteMarketCategoryRequest, DeleteMarketProjectRequest,
+        AppBootstrap, ArchiveMarketSkillRequest, CachedSkillPackage, CatalogDoc, CategoriesDoc,
+        Category, CommandError, DeleteCachedSkillRequest, DeleteLocalSkillRequest,
+        DeleteMarketCategoryRequest, DeleteMarketProjectRequest, ImportLocalSkillRequest, InstallCachedSkillRequest,
         InstallSkillRequest, ListAdminAuditLogsRequest, LocalSkill, MarketProject, MarketSkill,
         PackageInfo, Project, ProjectsDoc, PublishDraftRequest, PublishMeta, QuickRepublishRequest,
         SaveMarketCategoryRequest, SaveMarketProjectRequest, SaveProjectRequest,
         SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest, SetBindingEnabledRequest,
-        SkillBinding, SkillManifest, SkillPreview, SkillPreviewFile, SkillPreviewFileEntry,
+        SetLocalSkillEnabledRequest, SkillBinding, SkillManifest, SkillPreview, SkillPreviewFile, SkillPreviewFileEntry,
         SkillPreviewRequest, SkillVersion, Source, TargetRoot, UpdateCandidate,
         UpgradeBindingRequest,
     },
@@ -48,6 +50,9 @@ const FIXED_PUBLISH_NAMESPACE: &str = "DT";
 const PREVIEW_MAX_FILES: usize = 8;
 const PREVIEW_MAX_FILE_LIST: usize = 500;
 const PREVIEW_MAX_BYTES: usize = 24 * 1024;
+const LOCAL_NAMESPACE: &str = "local";
+const LOCAL_DEFAULT_VERSION: &str = "0.0.0-local";
+const DISABLED_SKILLS_DIR: &str = ".skill-hub-disabled";
 
 #[tauri::command]
 pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<AppBootstrap> {
@@ -1409,6 +1414,38 @@ pub async fn delete_cached_skill(
     map_result(delete_cached_skill_inner(request, &state))
 }
 
+#[tauri::command]
+pub async fn delete_local_skill(
+    request: DeleteLocalSkillRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<LocalSkill>> {
+    map_result(delete_local_skill_inner(request, &state))
+}
+
+#[tauri::command]
+pub async fn set_local_skill_enabled(
+    request: SetLocalSkillEnabledRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<LocalSkill>> {
+    map_result(set_local_skill_enabled_inner(request, &state))
+}
+
+#[tauri::command]
+pub async fn import_local_skill_to_cache(
+    request: ImportLocalSkillRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<CachedSkillPackage> {
+    map_result(import_local_skill_to_cache_inner(request, &state))
+}
+
+#[tauri::command]
+pub async fn install_cached_skill(
+    request: InstallCachedSkillRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<SkillBinding> {
+    map_result(install_cached_skill_inner(request, &state))
+}
+
 async fn install_skill_inner(
     request: InstallSkillRequest,
     state: &AppState,
@@ -1612,6 +1649,10 @@ fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState
     }
 
     conn.execute(
+        "DELETE FROM local_package_metadata WHERE package_id = ?1",
+        params![package_id],
+    )?;
+    conn.execute(
         "DELETE FROM skill_packages WHERE id = ?1",
         params![package_id],
     )?;
@@ -1621,6 +1662,438 @@ fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState
     );
     insert_audit(&conn, "delete_cache", Some(&skill_ref), "success", None)?;
     Ok(())
+}
+
+fn delete_local_skill_inner(request: DeleteLocalSkillRequest, state: &AppState) -> Result<Vec<LocalSkill>> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let row: Option<(String, Option<String>, Option<String>, bool, String, String, String)> = conn
+        .query_row(
+            "SELECT path, detected_manifest, skill_id, managed_by_skillhub, status, target, level
+             FROM local_skills
+             WHERE id = ?1",
+            params![request.id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, i64>(3)? != 0,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((path, detected_manifest, skill_id, managed_by_skillhub, status, target, level)) = row else {
+        return list_local_skills_inner(&conn);
+    };
+    if managed_by_skillhub {
+        return Err(anyhow!("该 skill 由 Skill Hub 管理，请使用生效矩阵中的卸载操作"));
+    }
+    if status == "missing" {
+        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        return list_local_skills_inner(&conn);
+    }
+
+    let path_buf = PathBuf::from(&path);
+    if !path_buf.is_dir() {
+        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        return list_local_skills_inner(&conn);
+    }
+    if !path_buf.join("SKILL.md").is_file() {
+        return Err(anyhow!("目标目录缺少 SKILL.md，已拒绝删除"));
+    }
+
+    fs::remove_dir_all(&path_buf).context("删除本地 skill 目录失败")?;
+    conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+
+    let audit_ref = skill_id
+        .filter(|value| !value.trim().is_empty())
+        .or(detected_manifest)
+        .unwrap_or_else(|| path.clone());
+    let target_scope = format!("{target}:{level}");
+    insert_audit(&conn, "delete_local_skill", Some(&audit_ref), "success", Some(&target_scope))?;
+    list_local_skills_inner(&conn)
+}
+
+fn set_local_skill_enabled_inner(
+    request: SetLocalSkillEnabledRequest,
+    state: &AppState,
+) -> Result<Vec<LocalSkill>> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let row: Option<(String, Option<String>, Option<String>, bool, bool, String, String)> = conn
+        .query_row(
+            "SELECT path, detected_manifest, skill_id, managed_by_skillhub, enabled, target, level
+             FROM local_skills
+             WHERE id = ?1",
+            params![request.id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, i64>(3)? != 0,
+                    row.get::<_, i64>(4)? != 0,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((path, detected_manifest, skill_id, managed_by_skillhub, enabled, target, level)) = row else {
+        return list_local_skills_inner(&conn);
+    };
+    if managed_by_skillhub {
+        return Err(anyhow!("Skill Hub 管理的市场绑定请使用生效矩阵中的市场开关"));
+    }
+    if enabled == request.enabled {
+        return list_local_skills_inner(&conn);
+    }
+
+    let current_path = PathBuf::from(&path);
+    let next_path = if request.enabled {
+        enabled_local_skill_path(&current_path)?
+    } else {
+        disabled_local_skill_path(&current_path)?
+    };
+
+    if !current_path.is_dir() {
+        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        return list_local_skills_inner(&conn);
+    }
+    if !current_path.join("SKILL.md").is_file() {
+        return Err(anyhow!("目标目录缺少 SKILL.md，已拒绝切换状态"));
+    }
+    if next_path.exists() {
+        return Err(anyhow!(
+            "目标目录已存在，无法切换状态: {}",
+            canonical_display_path(&next_path)
+        ));
+    }
+
+    if let Some(parent) = next_path.parent() {
+        fs::create_dir_all(parent).context("创建本地 skill 状态目录失败")?;
+    }
+    fs::rename(&current_path, &next_path).context("切换本地 skill 生效状态失败")?;
+
+    let next_display_path = canonical_display_path(&next_path);
+    conn.execute(
+        "UPDATE local_skills
+         SET path = ?1, enabled = ?2, status = ?3, scanned_at = ?4
+         WHERE id = ?5",
+        params![
+            next_display_path,
+            if request.enabled { 1_i64 } else { 0_i64 },
+            if request.enabled { "local" } else { "disabled" },
+            now(),
+            request.id
+        ],
+    )?;
+
+    let audit_ref = skill_id
+        .filter(|value| !value.trim().is_empty())
+        .or(detected_manifest)
+        .unwrap_or_else(|| path.clone());
+    let action = if request.enabled {
+        "enable_local_skill"
+    } else {
+        "disable_local_skill"
+    };
+    let target_scope = format!("{target}:{level}");
+    insert_audit(&conn, action, Some(&audit_ref), "success", Some(&target_scope))?;
+    list_local_skills_inner(&conn)
+}
+
+fn import_local_skill_to_cache_inner(
+    request: ImportLocalSkillRequest,
+    state: &AppState,
+) -> Result<CachedSkillPackage> {
+    let source_path = PathBuf::from(request.path.trim());
+    if !source_path.is_dir() {
+        return Err(anyhow!("本地 skill 目录不存在"));
+    }
+    if !source_path.join("SKILL.md").is_file() {
+        return Err(anyhow!("本地 skill 目录缺少 SKILL.md"));
+    }
+
+    let mut profile = read_local_skill_profile(&source_path)?;
+    if let Some(skill_id) = request
+        .skill_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        profile.skill_id = slugify_skill_id(skill_id);
+    }
+    if let Some(version) = request
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        profile.version = version.to_string();
+    }
+
+    let source_display_path = canonical_display_path(&source_path);
+    {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let bindings = list_bindings_inner(&conn)?;
+        if bindings.iter().any(|binding| {
+            canonical_display_path(Path::new(&binding.install_path)) == source_display_path
+        }) {
+            return Err(anyhow!(
+                "该目录已由 Skill Hub 管理，不能作为自建 skill 导入"
+            ));
+        }
+
+        let market_skills = list_market_skills_inner(&conn)?;
+        let classification = classify_local_skill(&profile, &market_skills);
+        if classification.origin == "market" {
+            return Err(anyhow!(
+                "该目录匹配市场 skill，请通过市场缓存或恢复管理处理"
+            ));
+        }
+
+        let cached_packages = list_cached_packages_inner(&conn)?;
+        if cached_packages
+            .iter()
+            .any(|package| canonical_display_path(Path::new(&package.package_path)) == source_display_path)
+        {
+            return Err(anyhow!("该目录已经是 Skill Hub 缓存目录，不能重复导入"));
+        }
+        if let Some(existing) = cached_packages
+            .into_iter()
+            .find(|package| cached_package_matches_local_profile(package, &profile))
+        {
+            return Ok(existing);
+        }
+    }
+
+    let package_dir = state
+        .app_dir
+        .join("packages")
+        .join(format!("{LOCAL_NAMESPACE}.{}", profile.skill_id))
+        .join(&profile.version);
+
+    if package_dir.exists() {
+        if request.overwrite.unwrap_or(true) {
+            ensure_safe_package_cache_path(state, &package_dir)?;
+            fs::remove_dir_all(&package_dir).context("清理旧本地缓存失败")?;
+        } else {
+            return Err(anyhow!("本地缓存已存在"));
+        }
+    }
+    fs::create_dir_all(&package_dir).context("创建本地缓存目录失败")?;
+    copy_dir_recursive_including_json(&source_path, &package_dir)?;
+
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let package_id = ensure_package_record(
+        &conn,
+        Some(LOCAL_SOURCE_ID),
+        LOCAL_NAMESPACE,
+        &profile.skill_id,
+        &profile.version,
+        &package_dir,
+        None,
+    )?;
+    let imported_at = now();
+    conn.execute(
+        "INSERT INTO local_package_metadata
+         (package_id, name, summary, tags_json, author, source_path, imported_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(package_id) DO UPDATE SET
+           name = excluded.name,
+           summary = excluded.summary,
+           tags_json = excluded.tags_json,
+           author = excluded.author,
+           source_path = excluded.source_path,
+           imported_at = excluded.imported_at",
+        params![
+            package_id,
+            profile.name,
+            profile.summary,
+            serde_json::to_string(&profile.tags)?,
+            profile.author,
+            source_display_path,
+            imported_at
+        ],
+    )?;
+
+    let skill_ref = format!("{LOCAL_NAMESPACE}/{}@{}", profile.skill_id, profile.version);
+    insert_audit(
+        &conn,
+        "import_local_cache",
+        Some(&skill_ref),
+        "success",
+        None,
+    )?;
+
+    list_cached_packages_inner(&conn)?
+        .into_iter()
+        .find(|package| {
+            package.source_id.as_deref() == Some(LOCAL_SOURCE_ID)
+                && package.namespace == LOCAL_NAMESPACE
+                && package.skill_id == profile.skill_id
+                && package.version == profile.version
+        })
+        .ok_or_else(|| anyhow!("导入后读取本地缓存失败"))
+}
+
+fn install_cached_skill_inner(
+    request: InstallCachedSkillRequest,
+    state: &AppState,
+) -> Result<SkillBinding> {
+    validate_target(&request.target)?;
+    validate_level(&request.level)?;
+    if request.source_id.as_deref() != Some(LOCAL_SOURCE_ID) || request.namespace != LOCAL_NAMESPACE
+    {
+        return Err(anyhow!("install_cached_skill 仅用于自建本地缓存"));
+    }
+    if request.level == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
+        return Err(anyhow!("项目级启用必须选择项目目录"));
+    }
+
+    let source_id = request.source_id.as_deref();
+    let (package_id, package_path, skill_name) = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        if request.enable {
+            ensure_scope_can_enable(
+                &conn,
+                None,
+                &request.namespace,
+                &request.skill_id,
+                &request.target,
+                &request.level,
+            )?;
+            if let Some(existing) = find_same_scope_binding(
+                &conn,
+                &request.namespace,
+                &request.skill_id,
+                &request.target,
+                &request.level,
+                request.project_path.as_deref(),
+            )? {
+                return Ok(existing);
+            }
+        }
+
+        conn.query_row(
+            "SELECT package.id,
+                    package.package_path,
+                    COALESCE(local_meta.name, catalog.name, binding.skill_name, package.skill_id)
+             FROM skill_packages package
+             LEFT JOIN local_package_metadata local_meta
+               ON local_meta.package_id = package.id
+             LEFT JOIN catalog_cache catalog
+               ON COALESCE(catalog.source_id, '') = COALESCE(package.source_id, '')
+              AND catalog.namespace = package.namespace
+              AND catalog.skill_id = package.skill_id
+             LEFT JOIN skill_bindings binding
+               ON COALESCE(binding.source_id, '') = COALESCE(package.source_id, '')
+              AND binding.namespace = package.namespace
+              AND binding.skill_id = package.skill_id
+              AND binding.version = package.version
+             WHERE COALESCE(package.source_id, '') = COALESCE(?1, '')
+               AND package.namespace = ?2
+               AND package.skill_id = ?3
+               AND package.version = ?4
+             LIMIT 1",
+            params![
+                source_id,
+                request.namespace,
+                request.skill_id,
+                request.version
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("未找到本地缓存包"))?
+    };
+
+    let package_path = PathBuf::from(package_path);
+    if !package_path.join("SKILL.md").is_file() {
+        return Err(anyhow!("本地缓存包无效或缺少 SKILL.md"));
+    }
+
+    let install_path = build_install_path(
+        state,
+        &request.target,
+        &request.level,
+        request.project_path.as_deref(),
+        &request.namespace,
+        &request.skill_id,
+    )?;
+    {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        ensure_install_path_not_bound_to_other_skill(
+            &conn,
+            &install_path,
+            &request.namespace,
+            &request.skill_id,
+        )?;
+    }
+
+    if request.enable {
+        fs::create_dir_all(&install_path).context("创建安装目录失败")?;
+        copy_package_to_install_including_json(&package_path, &install_path)?;
+    }
+
+    let now = now();
+    let id = new_id();
+    let install_mode = request.install_mode.unwrap_or_else(|| "copy".to_string());
+    let update_policy = request.update_policy.unwrap_or_else(|| {
+        if source_id == Some(LOCAL_SOURCE_ID) {
+            "pinned".to_string()
+        } else {
+            "follow_latest".to_string()
+        }
+    });
+
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    conn.execute(
+        "INSERT INTO skill_bindings
+         (id, package_id, source_id, namespace, skill_id, skill_name, version, target, level,
+          project_path, install_path, enabled, install_mode, update_policy, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'installed', ?15, ?16)",
+        params![
+            id,
+            package_id,
+            source_id,
+            request.namespace,
+            request.skill_id,
+            skill_name,
+            request.version,
+            request.target,
+            request.level,
+            request.project_path,
+            canonical_display_path(&install_path),
+            if request.enable { 1_i64 } else { 0_i64 },
+            install_mode,
+            update_policy,
+            now,
+            now
+        ],
+    )?;
+
+    let skill_ref = format!(
+        "{}/{}@{}",
+        request.namespace, request.skill_id, request.version
+    );
+    insert_audit(&conn, "install_cached", Some(&skill_ref), "success", None)?;
+
+    list_bindings_inner(&conn)?
+        .into_iter()
+        .find(|binding| binding.id == id)
+        .ok_or_else(|| anyhow!("安装后读取绑定失败"))
 }
 
 async fn fetch_manifest_version(
@@ -2047,8 +2520,10 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
         conn.execute("DELETE FROM local_skills", [])?;
 
         let bindings = list_bindings_inner(&conn)?;
+        let market_skills = list_market_skills_inner(&conn)?;
         let target_roots = list_target_roots_inner(&conn)?;
         let projects = list_projects_inner(&conn)?;
+        let cached_local_index = list_cached_local_index(&conn)?;
         let scanned_at = now();
         let mut seen_paths = HashSet::new();
 
@@ -2057,8 +2532,12 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
             seen_paths.insert(canonical_display_path(Path::new(&binding.install_path)));
             conn.execute(
                 "INSERT INTO local_skills
-                 (id, target, level, project_path, path, detected_manifest, managed_by_skillhub, status, scanned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+                 (id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
+                  status, enabled, scanned_at, origin, skill_id, version, summary, tags_json,
+                  matched_source_id, matched_namespace, matched_skill_id, matched_version,
+                  can_import_to_cache, can_restore_binding)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, 'managed', ?10, ?11, NULL, '[]',
+                         ?12, ?13, ?14, ?15, 0, 0)",
                 params![
                     new_id(),
                     binding.target,
@@ -2067,7 +2546,14 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
                     binding.install_path,
                     format!("{}@{}", binding.skill_name, binding.version),
                     if exists { "managed" } else { "missing" },
-                    scanned_at
+                    if binding.enabled { 1_i64 } else { 0_i64 },
+                    scanned_at,
+                    binding.skill_id,
+                    binding.version,
+                    binding.source_id,
+                    binding.namespace,
+                    binding.skill_id,
+                    binding.version
                 ],
             )?;
         }
@@ -2081,6 +2567,20 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
                 None,
                 Path::new(&root.personal_path),
                 &scanned_at,
+                &market_skills,
+                &cached_local_index,
+                true,
+            )?;
+            scan_disabled_skill_root(
+                &conn,
+                &mut seen_paths,
+                &root.target,
+                "personal",
+                None,
+                Path::new(&root.personal_path),
+                &scanned_at,
+                &market_skills,
+                &cached_local_index,
             )?;
         }
 
@@ -2095,6 +2595,20 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
                     Some(project.path.as_str()),
                     &root,
                     &scanned_at,
+                    &market_skills,
+                    &cached_local_index,
+                    true,
+                )?;
+                scan_disabled_skill_root(
+                    &conn,
+                    &mut seen_paths,
+                    target,
+                    "project",
+                    Some(project.path.as_str()),
+                    &root,
+                    &scanned_at,
+                    &market_skills,
+                    &cached_local_index,
                 )?;
             }
         }
@@ -2573,7 +3087,7 @@ fn draft_status(
         return "校验失败".to_string();
     }
     if match meta {
-        Some(value) => !is_publish_meta_complete(value),
+        Some(value) => !is_publish_meta_ready_for_status(value),
         None => true,
     } {
         return "元数据待补充".to_string();
@@ -2586,6 +3100,13 @@ fn draft_status(
         }
         _ => "待发布".to_string(),
     }
+}
+
+fn is_publish_meta_ready_for_status(meta: &PublishMeta) -> bool {
+    !meta.namespace.trim().is_empty()
+        && !meta.skill_id.trim().is_empty()
+        && !meta.name.trim().is_empty()
+        && !meta.summary.trim().is_empty()
 }
 
 fn validation_status_from_json(value: &serde_json::Value) -> Option<String> {
@@ -2622,10 +3143,7 @@ fn normalize_publish_meta(mut meta: PublishMeta) -> PublishMeta {
 }
 
 fn is_publish_meta_complete(meta: &PublishMeta) -> bool {
-    !meta.namespace.trim().is_empty()
-        && !meta.skill_id.trim().is_empty()
-        && !meta.name.trim().is_empty()
-        && !meta.summary.trim().is_empty()
+    is_publish_meta_ready_for_status(meta)
         && ((meta.publish_scope == "project"
             && meta
                 .publish_project_slug
@@ -3894,6 +4412,9 @@ fn scan_skill_root(
     project_path: Option<&str>,
     root: &Path,
     scanned_at: &str,
+    market_skills: &[MarketSkill],
+    cached_local_index: &CachedLocalSkillIndex,
+    enabled: bool,
 ) -> Result<()> {
     if !root.exists() || !root.is_dir() {
         return Ok(());
@@ -3905,33 +4426,89 @@ fn scan_skill_root(
         if !path.is_dir() {
             continue;
         }
+        if enabled
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == DISABLED_SKILLS_DIR)
+        {
+            continue;
+        }
 
         let display_path = canonical_display_path(&path);
         if !seen_paths.insert(display_path.clone()) {
             continue;
         }
 
-        let Some(detected) = detect_local_skill_label(&path) else {
+        let Some(profile) = local_skill_profile_from_path(&path)? else {
             continue;
         };
+        let mut classification = classify_local_skill(&profile, market_skills);
+        if cached_local_index.contains(&display_path, &profile) {
+            classification.origin = "local".to_string();
+            classification.status = "cached".to_string();
+            classification.can_import_to_cache = false;
+        }
 
         conn.execute(
             "INSERT INTO local_skills
-             (id, target, level, project_path, path, detected_manifest, managed_by_skillhub, status, scanned_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 'unmanaged', ?7)",
+             (id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
+              status, enabled, scanned_at, origin, skill_id, version, summary, tags_json,
+              matched_source_id, matched_namespace, matched_skill_id, matched_version,
+              can_import_to_cache, can_restore_binding)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 new_id(),
                 target,
                 level,
                 project_path,
                 display_path,
-                detected,
-                scanned_at
+                profile.name,
+                if enabled { classification.status } else { "disabled".to_string() },
+                if enabled { 1_i64 } else { 0_i64 },
+                scanned_at,
+                classification.origin,
+                profile.skill_id,
+                profile.version,
+                profile.summary,
+                serde_json::to_string(&profile.tags)?,
+                classification.matched_source_id,
+                classification.matched_namespace,
+                classification.matched_skill_id,
+                classification.matched_version,
+                if classification.can_import_to_cache { 1_i64 } else { 0_i64 },
+                if classification.can_restore_binding { 1_i64 } else { 0_i64 }
             ],
         )?;
     }
 
     Ok(())
+}
+
+fn scan_disabled_skill_root(
+    conn: &rusqlite::Connection,
+    seen_paths: &mut HashSet<String>,
+    target: &str,
+    level: &str,
+    project_path: Option<&str>,
+    root: &Path,
+    scanned_at: &str,
+    market_skills: &[MarketSkill],
+    cached_local_index: &CachedLocalSkillIndex,
+) -> Result<()> {
+    let disabled_root = root.join(DISABLED_SKILLS_DIR);
+    scan_skill_root(
+        conn,
+        seen_paths,
+        target,
+        level,
+        project_path,
+        &disabled_root,
+        scanned_at,
+        market_skills,
+        cached_local_index,
+        false,
+    )
 }
 
 fn detect_local_skill_label(path: &Path) -> Option<String> {
@@ -3944,6 +4521,245 @@ fn detect_local_skill_label(path: &Path) -> Option<String> {
         .or_else(|| read_skill_markdown_name(&skill_md))
         .or_else(|| read_skill_markdown_title(&skill_md))
         .or_else(|| Some("local-skill".to_string()))
+}
+
+#[derive(Debug, Clone, Default)]
+struct CachedLocalSkillIndex {
+    source_paths: HashSet<String>,
+    fingerprints: HashSet<String>,
+}
+
+impl CachedLocalSkillIndex {
+    fn contains(&self, display_path: &str, profile: &LocalSkillProfile) -> bool {
+        self.source_paths.contains(display_path)
+            || self.fingerprints.contains(&local_skill_fingerprint(profile))
+    }
+}
+
+fn list_cached_local_index(conn: &rusqlite::Connection) -> Result<CachedLocalSkillIndex> {
+    let mut stmt = conn.prepare(
+        "SELECT package.skill_id, package.version, local_meta.source_path
+         FROM skill_packages package
+         LEFT JOIN local_package_metadata local_meta
+           ON local_meta.package_id = package.id
+         WHERE package.source_id = ?1
+           AND package.namespace = ?2",
+    )?;
+    let rows = stmt.query_map(params![LOCAL_SOURCE_ID, LOCAL_NAMESPACE], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    let mut index = CachedLocalSkillIndex::default();
+    for row in rows {
+        let (skill_id, version, source_path) = row?;
+        index
+            .fingerprints
+            .insert(normalized_local_skill_fingerprint(&skill_id, &version));
+        if let Some(source_path) = source_path
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+        {
+            index
+                .source_paths
+                .insert(canonical_display_path(Path::new(&source_path)));
+        }
+    }
+    Ok(index)
+}
+
+#[derive(Debug, Clone)]
+struct LocalSkillProfile {
+    name: String,
+    summary: String,
+    skill_id: String,
+    version: String,
+    author: Option<String>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalSkillClassification {
+    origin: String,
+    status: String,
+    matched_source_id: Option<String>,
+    matched_namespace: Option<String>,
+    matched_skill_id: Option<String>,
+    matched_version: Option<String>,
+    can_import_to_cache: bool,
+    can_restore_binding: bool,
+}
+
+fn local_skill_profile_from_path(path: &Path) -> Result<Option<LocalSkillProfile>> {
+    let skill_md = path.join("SKILL.md");
+    if !skill_md.is_file() {
+        return Ok(None);
+    }
+    read_local_skill_profile(path).map(Some)
+}
+
+fn read_local_skill_profile(path: &Path) -> Result<LocalSkillProfile> {
+    let skill_md = path.join("SKILL.md");
+    let content = fs::read_to_string(&skill_md).context("读取本地 SKILL.md 失败")?;
+    let metadata = parse_skill_frontmatter(&content);
+    let dir_name = skill_name_from_dir(path).unwrap_or_else(|| "local-skill".to_string());
+    let title = parse_skill_markdown_title(&content);
+    let name = metadata
+        .name
+        .clone()
+        .or(title)
+        .unwrap_or_else(|| dir_name.clone());
+    let summary = metadata
+        .description
+        .clone()
+        .or_else(|| first_markdown_paragraph(&content))
+        .unwrap_or_default();
+    let skill_id = slugify_skill_id(&dir_name).if_empty_then(|| slugify_skill_id(&name));
+    let skill_id = if skill_id.is_empty() {
+        "local-skill".to_string()
+    } else {
+        skill_id
+    };
+
+    Ok(LocalSkillProfile {
+        name,
+        summary,
+        skill_id,
+        version: metadata
+            .version
+            .unwrap_or_else(|| LOCAL_DEFAULT_VERSION.to_string()),
+        author: metadata.author,
+        tags: metadata.tags,
+    })
+}
+
+fn local_skill_fingerprint(profile: &LocalSkillProfile) -> String {
+    normalized_local_skill_fingerprint(&profile.skill_id, &profile.version)
+}
+
+fn normalized_local_skill_fingerprint(skill_id: &str, version: &str) -> String {
+    let skill_id = slugify_skill_id(skill_id);
+    let version = version.trim();
+    let version = if version.is_empty() {
+        LOCAL_DEFAULT_VERSION
+    } else {
+        version
+    };
+    format!("{skill_id}@{version}")
+}
+
+fn cached_package_matches_local_profile(
+    package: &CachedSkillPackage,
+    profile: &LocalSkillProfile,
+) -> bool {
+    package.source_id.as_deref() == Some(LOCAL_SOURCE_ID)
+        && package.namespace == LOCAL_NAMESPACE
+        && normalized_local_skill_fingerprint(&package.skill_id, &package.version)
+            == local_skill_fingerprint(profile)
+}
+
+trait EmptyStringFallback {
+    fn if_empty_then<F>(self, fallback: F) -> String
+    where
+        F: FnOnce() -> String;
+}
+
+impl EmptyStringFallback for String {
+    fn if_empty_then<F>(self, fallback: F) -> String
+    where
+        F: FnOnce() -> String,
+    {
+        if self.is_empty() {
+            fallback()
+        } else {
+            self
+        }
+    }
+}
+
+fn first_markdown_paragraph(content: &str) -> Option<String> {
+    let mut in_frontmatter = content.lines().next().map(str::trim) == Some("---");
+    let mut seen_frontmatter_end = !in_frontmatter;
+    for line in content.lines().take(160) {
+        let trimmed = line.trim();
+        if in_frontmatter {
+            if trimmed == "---" || trimmed == "..." {
+                in_frontmatter = false;
+                seen_frontmatter_end = true;
+            }
+            continue;
+        }
+        if !seen_frontmatter_end || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+fn slugify_skill_id(value: &str) -> String {
+    let mut output = String::new();
+    let mut last_dash = false;
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            output.push('-');
+            last_dash = true;
+        }
+    }
+    output.trim_matches('-').to_string()
+}
+
+fn classify_local_skill(
+    profile: &LocalSkillProfile,
+    market_skills: &[MarketSkill],
+) -> LocalSkillClassification {
+    if let Some(skill) = market_skills.iter().find(|skill| {
+        skill.id.eq_ignore_ascii_case(&profile.skill_id) && skill.latest_version == profile.version
+    }) {
+        return LocalSkillClassification {
+            origin: "market".to_string(),
+            status: "market".to_string(),
+            matched_source_id: skill.source_id.clone(),
+            matched_namespace: Some(skill.namespace.clone()),
+            matched_skill_id: Some(skill.id.clone()),
+            matched_version: Some(skill.latest_version.clone()),
+            can_import_to_cache: false,
+            can_restore_binding: true,
+        };
+    }
+
+    if let Some(skill) = market_skills.iter().find(|skill| {
+        skill.id.eq_ignore_ascii_case(&profile.skill_id)
+            || skill.name.eq_ignore_ascii_case(&profile.name)
+    }) {
+        return LocalSkillClassification {
+            origin: "unknown".to_string(),
+            status: "possible_market".to_string(),
+            matched_source_id: skill.source_id.clone(),
+            matched_namespace: Some(skill.namespace.clone()),
+            matched_skill_id: Some(skill.id.clone()),
+            matched_version: Some(skill.latest_version.clone()),
+            can_import_to_cache: true,
+            can_restore_binding: true,
+        };
+    }
+
+    LocalSkillClassification {
+        origin: "local".to_string(),
+        status: "local".to_string(),
+        matched_source_id: None,
+        matched_namespace: None,
+        matched_skill_id: None,
+        matched_version: None,
+        can_import_to_cache: true,
+        can_restore_binding: false,
+    }
 }
 
 fn skill_name_from_dir(path: &Path) -> Option<String> {
@@ -4505,6 +5321,14 @@ fn copy_package_to_install(package_path: &Path, install_path: &Path) -> Result<(
     copy_dir_recursive(package_path, install_path)
 }
 
+fn copy_package_to_install_including_json(package_path: &Path, install_path: &Path) -> Result<()> {
+    if install_path.exists() {
+        fs::remove_dir_all(install_path).context("清理旧安装目录失败")?;
+    }
+    fs::create_dir_all(install_path)?;
+    copy_dir_recursive_including_json(package_path, install_path)
+}
+
 fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -4522,6 +5346,49 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn copy_dir_recursive_including_json(source: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if source_path.is_dir() {
+            fs::create_dir_all(&destination_path)?;
+            copy_dir_recursive_including_json(&source_path, &destination_path)?;
+        } else {
+            if let Some(parent) = destination_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_install_path_not_bound_to_other_skill(
+    conn: &rusqlite::Connection,
+    install_path: &Path,
+    namespace: &str,
+    skill_id: &str,
+) -> Result<()> {
+    let target_path = canonical_display_path(install_path);
+    let conflict = list_bindings_inner(conn)?.into_iter().find(|binding| {
+        canonical_display_path(Path::new(&binding.install_path)) == target_path
+            && (binding.namespace != namespace || binding.skill_id != skill_id)
+    });
+
+    if let Some(binding) = conflict {
+        Err(anyhow!(
+            "目标目录已由 {} / {} 管理，不能覆盖安装",
+            binding.namespace,
+            binding.skill_id
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn is_json_file(path: &Path) -> bool {
@@ -4554,6 +5421,32 @@ fn is_sqlite_managed_install_path(binding: &SkillBinding, path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|leaf| leaf == binding.skill_id || leaf == legacy_leaf)
+}
+
+fn disabled_local_skill_path(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("本地 skill 路径缺少父目录"))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| anyhow!("本地 skill 路径缺少目录名"))?;
+    Ok(parent.join(DISABLED_SKILLS_DIR).join(leaf))
+}
+
+fn enabled_local_skill_path(path: &Path) -> Result<PathBuf> {
+    let disabled_root = path
+        .parent()
+        .ok_or_else(|| anyhow!("禁用 skill 路径缺少父目录"))?;
+    if disabled_root.file_name().and_then(|name| name.to_str()) != Some(DISABLED_SKILLS_DIR) {
+        return Err(anyhow!("该本地 skill 不在禁用目录中，无法恢复启用"));
+    }
+    let root = disabled_root
+        .parent()
+        .ok_or_else(|| anyhow!("禁用 skill 路径缺少启用根目录"))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| anyhow!("禁用 skill 路径缺少目录名"))?;
+    Ok(root.join(leaf))
 }
 
 #[cfg(test)]
@@ -4718,6 +5611,92 @@ name: frontmatter-name
         );
 
         fs::remove_dir_all(root).expect("remove temp skill dir");
+    }
+
+    #[test]
+    fn local_skill_profile_allows_minimal_skill_md() {
+        let root = std::env::temp_dir().join(format!("skillhub-test-{}", new_id()));
+        let skill_dir = root.join("Daily Note Helper");
+        fs::create_dir_all(&skill_dir).expect("create temp skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"# Daily Note Helper
+
+Capture a concise daily note.
+"#,
+        )
+        .expect("write temp SKILL.md");
+
+        let profile = read_local_skill_profile(&skill_dir).expect("parse local profile");
+        assert_eq!(profile.name, "Daily Note Helper");
+        assert_eq!(profile.skill_id, "daily-note-helper");
+        assert_eq!(profile.version, LOCAL_DEFAULT_VERSION);
+        assert_eq!(profile.summary, "Capture a concise daily note.");
+        assert!(profile.tags.is_empty());
+
+        fs::remove_dir_all(root).expect("remove temp skill dir");
+    }
+
+    #[test]
+    fn local_skill_classification_requires_strong_market_match() {
+        let market = vec![MarketSkill {
+            namespace: "live".to_string(),
+            id: "daily-note-helper".to_string(),
+            name: "Daily Note Helper".to_string(),
+            summary: String::new(),
+            latest_version: "1.0.0".to_string(),
+            categories: vec![],
+            tags: vec![],
+            targets: vec![],
+            levels: vec![],
+            manifest_path: "skills/live/daily-note-helper/manifest.json".to_string(),
+            updated_at: None,
+            source_id: Some("compiled-source".to_string()),
+            installed_bindings: vec![],
+            cached_versions: vec![],
+        }];
+        let profile = LocalSkillProfile {
+            name: "Daily Note Helper".to_string(),
+            summary: String::new(),
+            skill_id: "daily-note-helper".to_string(),
+            version: LOCAL_DEFAULT_VERSION.to_string(),
+            author: None,
+            tags: vec![],
+        };
+
+        let weak = classify_local_skill(&profile, &market);
+        assert_eq!(weak.origin, "unknown");
+        assert!(weak.can_import_to_cache);
+
+        let strong = classify_local_skill(
+            &LocalSkillProfile {
+                version: "1.0.0".to_string(),
+                ..profile
+            },
+            &market,
+        );
+        assert_eq!(strong.origin, "market");
+        assert!(!strong.can_import_to_cache);
+    }
+
+    #[test]
+    fn local_skill_enable_disable_paths_round_trip() {
+        let active = PathBuf::from(r"C:\Users\ctf19\.codex\skills\daily-note-helper");
+        let disabled = disabled_local_skill_path(&active).expect("disabled path should resolve");
+        assert_eq!(
+            disabled,
+            PathBuf::from(r"C:\Users\ctf19\.codex\skills\.skill-hub-disabled\daily-note-helper")
+        );
+        assert_eq!(
+            enabled_local_skill_path(&disabled).expect("enabled path should resolve"),
+            active
+        );
+    }
+
+    #[test]
+    fn local_skill_enable_path_requires_disabled_root() {
+        let active = PathBuf::from(r"C:\Users\ctf19\.codex\skills\daily-note-helper");
+        assert!(enabled_local_skill_path(&active).is_err());
     }
 
     #[test]
@@ -4993,6 +5972,32 @@ author: "Skill Hub"
         assert_eq!(
             draft_status(Some("1.0.0"), None, Some("archived"), None, None),
             "已下架"
+        );
+    }
+
+    #[test]
+    fn draft_status_treats_missing_publish_target_as_pending() {
+        let meta = PublishMeta {
+            namespace: "community".to_string(),
+            skill_id: "demo".to_string(),
+            name: "Demo".to_string(),
+            summary: "Demo skill".to_string(),
+            tags: vec![],
+            targets: vec![],
+            levels: vec!["personal".to_string()],
+            publish_scope: "project".to_string(),
+            publish_category_slug: None,
+            publish_project_slug: None,
+            changelog: String::new(),
+            updated_at: None,
+            updated_by: None,
+        };
+
+        assert!(is_publish_meta_ready_for_status(&meta));
+        assert!(!is_publish_meta_complete(&meta));
+        assert_eq!(
+            draft_status(Some("1.0.0"), None, None, Some(&meta), None),
+            "待发布"
         );
     }
 

@@ -854,7 +854,7 @@ select:focus-visible {
 }
 
 .market-filter-chip.active {
-  color: var(--accent);
+  color: var(--accent-primary);
   background: var(--nav-active);
   border-color: var(--accent-line);
   box-shadow: inset 0 0 0 1px rgba(76, 120, 255, 0.08);
@@ -1092,6 +1092,33 @@ select:focus-visible {
   background: var(--green);
   border-color: var(--green);
   box-shadow: 0 2px 8px rgba(16, 185, 129, 0.24);
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.source-chip.market {
+  color: var(--accent-primary);
+  background: rgba(79, 124, 255, 0.08);
+  border-color: rgba(79, 124, 255, 0.2);
+}
+
+.source-chip.local {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.09);
+  border-color: rgba(16, 185, 129, 0.22);
 }
 
 .mini-status {
@@ -1398,6 +1425,20 @@ select:focus-visible {
   min-width: 0;
 }
 
+.section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.section-title-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 .section-toolbar h2 {
   font-size: 20px;
   line-height: 1.2;
@@ -1409,7 +1450,7 @@ select:focus-visible {
 }
 
 .section-toolbar p {
-  margin: 5px 0 0;
+  margin: 0;
   color: var(--muted);
   overflow-wrap: anywhere;
   font-size: 13px;
@@ -1426,6 +1467,7 @@ select:focus-visible {
 
 .tab-strip {
   display: inline-flex;
+  align-self: start;
   align-items: center;
   gap: 4px;
   width: max-content;
@@ -1485,7 +1527,7 @@ select:focus-visible {
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.35fr) minmax(76px, 0.5fr) minmax(130px, 1fr) minmax(72px, 0.45fr) minmax(80px, 0.45fr) minmax(104px, auto);
+  grid-template-columns: minmax(160px, 1.35fr) minmax(76px, 0.5fr) minmax(130px, 1fr) minmax(72px, 0.45fr) minmax(80px, 0.45fr) 114px;
   align-items: center;
   gap: 12px;
   min-height: 56px;
@@ -1526,6 +1568,35 @@ select:focus-visible {
   min-width: 0;
 }
 
+.table-row > span:first-child strong,
+.table-row > span:first-child small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-title-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.skill-title-line .source-chip {
+  flex: 0 0 auto;
+}
+
+.table-row > span:nth-child(4),
+.table-row > span:nth-child(5) {
+  justify-self: end;
+}
+
+.table-head > span:nth-child(4),
+.table-head > span:nth-child(5),
+.table-head > span:nth-child(6) {
+  justify-self: end;
+}
+
 .table-row small {
   margin-top: 3px;
   color: var(--muted);
@@ -1539,7 +1610,13 @@ select:focus-visible {
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
+  justify-self: end;
   gap: 6px;
+}
+
+.table-row .row-actions {
+  justify-self: stretch;
+  width: 100%;
 }
 
 .cache-panel {
@@ -1555,6 +1632,8 @@ select:focus-visible {
 
 .cache-list {
   display: grid;
+  flex: 1 1 auto;
+  align-content: start;
   gap: 0;
   min-height: 0;
   overflow: auto;
@@ -1569,7 +1648,7 @@ select:focus-visible {
 
 .cache-card {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) minmax(140px, auto) auto;
+  grid-template-columns: 42px minmax(0, 1fr) minmax(220px, 0.7fr) 114px;
   align-items: center;
   gap: 12px;
   min-height: 66px;
@@ -1624,7 +1703,7 @@ select:focus-visible {
 
 .scan-line {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto auto;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(300px, 0.56fr);
   align-items: center;
   gap: 12px;
   min-height: 66px;
@@ -1645,8 +1724,8 @@ select:focus-visible {
   border-radius: var(--radius-md);
 }
 
-.scan-line span,
-.scan-line small {
+.scan-line > span,
+.scan-line > span small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1657,6 +1736,33 @@ select:focus-visible {
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.cache-card .row-actions,
+.scan-line .row-actions {
+  flex-wrap: nowrap;
+}
+
+.scan-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.scan-actions .badge {
+  flex: 0 0 auto;
+}
+
+.scan-actions .row-actions {
+  flex: 0 0 154px;
+  width: 154px;
+}
+
+.cache-card .row-actions {
+  justify-self: stretch;
+  width: 100%;
 }
 
 .project-form {
@@ -2633,6 +2739,88 @@ select:focus-visible {
   opacity: 0.46;
 }
 
+.draft-status-filter {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.draft-status-filter::-webkit-scrollbar {
+  height: 4px;
+}
+
+.draft-status-filter::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.draft-status-filter::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+
+.draft-status-filter-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 9px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.draft-status-filter-button small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  color: var(--muted);
+  background: rgba(116, 138, 164, 0.12);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.draft-status-filter-button:hover {
+  color: var(--text-primary);
+  background: var(--surface);
+  border-color: var(--accent-line);
+}
+
+.draft-status-filter-button.active {
+  color: var(--accent-primary);
+  background: var(--nav-active);
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px rgba(79, 124, 255, 0.18);
+}
+
+.draft-status-filter-button.active small {
+  color: var(--accent-primary);
+  background: rgba(79, 124, 255, 0.12);
+  border-color: var(--accent-line);
+}
+
 .draft-empty-results {
   min-height: 112px;
 }
@@ -3196,6 +3384,10 @@ select:focus-visible {
 
 .governance-dialog {
   width: min(540px, calc(100vw - 36px));
+}
+
+.local-install-dialog {
+  width: min(620px, calc(100vw - 36px));
 }
 
 .app-update-backdrop {

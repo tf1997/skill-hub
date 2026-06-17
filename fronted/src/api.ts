@@ -5,7 +5,12 @@ import type {
   AdminSession,
   AdminDraftSkill,
   AppBootstrap,
+  CachedSkillPackage,
   DeleteCachedSkillRequest,
+  DeleteLocalSkillRequest,
+  SetLocalSkillEnabledRequest,
+  ImportLocalSkillRequest,
+  InstallCachedSkillRequest,
   InstallSkillRequest,
   Category,
   LocalSkill,
@@ -24,7 +29,7 @@ import type {
   DownloadUpdateResult
 } from "./types";
 
-const canUseTauri = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const canUseTauri = typeof window !== "undefined" && typeof (window as Window & { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === "function";
 const useBrowserMock = !canUseTauri;
 const mockMinioEndpoint = "http://192.168.1.4:9000";
 const mockMinioBucket = "skill-market";
@@ -159,7 +164,11 @@ const mockBootstrap: AppBootstrap = {
       version: "0.1.0",
       packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/cache/live/minio-live-draft/0.1.0/package.zip",
       cachedAt: mockUpdatedAt,
-      bindingCount: 1
+      bindingCount: 1,
+      origin: "market",
+      summary: null,
+      tags: [],
+      sourcePath: null
     },
     {
       sourceId: "compiled-source",
@@ -169,7 +178,25 @@ const mockBootstrap: AppBootstrap = {
       version: "1.2.0",
       packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/cache/internal/backend-release-helper/1.2.0/package.zip",
       cachedAt: mockUpdatedAt,
-      bindingCount: 1
+      bindingCount: 1,
+      origin: "market",
+      summary: null,
+      tags: [],
+      sourcePath: null
+    },
+    {
+      sourceId: "__local__",
+      namespace: "local",
+      skillId: "daily-note-helper",
+      skillName: "Daily Note Helper",
+      version: "0.0.0-local",
+      packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/packages/local.daily-note-helper/0.0.0-local",
+      cachedAt: mockUpdatedAt,
+      bindingCount: 0,
+      origin: "local",
+      summary: "User-created local skill snapshot.",
+      tags: ["local"],
+      sourcePath: "C:/Users/ctf19/.codex/skills/daily-note-helper"
     }
   ],
   localSkills: [
@@ -181,7 +208,19 @@ const mockBootstrap: AppBootstrap = {
       detectedManifest: "MinIO Live Draft",
       managedBySkillhub: true,
       status: "installed",
-      scannedAt: mockUpdatedAt
+      enabled: true,
+      scannedAt: mockUpdatedAt,
+      origin: "managed",
+      skillId: "minio-live-draft",
+      version: "0.1.0",
+      summary: null,
+      tags: [],
+      matchedSourceId: "compiled-source",
+      matchedNamespace: "live",
+      matchedSkillId: "minio-live-draft",
+      matchedVersion: "0.1.0",
+      canImportToCache: false,
+      canRestoreBinding: false
     },
     {
       id: "local-project-backend",
@@ -192,7 +231,63 @@ const mockBootstrap: AppBootstrap = {
       detectedManifest: "Backend Release Helper",
       managedBySkillhub: true,
       status: "missing",
-      scannedAt: mockUpdatedAt
+      enabled: false,
+      scannedAt: mockUpdatedAt,
+      origin: "managed",
+      skillId: "backend-release-helper",
+      version: "1.2.0",
+      summary: null,
+      tags: [],
+      matchedSourceId: "compiled-source",
+      matchedNamespace: "internal",
+      matchedSkillId: "backend-release-helper",
+      matchedVersion: "1.2.0",
+      canImportToCache: false,
+      canRestoreBinding: false
+    },
+    {
+      id: "local-user-daily-note",
+      target: "codex",
+      level: "personal",
+      path: "C:/Users/ctf19/.codex/skills/daily-note-helper",
+      detectedManifest: "Daily Note Helper",
+      managedBySkillhub: false,
+      status: "local",
+      enabled: true,
+      scannedAt: mockUpdatedAt,
+      origin: "local",
+      skillId: "daily-note-helper",
+      version: "0.0.0-local",
+      summary: "User-created skill with minimal SKILL.md.",
+      tags: [],
+      matchedSourceId: null,
+      matchedNamespace: null,
+      matchedSkillId: null,
+      matchedVersion: null,
+      canImportToCache: true,
+      canRestoreBinding: false
+    },
+    {
+      id: "local-claude-daily-note",
+      target: "claude",
+      level: "personal",
+      path: "C:/Users/ctf19/.claude/skills/daily-note-helper",
+      detectedManifest: "Daily Note Helper",
+      managedBySkillhub: false,
+      status: "local",
+      enabled: true,
+      scannedAt: mockUpdatedAt,
+      origin: "local",
+      skillId: "daily-note-helper",
+      version: "0.0.0-local",
+      summary: "User-created skill with minimal SKILL.md.",
+      tags: [],
+      matchedSourceId: null,
+      matchedNamespace: null,
+      matchedSkillId: null,
+      matchedVersion: null,
+      canImportToCache: true,
+      canRestoreBinding: false
     }
   ],
   projects: [
@@ -378,8 +473,91 @@ const mockAdminAuditLogs: AdminAuditLog[] = [
   }
 ];
 
+function upsertMockCachedPackage(packageItem: CachedSkillPackage) {
+  const index = mockBootstrap.cachedPackages.findIndex(
+    (item) =>
+      item.sourceId === packageItem.sourceId &&
+      item.namespace === packageItem.namespace &&
+      item.skillId === packageItem.skillId &&
+      item.version === packageItem.version
+  );
+  if (index >= 0) {
+    mockBootstrap.cachedPackages[index] = packageItem;
+  } else {
+    mockBootstrap.cachedPackages.unshift(packageItem);
+  }
+}
+
+function markMockLocalSkillsCached(packageItem: CachedSkillPackage, sourcePath?: string | null) {
+  const fingerprints = new Set([mockCachedLocalSkillFingerprint(packageItem)].filter(Boolean));
+  const paths = new Set([sourcePath, packageItem.sourcePath].map(normalizeMockPath).filter(Boolean));
+  mockBootstrap.localSkills = mockBootstrap.localSkills.map((skill) => {
+    const pathMatched = paths.has(normalizeMockPath(skill.path));
+    const fingerprint = mockLocalSkillFingerprint(skill);
+    const fingerprintMatched = Boolean(fingerprint && fingerprints.has(fingerprint));
+    if (!pathMatched && !fingerprintMatched) return skill;
+    return {
+      ...skill,
+      status: "cached",
+      origin: "local",
+      canImportToCache: false
+    };
+  });
+}
+
+function syncMockLocalSkillsWithCache() {
+  for (const packageItem of mockBootstrap.cachedPackages) {
+    if (packageItem.origin === "local") {
+      markMockLocalSkillsCached(packageItem, packageItem.sourcePath);
+    }
+  }
+  return mockBootstrap.localSkills;
+}
+
+function mockBootstrapWithSyncedLocalSkills() {
+  syncMockLocalSkillsWithCache();
+  return mockBootstrap;
+}
+
+function mockCachedLocalSkillFingerprint(packageItem: CachedSkillPackage) {
+  if (packageItem.origin !== "local") return null;
+  return mockLocalFingerprint(packageItem.skillId, packageItem.version);
+}
+
+function mockLocalSkillFingerprint(skill: LocalSkill) {
+  return mockLocalFingerprint(skill.skillId || mockLocalPathName(skill.path) || skill.detectedManifest || "", skill.version);
+}
+
+function mockLocalFingerprint(skillId: string, version?: string | null) {
+  const normalizedSkillId = skillId
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLocaleLowerCase();
+  if (!normalizedSkillId) return null;
+  return `${normalizedSkillId}@${version?.trim() || "0.0.0-local"}`;
+}
+
+function normalizeMockPath(path?: string | null) {
+  return path?.replace(/\\/g, "/").toLocaleLowerCase() ?? "";
+}
+
+function mockLocalPathName(path?: string | null) {
+  const parts = path?.replace(/\\/g, "/").split("/").filter(Boolean) ?? [];
+  return parts[parts.length - 1] ?? "";
+}
+
+function upsertMockBinding(binding: SkillBinding) {
+  const index = mockBootstrap.bindings.findIndex((item) => item.id === binding.id);
+  if (index >= 0) {
+    mockBootstrap.bindings[index] = binding;
+  } else {
+    mockBootstrap.bindings.unshift(binding);
+  }
+}
+
 const browserMockApi = {
-  bootstrap: async () => mockBootstrap,
+  bootstrap: async () => mockBootstrapWithSyncedLocalSkills(),
   listMarketSkills: async () => mockBootstrap.skills,
   listSources: async () => mockBootstrap.sources,
   saveSource: async (_request: SaveSourceRequest) => mockBootstrap.sources[0],
@@ -409,7 +587,7 @@ const browserMockApi = {
   quickRepublishArchivedSkill: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
   listTargetRoots: async () => mockBootstrap.targetRoots,
   saveTargetRoot: async (target: string, personalPath: string) => ({ target, personalPath, updatedAt: new Date().toISOString() }),
-  refreshCatalog: async () => mockBootstrap,
+  refreshCatalog: async () => mockBootstrapWithSyncedLocalSkills(),
   installSkill: async (_request: InstallSkillRequest) =>
     ({
       id: "mock-binding",
@@ -428,7 +606,62 @@ const browserMockApi = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }) as SkillBinding,
+  importLocalSkillToCache: async (_request: ImportLocalSkillRequest) => {
+    const packageItem = mockBootstrap.cachedPackages[2];
+    upsertMockCachedPackage(packageItem);
+    markMockLocalSkillsCached(packageItem, _request.path);
+    return packageItem;
+  },
+  installCachedSkill: async (_request: InstallCachedSkillRequest) => {
+    const targetRoot =
+      _request.level === "project"
+        ? `${_request.projectPath}/${_request.target === "codex" ? ".codex" : ".claude"}/skills`
+        : _request.target === "codex"
+          ? "C:/Users/ctf19/.codex/skills"
+          : "C:/Users/ctf19/.claude/skills";
+    const binding = {
+      id: `mock-local-binding-${_request.target}-${_request.level}`,
+      packageId: "mock-local-package",
+      sourceId: _request.sourceId,
+      namespace: _request.namespace,
+      skillId: _request.skillId,
+      skillName: "Daily Note Helper",
+      version: _request.version,
+      target: _request.target,
+      level: _request.level,
+      projectPath: _request.projectPath,
+      installPath: `${targetRoot}/${_request.skillId}`,
+      enabled: true,
+      installMode: "copy",
+      updatePolicy: "pinned",
+      status: "installed",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    } as SkillBinding;
+    upsertMockBinding(binding);
+    return binding;
+  },
   deleteCachedSkill: async (_request: DeleteCachedSkillRequest) => undefined,
+  deleteLocalSkill: async (_request: DeleteLocalSkillRequest) => {
+    mockBootstrap.localSkills = mockBootstrap.localSkills.filter((skill) => skill.id !== _request.id);
+    return syncMockLocalSkillsWithCache();
+  },
+  setLocalSkillEnabled: async (_request: SetLocalSkillEnabledRequest) => {
+    mockBootstrap.localSkills = mockBootstrap.localSkills.map((skill) => {
+      if (skill.id !== _request.id || skill.managedBySkillhub) return skill;
+      const nextPath = _request.enabled
+        ? skill.path.replace(/([\\/])\.skill-hub-disabled([\\/])/, "$1")
+        : skill.path.replace(/([\\/])skills([\\/])([^\\/]+)$/, "$1skills$1.skill-hub-disabled$2$3");
+      return {
+        ...skill,
+        enabled: _request.enabled,
+        status: _request.enabled ? "local" : "disabled",
+        path: nextPath,
+        scannedAt: new Date().toISOString()
+      };
+    });
+    return syncMockLocalSkillsWithCache();
+  },
   setBindingEnabled: async (_bindingId: string, _enabled: boolean) => browserMockApi.installSkill({} as InstallSkillRequest),
   uninstallBinding: async (_bindingId: string) => [],
   upgradeSkillBinding: async (_bindingId: string) => mockBootstrap,
@@ -441,7 +674,7 @@ const browserMockApi = {
     updatedAt: new Date().toISOString()
   }),
   unbindProject: async (_projectId: string) => [],
-  scanLocalSkills: async () => mockBootstrap.localSkills,
+  scanLocalSkills: async () => syncMockLocalSkillsWithCache(),
   previewSkill: async (_request: SkillPreviewRequest) => ({
     title: "MinIO Live Draft",
     rootPath: "skills/live/minio-live-draft",
@@ -524,8 +757,16 @@ const tauriApi = {
   refreshCatalog: () => invoke<AppBootstrap>("refresh_catalog"),
   installSkill: (request: InstallSkillRequest) =>
     invoke<SkillBinding>("install_skill", { request }),
+  importLocalSkillToCache: (request: ImportLocalSkillRequest) =>
+    invoke<CachedSkillPackage>("import_local_skill_to_cache", { request }),
+  installCachedSkill: (request: InstallCachedSkillRequest) =>
+    invoke<SkillBinding>("install_cached_skill", { request }),
   deleteCachedSkill: (request: DeleteCachedSkillRequest) =>
     invoke<void>("delete_cached_skill", { request }),
+  deleteLocalSkill: (request: DeleteLocalSkillRequest) =>
+    invoke<LocalSkill[]>("delete_local_skill", { request }),
+  setLocalSkillEnabled: (request: SetLocalSkillEnabledRequest) =>
+    invoke<LocalSkill[]>("set_local_skill_enabled", { request }),
   setBindingEnabled: (bindingId: string, enabled: boolean) =>
     invoke<SkillBinding>("set_binding_enabled", {
       request: { bindingId, enabled }

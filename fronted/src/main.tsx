@@ -10,7 +10,8 @@ type StartupErrorState = {
 };
 
 let appRoot: Root | null = null;
-const canUseTauriWindow = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const canUseTauriWindow =
+  typeof window !== "undefined" && typeof (window as Window & { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === "function";
 
 class StartupErrorBoundary extends Component<{ children: ReactNode }, StartupErrorState> {
   state: StartupErrorState = {

@@ -23,6 +23,8 @@ pub use crate::minio_config::{
     COMPILED_SOURCE_REGION,
 };
 
+pub const LOCAL_SOURCE_ID: &str = "__local__";
+
 #[derive(Clone)]
 pub struct AppState {
     pub conn: Arc<Mutex<Connection>>,
@@ -109,6 +111,16 @@ fn migrate(conn: &Connection) -> Result<()> {
           UNIQUE(source_id, namespace, skill_id, version)
         );
 
+        CREATE TABLE IF NOT EXISTS local_package_metadata (
+          package_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          tags_json TEXT NOT NULL,
+          author TEXT,
+          source_path TEXT NOT NULL,
+          imported_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS skill_bindings (
           id TEXT PRIMARY KEY,
           package_id TEXT NOT NULL,
@@ -152,7 +164,19 @@ fn migrate(conn: &Connection) -> Result<()> {
           detected_manifest TEXT,
           managed_by_skillhub INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL,
-          scanned_at TEXT NOT NULL
+          enabled INTEGER NOT NULL DEFAULT 1,
+          scanned_at TEXT NOT NULL,
+          origin TEXT NOT NULL DEFAULT 'unknown',
+          skill_id TEXT,
+          version TEXT,
+          summary TEXT,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          matched_source_id TEXT,
+          matched_namespace TEXT,
+          matched_skill_id TEXT,
+          matched_version TEXT,
+          can_import_to_cache INTEGER NOT NULL DEFAULT 0,
+          can_restore_binding INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -166,6 +190,66 @@ fn migrate(conn: &Connection) -> Result<()> {
         "#,
     )?;
 
+    add_column_if_missing(
+        conn,
+        "local_skills",
+        "origin",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
+    add_column_if_missing(
+        conn,
+        "local_skills",
+        "enabled",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_column_if_missing(conn, "local_skills", "skill_id", "TEXT")?;
+    add_column_if_missing(conn, "local_skills", "version", "TEXT")?;
+    add_column_if_missing(conn, "local_skills", "summary", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "local_skills",
+        "tags_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(conn, "local_skills", "matched_source_id", "TEXT")?;
+    add_column_if_missing(conn, "local_skills", "matched_namespace", "TEXT")?;
+    add_column_if_missing(conn, "local_skills", "matched_skill_id", "TEXT")?;
+    add_column_if_missing(conn, "local_skills", "matched_version", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "local_skills",
+        "can_import_to_cache",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "local_skills",
+        "can_restore_binding",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if columns.iter().any(|item| item == column) {
+        return Ok(());
+    }
+
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -400,12 +484,18 @@ pub fn list_cached_packages_inner(conn: &Connection) -> Result<Vec<CachedSkillPa
              package.source_id,
              package.namespace,
              package.skill_id,
-             COALESCE(catalog.name, binding.skill_name, package.skill_id) AS skill_name,
+             COALESCE(local_meta.name, catalog.name, binding.skill_name, package.skill_id) AS skill_name,
              package.version,
              package.package_path,
              package.cached_at,
-             COUNT(binding.id) AS binding_count
+             COUNT(binding.id) AS binding_count,
+             CASE WHEN package.source_id = '__local__' THEN 'local' ELSE 'market' END AS origin,
+             local_meta.summary,
+             local_meta.tags_json,
+             local_meta.source_path
          FROM skill_packages package
+         LEFT JOIN local_package_metadata local_meta
+           ON local_meta.package_id = package.id
          LEFT JOIN catalog_cache catalog
            ON COALESCE(catalog.source_id, '') = COALESCE(package.source_id, '')
           AND catalog.namespace = package.namespace
@@ -430,6 +520,13 @@ pub fn list_cached_packages_inner(conn: &Connection) -> Result<Vec<CachedSkillPa
             package_path: row.get(5)?,
             cached_at: row.get(6)?,
             binding_count: row.get(7)?,
+            origin: row.get(8)?,
+            summary: row.get(9)?,
+            tags: row
+                .get::<_, Option<String>>(10)?
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
+            source_path: row.get(11)?,
         })
     })?;
 
@@ -520,7 +617,9 @@ pub fn default_target_roots() -> Vec<(String, String)> {
 pub fn list_local_skills_inner(conn: &Connection) -> Result<Vec<LocalSkill>> {
     let mut stmt = conn.prepare(
         "SELECT id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
-                status, scanned_at
+                status, enabled, scanned_at, origin, skill_id, version, summary, tags_json,
+                matched_source_id, matched_namespace, matched_skill_id, matched_version,
+                can_import_to_cache, can_restore_binding
          FROM local_skills
          ORDER BY scanned_at DESC",
     )?;
@@ -534,7 +633,23 @@ pub fn list_local_skills_inner(conn: &Connection) -> Result<Vec<LocalSkill>> {
             detected_manifest: row.get(5)?,
             managed_by_skillhub: row.get::<_, i64>(6)? == 1,
             status: row.get(7)?,
-            scanned_at: row.get(8)?,
+            enabled: row.get::<_, i64>(8)? == 1,
+            scanned_at: row.get(9)?,
+            origin: row.get(10)?,
+            skill_id: row.get(11)?,
+            version: row.get(12)?,
+            summary: row.get(13)?,
+            tags: row
+                .get::<_, String>(14)
+                .ok()
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
+            matched_source_id: row.get(15)?,
+            matched_namespace: row.get(16)?,
+            matched_skill_id: row.get(17)?,
+            matched_version: row.get(18)?,
+            can_import_to_cache: row.get::<_, i64>(19)? == 1,
+            can_restore_binding: row.get::<_, i64>(20)? == 1,
         })
     })?;
 

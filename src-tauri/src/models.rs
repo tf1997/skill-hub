@@ -261,11 +261,41 @@ pub struct InstallSkillRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportLocalSkillRequest {
+    pub path: String,
+    pub skill_id: Option<String>,
+    pub version: Option<String>,
+    pub overwrite: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallCachedSkillRequest {
+    pub source_id: Option<String>,
+    pub namespace: String,
+    pub skill_id: String,
+    pub version: String,
+    pub target: String,
+    pub level: String,
+    pub project_path: Option<String>,
+    pub install_mode: Option<String>,
+    pub update_policy: Option<String>,
+    pub enable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteCachedSkillRequest {
     pub source_id: Option<String>,
     pub namespace: String,
     pub skill_id: String,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocalSkillRequest {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +309,12 @@ pub struct CachedSkillPackage {
     pub package_path: String,
     pub cached_at: String,
     pub binding_count: i64,
+    #[serde(default)]
+    pub origin: String,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,7 +381,34 @@ pub struct LocalSkill {
     pub detected_manifest: Option<String>,
     pub managed_by_skillhub: bool,
     pub status: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub scanned_at: String,
+    pub origin: String,
+    pub skill_id: Option<String>,
+    pub version: Option<String>,
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub matched_source_id: Option<String>,
+    pub matched_namespace: Option<String>,
+    pub matched_skill_id: Option<String>,
+    pub matched_version: Option<String>,
+    #[serde(default)]
+    pub can_import_to_cache: bool,
+    #[serde(default)]
+    pub can_restore_binding: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLocalSkillEnabledRequest {
+    pub id: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

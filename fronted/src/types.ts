@@ -84,7 +84,19 @@ export type LocalSkill = {
   detectedManifest?: string | null;
   managedBySkillhub: boolean;
   status: string;
+  enabled: boolean;
   scannedAt: string;
+  origin: "managed" | "market" | "local" | "unknown" | string;
+  skillId?: string | null;
+  version?: string | null;
+  summary?: string | null;
+  tags: string[];
+  matchedSourceId?: string | null;
+  matchedNamespace?: string | null;
+  matchedSkillId?: string | null;
+  matchedVersion?: string | null;
+  canImportToCache: boolean;
+  canRestoreBinding: boolean;
 };
 
 export type CachedSkillPackage = {
@@ -96,6 +108,10 @@ export type CachedSkillPackage = {
   packagePath: string;
   cachedAt: string;
   bindingCount: number;
+  origin: "market" | "local" | string;
+  summary?: string | null;
+  tags: string[];
+  sourcePath?: string | null;
 };
 
 export type UpdateCandidate = {
@@ -209,6 +225,35 @@ export type DeleteCachedSkillRequest = {
   namespace: string;
   skillId: string;
   version: string;
+};
+
+export type DeleteLocalSkillRequest = {
+  id: string;
+};
+
+export type SetLocalSkillEnabledRequest = {
+  id: string;
+  enabled: boolean;
+};
+
+export type ImportLocalSkillRequest = {
+  path: string;
+  skillId?: string | null;
+  version?: string | null;
+  overwrite?: boolean | null;
+};
+
+export type InstallCachedSkillRequest = {
+  sourceId?: string | null;
+  namespace: string;
+  skillId: string;
+  version: string;
+  target: string;
+  level: string;
+  projectPath?: string | null;
+  installMode?: string | null;
+  updatePolicy?: string | null;
+  enable: boolean;
 };
 
 export type CommandError = {

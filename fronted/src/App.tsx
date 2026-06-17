@@ -42,6 +42,7 @@ import type {
   AppBootstrap,
   CachedSkillPackage,
   Category,
+  InstallCachedSkillRequest,
   InstallSkillRequest,
   LocalSkill,
   MarketProject,
@@ -99,6 +100,18 @@ type CachedSkillItem = {
   package: CachedSkillPackage;
   marketSkill?: MarketSkill;
 };
+type LocalInstallLevel = "personal" | "project";
+type LocalInstallTarget = "codex" | "claude";
+type LocalInstallOptions = {
+  target: LocalInstallTarget;
+  level: LocalInstallLevel;
+  projectPath: string | null;
+};
+type LocalInstallDialogState =
+  | { kind: "local"; skill: LocalSkill }
+  | { kind: "cache"; item: CachedSkillItem };
+const localInstallTargets = ["codex", "claude"] as const;
+type InstalledTab = "bindings" | "cache" | "local";
 
 const emptyBootstrap: AppBootstrap = {
   sources: [],
@@ -114,7 +127,8 @@ const emptyBootstrap: AppBootstrap = {
   metadataSyncError: null
 };
 
-const canUseTauriEvents = typeof window !== "undefined" && "__TAURI_IPC__" in window;
+const canUseTauriEvents =
+  typeof window !== "undefined" && typeof (window as Window & { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === "function";
 const ADMIN_ENTRY_CLICK_THRESHOLD = 5;
 const THEME_STORAGE_KEY = "skill-hub-theme";
 
@@ -266,6 +280,11 @@ function App() {
   const [targetRootDrafts, setTargetRootDrafts] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<SkillPreview | null>(null);
   const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
+  const [localInstallDialog, setLocalInstallDialog] = useState<LocalInstallDialogState | null>(null);
+  const [localInstallTarget, setLocalInstallTarget] = useState<LocalInstallTarget>("codex");
+  const [localInstallLevel, setLocalInstallLevel] = useState<LocalInstallLevel>("personal");
+  const [localInstallProjectPath, setLocalInstallProjectPath] = useState("");
+  const [localDeleteDialog, setLocalDeleteDialog] = useState<LocalSkill | null>(null);
   const [adminVisible, setAdminVisible] = useState(false);
   const [adminUnlockOpen, setAdminUnlockOpen] = useState(false);
   const [adminKey, setAdminKey] = useState("");
@@ -297,6 +316,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const checkingAppUpdateRef = useRef(false);
   const adminEntryClickCountRef = useRef(0);
+  const localScanInFlightRef = useRef(false);
 
   const openAppUpdateDialog = useCallback((manual = true) => {
     setAppUpdateDialog({
@@ -605,6 +625,8 @@ function App() {
     setView(nextView);
     if (nextView === "market") {
       await refreshCatalog();
+    } else if (nextView === "installed") {
+      await scanLocal({ silent: true });
     }
   }
 
@@ -730,6 +752,32 @@ function App() {
     }
   }
 
+  function openLocalDeleteDialog(skill: LocalSkill) {
+    setLocalDeleteDialog(skill);
+    setError(null);
+  }
+
+  async function deleteLocalSkill(skill: LocalSkill) {
+    setBusy(true);
+    setError(null);
+    try {
+      const rows = await api.deleteLocalSkill({ id: skill.id });
+      setData((current) => ({ ...current, localSkills: rows }));
+      setNotice(`${skill.detectedManifest ?? skill.path} 已删除`);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmLocalDeleteSkill() {
+    if (!localDeleteDialog) return;
+    const skill = localDeleteDialog;
+    setLocalDeleteDialog(null);
+    await deleteLocalSkill(skill);
+  }
+
   async function previewCachedSkill(item: CachedSkillItem) {
     setBusy(true);
     setError(null);
@@ -783,6 +831,138 @@ function App() {
     }
   }
 
+  async function importLocalSkill(skill: LocalSkill, installAfterImport = false, options?: LocalInstallOptions) {
+    if (!skill.canImportToCache) {
+      setError("该本地 skill 已匹配市场或由 Skill Hub 管理，不能作为自建 skill 导入");
+      return;
+    }
+    const resolvedLevel = options?.level ?? "personal";
+    const resolvedProjectPath = resolvedLevel === "project" ? options?.projectPath ?? "" : null;
+    if (installAfterImport && resolvedLevel === "project" && !resolvedProjectPath) {
+      setError("请先在项目菜单绑定项目，并选择一个项目");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      const cached = await api.importLocalSkillToCache({
+        path: skill.path,
+        skillId: skill.skillId ?? null,
+        version: skill.version ?? null,
+        overwrite: true
+      });
+      if (installAfterImport) {
+        await installCachedPackage(cached, false, {
+          target: options?.target ?? "codex",
+          level: resolvedLevel,
+          projectPath: resolvedProjectPath
+        });
+      } else {
+        const localSkills = markLocalSkillsCached(await api.scanLocalSkills(), cached, skill);
+        setData((current) => ({
+          ...current,
+          cachedPackages: upsertCachedPackage(current.cachedPackages, cached),
+          localSkills
+        }));
+        setNotice(`${cached.skillName} 已加入本地缓存`);
+      }
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function installCachedPackage(
+    item: CachedSkillItem | CachedSkillPackage,
+    manageBusy = true,
+    options?: LocalInstallOptions
+  ) {
+    const cachedPackage = "package" in item ? item.package : item;
+    if (cachedPackage.origin !== "local") {
+      setError("市场缓存请从市场详情页安装，避免影响市场升级链路");
+      return;
+    }
+    const resolvedLevel = options?.level ?? "personal";
+    const resolvedProjectPath = resolvedLevel === "project" ? options?.projectPath ?? "" : null;
+    if (resolvedLevel === "project" && !resolvedProjectPath) {
+      setError("请先在项目菜单绑定项目，并选择一个项目");
+      return;
+    }
+
+    if (manageBusy) {
+      setBusy(true);
+      setError(null);
+    }
+    try {
+      const request: InstallCachedSkillRequest = {
+        sourceId: cachedPackage.sourceId,
+        namespace: cachedPackage.namespace,
+        skillId: cachedPackage.skillId,
+        version: cachedPackage.version,
+        target: options?.target ?? "codex",
+        level: resolvedLevel,
+        projectPath: resolvedProjectPath,
+        installMode: "copy",
+        updatePolicy: "pinned",
+        enable: true
+      };
+      await api.installCachedSkill(request);
+      await load();
+      setNotice(`${cachedPackage.skillName} 已安装`);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      if (manageBusy) {
+        setBusy(false);
+      }
+    }
+  }
+
+  function openLocalInstallDialog(dialog: LocalInstallDialogState) {
+    const availableTargets = availableLocalInstallTargets(dialog, data.bindings, data.localSkills);
+    if (availableTargets.length === 0) {
+      setError("该 skill 已安装到所有支持的平台");
+      return;
+    }
+    setLocalInstallDialog(dialog);
+    setLocalInstallLevel("personal");
+    setLocalInstallProjectPath("");
+    const localTarget = dialog.kind === "local" && isLocalInstallTarget(dialog.skill.target) ? dialog.skill.target : null;
+    setLocalInstallTarget(
+      localTarget && availableTargets.includes(localTarget) ? localTarget : availableTargets[0]
+    );
+    setError(null);
+  }
+
+  async function confirmLocalInstall() {
+    if (!localInstallDialog) return;
+    const availableTargets = availableLocalInstallTargets(localInstallDialog, data.bindings, data.localSkills);
+    if (!availableTargets.includes(localInstallTarget)) {
+      setError("该平台已安装，请选择其他平台");
+      return;
+    }
+    const resolvedProjectPath = localInstallLevel === "project" ? localInstallProjectPath : null;
+    if (localInstallLevel === "project" && !resolvedProjectPath) {
+      setError("请先选择一个已绑定项目");
+      return;
+    }
+
+    const options: LocalInstallOptions = {
+      target: localInstallTarget,
+      level: localInstallLevel,
+      projectPath: resolvedProjectPath
+    };
+    const dialog = localInstallDialog;
+    setLocalInstallDialog(null);
+    if (dialog.kind === "local") {
+      await importLocalSkill(dialog.skill, true, options);
+      return;
+    }
+    await installCachedPackage(dialog.item, true, options);
+  }
+
   async function toggleBinding(binding: SkillBinding) {
     setBusy(true);
     setError(null);
@@ -790,6 +970,24 @@ function App() {
       await api.setBindingEnabled(binding.id, !binding.enabled);
       await load();
       setNotice(binding.enabled ? "已禁用绑定" : "已启用绑定");
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleLocalSkill(skill: LocalSkill) {
+    if (skill.managedBySkillhub) {
+      setError("Skill Hub 管理的绑定请使用市场绑定开关");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const rows = await api.setLocalSkillEnabled({ id: skill.id, enabled: !skill.enabled });
+      setData((current) => ({ ...current, localSkills: rows }));
+      setNotice(skill.enabled ? "已禁用自建 skill" : "已启用自建 skill");
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -871,16 +1069,21 @@ function App() {
     }
   }
 
-  async function scanLocal() {
+  async function scanLocal(options: { silent?: boolean } = {}) {
+    if (localScanInFlightRef.current) return;
+    localScanInFlightRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const rows = await api.scanLocalSkills();
       setData((current) => ({ ...current, localSkills: rows }));
-      setNotice("本地 skill 已扫描");
+      if (!options.silent) {
+        setNotice("本地 skill 已扫描");
+      }
     } catch (err) {
       setError(readError(err));
     } finally {
+      localScanInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -1383,6 +1586,7 @@ function App() {
             bindings={data.bindings}
             cachedSkills={cachedSkills}
             onToggle={toggleBinding}
+            onToggleLocal={toggleLocalSkill}
             onUninstall={uninstallBinding}
             localSkills={data.localSkills}
             onScan={scanLocal}
@@ -1390,6 +1594,10 @@ function App() {
             onPreviewLocal={previewLocalSkill}
             onPreviewCache={previewCachedSkill}
             onDeleteCache={deleteCachedSkill}
+            onDeleteLocal={openLocalDeleteDialog}
+            onImportLocal={(skill) => void importLocalSkill(skill)}
+            onInstallLocal={(skill) => openLocalInstallDialog({ kind: "local", skill })}
+            onInstallCache={(item) => openLocalInstallDialog({ kind: "cache", item })}
           />
         ) : null}
 
@@ -1478,6 +1686,32 @@ function App() {
               setPreview(null);
               setPreviewContext(null);
             }}
+          />
+        ) : null}
+
+        {localInstallDialog ? (
+          <LocalInstallDialog
+            dialog={localInstallDialog}
+            target={localInstallTarget}
+            onTarget={setLocalInstallTarget}
+            level={localInstallLevel}
+            onLevel={setLocalInstallLevel}
+            projectPath={localInstallProjectPath}
+            onProjectPath={setLocalInstallProjectPath}
+            projects={data.projects}
+            availableTargets={availableLocalInstallTargets(localInstallDialog, data.bindings, data.localSkills)}
+            busy={busy}
+            onConfirm={() => void confirmLocalInstall()}
+            onClose={() => setLocalInstallDialog(null)}
+          />
+        ) : null}
+
+        {localDeleteDialog ? (
+          <LocalDeleteDialog
+            skill={localDeleteDialog}
+            busy={busy}
+            onConfirm={() => void confirmLocalDeleteSkill()}
+            onClose={() => setLocalDeleteDialog(null)}
           />
         ) : null}
 
@@ -1733,10 +1967,7 @@ function MarketView(props: {
             <p className="detail-summary">{props.selectedSkill.summary}</p>
 
             <div className="tag-cloud">
-              {props.selectedSkill.categories.map((category) => (
-                <span key={category}>{category}</span>
-              ))}
-              {props.selectedSkill.tags.map((tag) => (
+              {displaySkillTags(props.selectedSkill).map((tag) => (
                 <span key={tag}>{tag}</span>
               ))}
             </div>
@@ -1882,14 +2113,33 @@ function InstalledView(props: {
   cachedSkills: CachedSkillItem[];
   localSkills: LocalSkill[];
   onToggle: (binding: SkillBinding) => void;
+  onToggleLocal: (skill: LocalSkill) => void;
   onUninstall: (binding: SkillBinding) => void;
   onScan: () => void;
   onPreviewBinding: (binding: SkillBinding) => void;
   onPreviewLocal: (skill: LocalSkill) => void;
   onPreviewCache: (item: CachedSkillItem) => void;
   onDeleteCache: (item: CachedSkillItem) => void;
+  onDeleteLocal: (skill: LocalSkill) => void;
+  onImportLocal: (skill: LocalSkill) => void;
+  onInstallLocal: (skill: LocalSkill) => void;
+  onInstallCache: (item: CachedSkillItem) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"bindings" | "cache" | "local">("bindings");
+  const [activeTab, setActiveTab] = useState<InstalledTab>("bindings");
+  const inferredLocalBindings = useMemo(
+    () =>
+      props.cachedSkills.flatMap((item) =>
+        localCachedInstallations(item.package, props.localSkills)
+          .filter((skill) => !hasBindingForLocalSkill(item.package, skill, props.bindings))
+          .map((skill) => ({
+            key: `${item.key}:${skill.id}`,
+            package: item.package,
+            skill
+          }))
+      ),
+    [props.cachedSkills, props.localSkills, props.bindings]
+  );
+  const bindingMatrixCount = props.bindings.length + inferredLocalBindings.length;
   const activeTitle =
     activeTab === "bindings" ? "生效矩阵" : activeTab === "cache" ? "本地缓存" : "本地已有 skill";
   const activeDescription =
@@ -1899,13 +2149,13 @@ function InstalledView(props: {
         ? "已下载但不一定生效的 skill 包，删除缓存不会卸载已安装目录。"
         : "扫描个人级和项目级目录中包含 SKILL.md 的 skill。";
   const tabs = [
-    { key: "bindings" as const, label: "生效矩阵", count: props.bindings.length },
+    { key: "bindings" as const, label: "生效矩阵", count: bindingMatrixCount },
     { key: "cache" as const, label: "本地缓存", count: props.cachedSkills.length },
     { key: "local" as const, label: "本地已有 skill", count: props.localSkills.length }
   ];
   const activeCount =
     activeTab === "bindings"
-      ? props.bindings.length
+      ? bindingMatrixCount
       : activeTab === "cache"
         ? props.cachedSkills.length
         : props.localSkills.length;
@@ -1913,11 +2163,13 @@ function InstalledView(props: {
   return (
     <section className="content-stack installed-view">
       <div className="section-toolbar">
-        <div>
-          <h2>{activeTitle}</h2>
+        <div className="section-heading">
+          <div className="section-title-line">
+            <h2>{activeTitle}</h2>
+            <Badge strong={activeCount > 0}>{activeCount} 项</Badge>
+          </div>
           <p>{activeDescription}</p>
         </div>
-        <Badge strong={activeCount > 0}>{activeCount} 项</Badge>
         {activeTab === "local" ? (
           <div className="toolbar-actions">
             <button className="primary-soft" onClick={props.onScan}>
@@ -1933,7 +2185,12 @@ function InstalledView(props: {
           <button
             key={tab.key}
             className={activeTab === tab.key ? "active" : ""}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => {
+              setActiveTab(tab.key);
+              if (tab.key === "local") {
+                void props.onScan();
+              }
+            }}
             role="tab"
             aria-selected={activeTab === tab.key}
           >
@@ -1953,32 +2210,67 @@ function InstalledView(props: {
             <span>状态</span>
             <span>操作</span>
           </div>
-          {props.bindings.length > 0 ? (
-            props.bindings.map((binding) => (
-              <div className="table-row" key={binding.id}>
-                <span>
-                  <strong>{binding.skillName}</strong>
-                  <small>{binding.skillId}</small>
-                </span>
-                <span>{targetLabels[binding.target] ?? binding.target}</span>
-                <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
-                <span>{binding.version}</span>
-                <span>
-                  <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
-                </span>
-                <span className="row-actions">
-                  <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
-                    <Power size={16} />
-                  </button>
-                  <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
-                    <BookOpen size={16} />
-                  </button>
-                  <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
-                    <Archive size={16} />
-                  </button>
-                </span>
-              </div>
-            ))
+          {bindingMatrixCount > 0 ? (
+            <>
+              {props.bindings.map((binding) => (
+                <div className="table-row" key={binding.id}>
+                  <span>
+                    <strong className="skill-title-line">
+                      {binding.skillName}
+                      <SourceChip tone={bindingSourceTone(binding)}>{bindingSourceLabel(binding)}</SourceChip>
+                    </strong>
+                    <small>{binding.skillId}</small>
+                  </span>
+                  <span>{targetLabels[binding.target] ?? binding.target}</span>
+                  <span>{binding.level === "project" ? binding.projectPath : "个人级"}</span>
+                  <span>{binding.version}</span>
+                  <span>
+                    <Badge strong={binding.enabled}>{binding.enabled ? "启用" : "禁用"}</Badge>
+                  </span>
+                  <span className="row-actions">
+                    <button className="icon-button" onClick={() => props.onToggle(binding)} title="启用/禁用">
+                      <Power size={16} />
+                    </button>
+                    <button className="icon-button" onClick={() => props.onPreviewBinding(binding)} title="预览">
+                      <BookOpen size={16} />
+                    </button>
+                    <button className="icon-button danger" onClick={() => props.onUninstall(binding)} title="卸载">
+                      <Archive size={16} />
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {inferredLocalBindings.map(({ key, package: cachedPackage, skill }) => (
+                <div className="table-row" key={key}>
+                  <span>
+                    <strong className="skill-title-line">
+                      {skill.detectedManifest ?? cachedPackage.skillName}
+                      <SourceChip tone="local">自建</SourceChip>
+                    </strong>
+                    <small title={skill.path}>{cachedPackage.skillId}</small>
+                  </span>
+                  <span>{targetLabels[skill.target] ?? skill.target}</span>
+                  <span>{skill.level === "project" ? skill.projectPath ?? "项目级" : "个人级"}</span>
+                  <span>{skill.version ?? cachedPackage.version}</span>
+                  <span>
+                    <Badge strong={skill.enabled}>{skill.enabled ? "启用" : "禁用"}</Badge>
+                  </span>
+                  <span className="row-actions">
+                    <button className="icon-button" onClick={() => props.onToggleLocal(skill)} title={skill.enabled ? "禁用自建 skill" : "启用自建 skill"}>
+                      <Power size={16} />
+                    </button>
+                    <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
+                      <BookOpen size={16} />
+                    </button>
+                    {canDeleteLocalSkillFromMatrix(skill) ? (
+                      <button className="icon-button danger" onClick={() => props.onDeleteLocal(skill)} title="删除本地 skill">
+                        <Trash2 size={16} />
+                      </button>
+                    ) : null}
+                  </span>
+                </div>
+              ))}
+            </>
           ) : (
             <EmptyState
               title="还没有生效记录"
@@ -1997,7 +2289,7 @@ function InstalledView(props: {
                   <div className="cache-mark">
                     <Archive size={18} />
                   </div>
-                  <div className="cache-main">
+                  <div className="cache-main" title={item.package.summary ?? undefined}>
                     <strong>{item.package.skillName}</strong>
                     <small>{item.package.skillId}</small>
                   </div>
@@ -2005,13 +2297,24 @@ function InstalledView(props: {
                     <Badge strong={item.marketSkill ? item.package.version === item.marketSkill.latestVersion : false}>
                       {item.package.version}
                     </Badge>
+                    <Badge strong={item.package.origin === "local"}>
+                      {item.package.origin === "local" ? "自建" : "市场"}
+                    </Badge>
                     <span>
-                      {item.package.bindingCount > 0
-                        ? `已安装 ${item.package.bindingCount} 处`
-                        : "仅缓存"}
+                      {item.package.origin === "local"
+                        ? cachedPackageInstallSummary(item.package, props.bindings, props.localSkills)
+                        : item.package.bindingCount > 0
+                          ? `已安装 ${item.package.bindingCount} 处`
+                          : "仅缓存"}
                     </span>
                   </div>
                   <div className="row-actions">
+                    {item.package.origin === "local" &&
+                    hasAvailableLocalInstallTarget({ kind: "cache", item }, props.bindings, props.localSkills) ? (
+                      <button className="icon-button" onClick={() => props.onInstallCache(item)} title="安装自建缓存">
+                        <PackageCheck size={16} />
+                      </button>
+                    ) : null}
                     <button className="icon-button" onClick={() => props.onPreviewCache(item)} title="预览">
                       <BookOpen size={16} />
                     </button>
@@ -2049,14 +2352,33 @@ function InstalledView(props: {
                   </small>
                   <small>{skill.path}</small>
                 </span>
-                <Badge strong={skill.managedBySkillhub && skill.status !== "missing"}>
-                  {localSkillStatusLabel(skill)}
-                </Badge>
-                <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
-                  <BookOpen size={16} />
-                </button>
+                <div className="scan-actions">
+                  <Badge strong={skill.managedBySkillhub && skill.status !== "missing"}>
+                    {localSkillStatusLabel(skill)}
+                  </Badge>
+                  <div className="row-actions">
+                    {skill.canImportToCache ? (
+                      <>
+                        <button className="icon-button" onClick={() => props.onImportLocal(skill)} title="加入本地缓存">
+                          <Download size={16} />
+                        </button>
+                        <button className="icon-button" onClick={() => props.onInstallLocal(skill)} title="加入缓存并安装">
+                          <PackageCheck size={16} />
+                        </button>
+                      </>
+                    ) : null}
+                    {!skill.managedBySkillhub ? (
+                      <button className="icon-button danger" onClick={() => props.onDeleteLocal(skill)} title="删除本地 skill">
+                        <Trash2 size={16} />
+                      </button>
+                    ) : null}
+                    <button className="icon-button" onClick={() => props.onPreviewLocal(skill)} title="预览">
+                      <BookOpen size={16} />
+                    </button>
+                  </div>
+                </div>
               </div>
-            ))
+              ))
           ) : (
             <EmptyState
               title="等待扫描本地目录"
@@ -2300,7 +2622,43 @@ function draftSearchText(draft: AdminDraftSkill) {
     .toLocaleLowerCase();
 }
 
-function draftStatusClass(draft: AdminDraftSkill) {
+type DraftStatusFilter =
+  | "all"
+  | "draft"
+  | "published"
+  | "upgradable"
+  | "incomplete"
+  | "failed"
+  | "risk"
+  | "missing-source"
+  | "archived";
+
+type DraftStatusKey = Exclude<DraftStatusFilter, "all">;
+
+const draftStatusFilterLabels: Record<DraftStatusFilter, string> = {
+  all: "全部",
+  draft: "待发布",
+  published: "已发布",
+  upgradable: "可升级",
+  incomplete: "待补充",
+  failed: "校验失败",
+  risk: "版本风险",
+  "missing-source": "源缺失",
+  archived: "已下架"
+};
+
+const draftStatusFilterOrder: DraftStatusKey[] = [
+  "draft",
+  "upgradable",
+  "published",
+  "incomplete",
+  "failed",
+  "risk",
+  "missing-source",
+  "archived"
+];
+
+function draftStatusClass(draft: AdminDraftSkill): DraftStatusKey {
   const status = draft.status.trim();
   const validation = (draft.validationStatus ?? "").trim().toLocaleLowerCase();
   const failedValidation = ["failed", "failure", "error", "invalid"].some((keyword) => validation.includes(keyword));
@@ -2347,9 +2705,18 @@ function DraftList(props: {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [collapsedSubcategories, setCollapsedSubcategories] = useState<Set<string>>(new Set());
   const [draftQuery, setDraftQuery] = useState("");
+  const [draftStatusFilter, setDraftStatusFilter] = useState<DraftStatusFilter>("all");
 
   const grouped = new Map<string, { direct: AdminDraftSkill[]; secondary: Map<string, AdminDraftSkill[]> }>();
   const normalizedQuery = draftQuery.trim().toLocaleLowerCase();
+  const statusCounts = new Map<DraftStatusKey, number>();
+  for (const draft of props.drafts) {
+    const statusKey = draftStatusClass(draft);
+    statusCounts.set(statusKey, (statusCounts.get(statusKey) ?? 0) + 1);
+  }
+  const activeStatusFilters = draftStatusFilterOrder.filter(
+    (key) => (statusCounts.get(key) ?? 0) > 0 || draftStatusFilter === key
+  );
   for (const draft of props.drafts) {
     const category = draftPrimaryCategory(draft);
     const secondary = draftSecondaryCategory(draft);
@@ -2362,7 +2729,8 @@ function DraftList(props: {
       categoryText.includes(normalizedQuery) ||
       secondaryText.includes(normalizedQuery) ||
       draftSearchText(draft).includes(normalizedQuery);
-    if (!matchesQuery) {
+    const matchesStatus = draftStatusFilter === "all" || draftStatusClass(draft) === draftStatusFilter;
+    if (!matchesQuery || !matchesStatus) {
       continue;
     }
 
@@ -2395,11 +2763,11 @@ function DraftList(props: {
   }, 0);
 
   useEffect(() => {
-    if (normalizedQuery) {
+    if (normalizedQuery || draftStatusFilter !== "all") {
       setCollapsedCategories(new Set());
       setCollapsedSubcategories(new Set());
     }
-  }, [normalizedQuery]);
+  }, [normalizedQuery, draftStatusFilter]);
 
   const toggleCategory = (category: string) => {
     const newSet = new Set(collapsedCategories);
@@ -2486,7 +2854,9 @@ function DraftList(props: {
         </div>
         <div className="draft-list-actions">
           <span className="draft-list-count">
-            {normalizedQuery ? `${visibleDraftCount}/${props.drafts.length}` : `${props.drafts.length}`}
+            {normalizedQuery || draftStatusFilter !== "all"
+              ? `${visibleDraftCount}/${props.drafts.length}`
+              : `${props.drafts.length}`}
           </span>
           <button
             type="button"
@@ -2498,11 +2868,34 @@ function DraftList(props: {
             {allDraftGroupsCollapsed ? "展开" : "折叠"}
           </button>
         </div>
+        <div className="draft-status-filter" aria-label="按状态过滤草稿">
+          <button
+            type="button"
+            className={`draft-status-filter-button ${draftStatusFilter === "all" ? "active" : ""}`}
+            onClick={() => setDraftStatusFilter("all")}
+            aria-pressed={draftStatusFilter === "all"}
+          >
+            <span>{draftStatusFilterLabels.all}</span>
+            <small>{props.drafts.length}</small>
+          </button>
+          {activeStatusFilters.map((key) => (
+            <button
+              type="button"
+              key={key}
+              className={`draft-status-filter-button ${draftStatusFilter === key ? "active" : ""}`}
+              onClick={() => setDraftStatusFilter(key)}
+              aria-pressed={draftStatusFilter === key}
+            >
+              <span>{draftStatusFilterLabels[key]}</span>
+              <small>{statusCounts.get(key) ?? 0}</small>
+            </button>
+          ))}
+        </div>
       </div>
       {categories.length === 0 ? (
         <div className="empty-state compact draft-empty-results">
           <strong>没有匹配的草稿</strong>
-          <span>换个分类、路径或 skill 名称试试。</span>
+          <span>换个状态、分类、路径或 skill 名称试试。</span>
         </div>
       ) : null}
       {categories.map((category) => {
@@ -3484,6 +3877,161 @@ function AdminUnlockDialog(props: {
   );
 }
 
+function LocalInstallDialog(props: {
+  dialog: LocalInstallDialogState;
+  target: LocalInstallTarget;
+  onTarget: (value: LocalInstallTarget) => void;
+  level: LocalInstallLevel;
+  onLevel: (value: LocalInstallLevel) => void;
+  projectPath: string;
+  onProjectPath: (value: string) => void;
+  projects: Project[];
+  availableTargets: LocalInstallTarget[];
+  busy: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const itemName =
+    props.dialog.kind === "local"
+      ? props.dialog.skill.detectedManifest ?? "本地 skill"
+      : props.dialog.item.package.skillName;
+  const itemPath =
+    props.dialog.kind === "local"
+      ? props.dialog.skill.path
+      : `${props.dialog.item.package.skillId}@${props.dialog.item.package.version}`;
+  const projectRequired = props.level === "project";
+  const confirmDisabled = props.busy || props.availableTargets.length === 0 || (projectRequired && !props.projectPath);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="admin-unlock-dialog local-install-dialog" role="dialog" aria-modal="true" aria-labelledby="local-install-title">
+        <div className="preview-head">
+          <div>
+            <p>Install</p>
+            <h2 id="local-install-title">安装自建 skill</h2>
+            <span>{itemName}</span>
+          </div>
+          <button className="icon-button" onClick={props.onClose} title="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="admin-unlock-body local-install-dialog-body">
+          <div className="delete-summary">
+            <strong>{itemName}</strong>
+            <span>{itemPath}</span>
+          </div>
+          <div className="field-row">
+            <span>平台</span>
+            <div className="segmented">
+              {props.availableTargets.map((target) => (
+                <button
+                  key={target}
+                  className={props.target === target ? "active" : ""}
+                  onClick={() => props.onTarget(target)}
+                >
+                  {targetLabels[target] ?? target}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="field-row">
+            <span>安装位置</span>
+            <div className="segmented">
+              <button
+                className={props.level === "personal" ? "active" : ""}
+                onClick={() => props.onLevel("personal")}
+              >
+                个人目录
+              </button>
+              <button
+                className={props.level === "project" ? "active" : ""}
+                onClick={() => props.onLevel("project")}
+              >
+                项目目录
+              </button>
+            </div>
+          </div>
+          {props.availableTargets.length === 0 ? (
+            <div className="dialog-error">
+              <AlertCircle size={16} />
+              <span>已在所有支持的平台安装，无需重复安装。</span>
+            </div>
+          ) : null}
+          {projectRequired ? (
+            <label className="text-field">
+              <span>绑定项目</span>
+              <select value={props.projectPath} onChange={(event) => props.onProjectPath(event.target.value)}>
+                <option value="">请选择项目</option>
+                {props.projects.map((project) => (
+                  <option key={project.id} value={project.path}>
+                    {project.name} · {project.path}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {projectRequired && props.projects.length === 0 ? (
+            <div className="dialog-error">
+              <AlertCircle size={16} />
+              <span>请先在“项目”菜单绑定项目，再安装到项目目录。</span>
+            </div>
+          ) : null}
+          <div className="button-line">
+            <button className="primary-action compact" onClick={props.onConfirm} disabled={confirmDisabled}>
+              <PackageCheck size={17} />
+              安装
+            </button>
+            <button className="primary-soft" onClick={props.onClose}>
+              取消
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function LocalDeleteDialog(props: {
+  skill: LocalSkill;
+  busy: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const name = props.skill.detectedManifest ?? props.skill.skillId ?? "本地 skill";
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="admin-unlock-dialog local-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="local-delete-title">
+        <div className="preview-head">
+          <div>
+            <p>Local</p>
+            <h2 id="local-delete-title">删除本地 skill</h2>
+            <span>{name}</span>
+          </div>
+          <button className="icon-button" onClick={props.onClose} title="关闭">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="admin-unlock-body">
+          <div className="delete-summary">
+            <strong>{name}</strong>
+            <span>{props.skill.path}</span>
+            <span>删除后会移除该本地目录，且无法恢复。</span>
+          </div>
+          <div className="button-line">
+            <button className="primary-soft danger" onClick={props.onConfirm} disabled={props.busy}>
+              <Trash2 size={17} />
+              确认删除
+            </button>
+            <button className="primary-soft" onClick={props.onClose}>
+              取消
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AppUpdateDialog(props: {
   state: AppUpdateDialogState;
   onCheck: () => void;
@@ -3944,6 +4492,10 @@ function Badge(props: { children: React.ReactNode; strong?: boolean }) {
   return <em className={`badge ${props.strong ? "strong" : ""}`}>{props.children}</em>;
 }
 
+function SourceChip(props: { children: React.ReactNode; tone: "market" | "local" }) {
+  return <em className={`source-chip ${props.tone}`}>{props.children}</em>;
+}
+
 function ArchiveScopeGroup(props: {
   title: string;
   groups: Map<string, MarketSkill[]>;
@@ -4039,11 +4591,45 @@ function marketStatusLabel(skill: MarketSkill, bindings: SkillBinding[]) {
   return "未安装";
 }
 
+function displaySkillTags(skill: MarketSkill) {
+  const values = [...skill.categories.filter((category) => !category.startsWith("project:")), ...skill.tags];
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const normalized = value.trim();
+    if (!normalized) return false;
+    const key = normalized.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function localSkillStatusLabel(skill: LocalSkill) {
   if (skill.status === "missing") return "缺失";
+  if (!skill.enabled) return "已禁用";
   if (skill.managedBySkillhub) return "Skill Hub";
+  if (skill.status === "cached") return "已加入缓存";
+  if (skill.origin === "market") return "来自市场";
+  if (skill.origin === "unknown") return "可能来自市场";
+  if (skill.origin === "local") return "用户自建";
   if (skill.status === "unmanaged") return "用户自建";
   return skill.status;
+}
+
+function isLocalBinding(binding: SkillBinding) {
+  return binding.sourceId === "__local__" || binding.namespace === "local";
+}
+
+function bindingSourceTone(binding: SkillBinding): "market" | "local" {
+  return isLocalBinding(binding) ? "local" : "market";
+}
+
+function bindingSourceLabel(binding: SkillBinding) {
+  return isLocalBinding(binding) ? "自建" : "市场";
+}
+
+function canDeleteLocalSkillFromMatrix(skill: LocalSkill) {
+  return !skill.managedBySkillhub && skill.origin === "local" && (skill.status === "cached" || skill.status === "disabled");
 }
 
 function getInstallState(
@@ -4088,6 +4674,202 @@ function getInstallState(
 
 function skillKey(skill: MarketSkill) {
   return `${skill.sourceId ?? "local"}:${skill.namespace}/${skill.id}`;
+}
+
+function cachedPackageKey(cachedPackage: CachedSkillPackage) {
+  return `${cachedPackage.sourceId ?? ""}:${cachedPackage.namespace}/${cachedPackage.skillId}@${cachedPackage.version}`;
+}
+
+function upsertCachedPackage(packages: CachedSkillPackage[], cachedPackage: CachedSkillPackage) {
+  const key = cachedPackageKey(cachedPackage);
+  const next = packages.filter((item) => cachedPackageKey(item) !== key);
+  return [cachedPackage, ...next];
+}
+
+function hasAvailableLocalInstallTarget(
+  dialog: LocalInstallDialogState,
+  bindings: SkillBinding[],
+  localSkills: LocalSkill[]
+) {
+  return availableLocalInstallTargets(dialog, bindings, localSkills).length > 0;
+}
+
+function availableLocalInstallTargets(
+  dialog: LocalInstallDialogState,
+  bindings: SkillBinding[],
+  localSkills: LocalSkill[]
+): LocalInstallTarget[] {
+  const identity = localInstallIdentity(dialog);
+  return localInstallTargets.filter((target) => {
+    const bindingInstalled = bindings.some(
+      (binding) =>
+        binding.target === target &&
+        binding.namespace === identity.namespace &&
+        slugifyLocalSkillId(binding.skillId) === identity.skillId &&
+        binding.status !== "missing"
+    );
+    if (bindingInstalled) return false;
+    return !localSkills.some(
+      (skill) =>
+        skill.target === target &&
+        skill.status !== "missing" &&
+        !skill.managedBySkillhub &&
+        localSkillInstallKey(skill) === identity.skillId
+    );
+  });
+}
+
+function isLocalInstallTarget(value: string): value is LocalInstallTarget {
+  return value === "codex" || value === "claude";
+}
+
+function localInstallIdentity(dialog: LocalInstallDialogState) {
+  if (dialog.kind === "cache") {
+    return {
+      namespace: dialog.item.package.namespace,
+      skillId: slugifyLocalSkillId(dialog.item.package.skillId)
+    };
+  }
+  return {
+    namespace: "local",
+    skillId: localSkillInstallKey(dialog.skill)
+  };
+}
+
+function localSkillInstallKey(skill: LocalSkill) {
+  return slugifyLocalSkillId(skill.skillId || localPathName(skill.path) || skill.detectedManifest || "local-skill");
+}
+
+function cachedPackageInstallTargets(
+  cachedPackage: CachedSkillPackage,
+  bindings: SkillBinding[],
+  localSkills: LocalSkill[]
+) {
+  if (cachedPackage.origin !== "local") return [];
+  const identity = {
+    namespace: cachedPackage.namespace,
+    skillId: slugifyLocalSkillId(cachedPackage.skillId)
+  };
+  const targets = new Set<LocalInstallTarget>();
+
+  for (const binding of bindings) {
+    if (!isLocalInstallTarget(binding.target)) continue;
+    if (
+      binding.namespace === identity.namespace &&
+      slugifyLocalSkillId(binding.skillId) === identity.skillId &&
+      binding.status !== "missing"
+    ) {
+      targets.add(binding.target);
+    }
+  }
+
+  for (const skill of localCachedInstallations(cachedPackage, localSkills)) {
+    if (isLocalInstallTarget(skill.target)) {
+      targets.add(skill.target);
+    }
+  }
+
+  return [...targets];
+}
+
+function localCachedInstallations(cachedPackage: CachedSkillPackage, localSkills: LocalSkill[]) {
+  const fingerprint = cachedLocalSkillFingerprint(cachedPackage);
+  if (!fingerprint) return [];
+  return localSkills.filter(
+    (skill) =>
+      skill.status !== "missing" &&
+      !skill.managedBySkillhub &&
+      skill.origin === "local" &&
+      localSkillFingerprint(skill) === fingerprint
+  );
+}
+
+function hasBindingForLocalSkill(
+  cachedPackage: CachedSkillPackage,
+  skill: LocalSkill,
+  bindings: SkillBinding[]
+) {
+  const skillId = slugifyLocalSkillId(cachedPackage.skillId);
+  const projectPath = normalizeLocalPath(skill.projectPath);
+  return bindings.some((binding) => {
+    if (!isLocalBinding(binding)) return false;
+    if (binding.target !== skill.target || binding.level !== skill.level) return false;
+    if (slugifyLocalSkillId(binding.skillId) !== skillId) return false;
+    if (skill.level === "project") {
+      return normalizeLocalPath(binding.projectPath) === projectPath;
+    }
+    return true;
+  });
+}
+
+function cachedPackageInstallSummary(
+  cachedPackage: CachedSkillPackage,
+  bindings: SkillBinding[],
+  localSkills: LocalSkill[]
+) {
+  const targets = cachedPackageInstallTargets(cachedPackage, bindings, localSkills);
+  if (targets.length === 0) return cachedPackage.bindingCount > 0 ? `已安装 ${cachedPackage.bindingCount} 处` : "仅缓存";
+  return `已安装 ${targets.map((target) => targetLabels[target] ?? target).join("、")}`;
+}
+
+function markLocalSkillsCached(
+  localSkills: LocalSkill[],
+  cachedPackage: CachedSkillPackage,
+  sourceSkill?: LocalSkill
+) {
+  const fingerprints = new Set(
+    [cachedLocalSkillFingerprint(cachedPackage), sourceSkill ? localSkillFingerprint(sourceSkill) : null].filter(Boolean)
+  );
+  const paths = new Set(
+    [cachedPackage.sourcePath, sourceSkill?.path].map(normalizeLocalPath).filter(Boolean)
+  );
+
+  return localSkills.map((skill) => {
+    const pathMatched = paths.has(normalizeLocalPath(skill.path));
+    const fingerprint = localSkillFingerprint(skill);
+    const fingerprintMatched = Boolean(fingerprint && fingerprints.has(fingerprint));
+    if (!pathMatched && !fingerprintMatched) return skill;
+    return {
+      ...skill,
+      status: "cached",
+      origin: "local",
+      canImportToCache: false
+    };
+  });
+}
+
+function cachedLocalSkillFingerprint(cachedPackage: CachedSkillPackage) {
+  if (cachedPackage.origin !== "local") return null;
+  const skillId = slugifyLocalSkillId(cachedPackage.skillId);
+  if (!skillId) return null;
+  return `${skillId}@${normalizeLocalSkillVersion(cachedPackage.version)}`;
+}
+
+function localSkillFingerprint(skill: LocalSkill) {
+  const skillId = slugifyLocalSkillId(skill.skillId || localPathName(skill.path) || skill.detectedManifest || "");
+  if (!skillId) return null;
+  return `${skillId}@${normalizeLocalSkillVersion(skill.version)}`;
+}
+
+function normalizeLocalSkillVersion(version?: string | null) {
+  return version?.trim() || "0.0.0-local";
+}
+
+function normalizeLocalPath(path?: string | null) {
+  return path?.replace(/\\/g, "/").toLocaleLowerCase() ?? "";
+}
+
+function localPathName(path?: string | null) {
+  const parts = path?.replace(/\\/g, "/").split("/").filter(Boolean) ?? [];
+  return parts.length > 0 ? parts[parts.length - 1] : "";
+}
+
+function slugifyLocalSkillId(value: string) {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLocaleLowerCase();
 }
 
 function categoryNameFromSlug(slug: string) {
