@@ -34,7 +34,7 @@ Skill Hub 是一个基于 Tauri v1、Rust、React 和 SQLite 的桌面 skill 市
 
 ```text
 .
-├─ fronted/                 # 前端工程，目录名按现状保留
+├─ frontend/                 # 前端工程，目录名按现状保留
 │  ├─ src/
 │  └─ package.json
 ├─ src-tauri/               # Tauri / Rust 后端
@@ -64,10 +64,10 @@ Skill Hub 是一个基于 Tauri v1、Rust、React 和 SQLite 的桌面 skill 市
 首次安装前端依赖：
 
 ```powershell
-npm --prefix fronted install
+npm --prefix frontend install
 ```
 
-根目录 `package.json` 提供了 workspace 级脚本，会自动转到 `fronted` 执行：
+根目录 `package.json` 提供了 workspace 级脚本，会自动转到 `frontend` 执行：
 
 ```powershell
 npm run build
@@ -113,7 +113,7 @@ MAC_ALLOWLIST_OBJECT_PATH = "admin/security/mac-allowlist.v1.json"
 npm run tauri -- dev
 ```
 
-当前 Tauri 配置的 `beforeDevCommand` 会先构建前端，`devPath` 指向 `fronted/dist`，不会依赖 Vite dev server。
+当前 Tauri 配置的 `beforeDevCommand` 会先构建前端，`devPath` 指向 `frontend/dist`，不会依赖 Vite dev server。
 
 也可以先构建前端，再直接运行 Rust 后端：
 

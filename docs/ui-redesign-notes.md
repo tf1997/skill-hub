@@ -34,9 +34,9 @@ The target design reads as a quiet workbench:
 
 ## Test Log
 
-- Passed: `npm.cmd run build` in `fronted`.
-- Passed: `git diff --check -- fronted/src/App.tsx fronted/src/styles.css docs/ui-redesign-notes.md`.
-- Partial: Vite preview returned HTTP 200 for the built `fronted/dist` bundle at `http://127.0.0.1:4173/`.
+- Passed: `npm.cmd run build` in `frontend`.
+- Passed: `git diff --check -- frontend/src/App.tsx frontend/src/styles.css docs/ui-redesign-notes.md`.
+- Partial: Vite preview returned HTTP 200 for the built `frontend/dist` bundle at `http://127.0.0.1:4173/`.
 - Blocked: `agent-browser.cmd` could navigate to the app title once, but `agent-browser doctor` reports Chrome launch failure: `CDP response channel closed`. Screenshot, viewport, and snapshot commands were not reliable in this environment.
 - Attempted fallback: `agent-browser --engine lightpanda` is unavailable because Lightpanda is not installed.
 
@@ -78,8 +78,8 @@ Date: 2026-06-14
 
 ### Test Plan For This Iteration
 
-- Passed: `npm.cmd run build` from `fronted`.
-- Passed: `git diff --check -- PRODUCT.md DESIGN.md fronted/src/App.tsx fronted/src/styles.css docs/ui-redesign-notes.md` with only Git LF/CRLF warnings.
+- Passed: `npm.cmd run build` from `frontend`.
+- Passed: `git diff --check -- PRODUCT.md DESIGN.md frontend/src/App.tsx frontend/src/styles.css docs/ui-redesign-notes.md` with only Git LF/CRLF warnings.
 - Passed: Vite preview returned HTTP 200 at `http://127.0.0.1:4173/`.
 - Passed: `agent-browser.cmd` snapshot found the main nav, lower-left theme switch, marketplace filters, search box, and refresh action.
 - Passed: browser errors and console output were empty during the preview smoke test.
@@ -119,8 +119,8 @@ Date: 2026-06-14
 
 ### Test Log
 
-- Passed: `npm.cmd run build` from `fronted`.
-- Passed: `git diff --check -- PRODUCT.md DESIGN.md fronted/src/App.tsx fronted/src/api.ts fronted/src/styles.css docs/ui-redesign-notes.md` with only Git LF/CRLF warnings.
+- Passed: `npm.cmd run build` from `frontend`.
+- Passed: `git diff --check -- PRODUCT.md DESIGN.md frontend/src/App.tsx frontend/src/api.ts frontend/src/styles.css docs/ui-redesign-notes.md` with only Git LF/CRLF warnings.
 - Passed: Vite preview returned HTTP 200 at `http://127.0.0.1:4173/`.
 - Passed: production preview now rendered mock counts: market 2, local 2, projects 2, updates 1, settings 2.
 - Passed: market page no longer showed `window.__T` / Tauri IPC error text in browser preview.

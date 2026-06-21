@@ -128,7 +128,7 @@ src-tauri/
 前端建议结构：
 
 ```text
-fronted/
+frontend/
   package.json
   index.html
   vite.config.ts

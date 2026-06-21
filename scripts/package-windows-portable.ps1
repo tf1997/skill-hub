@@ -10,9 +10,9 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
-$FrontendDir = Join-Path $RepoRoot "fronted"
+$FrontendDir = Join-Path $RepoRoot "frontend"
 $TauriDir = Join-Path $RepoRoot "src-tauri"
-$ReleaseDir = Join-Path $TauriDir "target\release"
+$ReleaseDir = Join-Path $TauriDir "target\debug"
 
 if (-not $OutputRoot) {
   $OutputRoot = Join-Path $RepoRoot "dist\portable\windows-$Arch"

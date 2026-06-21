@@ -39,7 +39,7 @@ $env:SKILL_HUB_BUILT_IN_UPDATE_MANIFEST_URL="https://minio.example.com/skill-mar
 src-tauri/Cargo.toml       package.version
 src-tauri/tauri.conf.json  package.version
 package.json               version
-fronted/package.json       version
+frontend/package.json       version
 ```
 
 版本按 semver 比较，使用 `0.2.0` 这类完整格式。

@@ -1,10 +1,10 @@
 {
-  "$schema": "../fronted/node_modules/@tauri-apps/cli/schema.json",
+  "$schema": "../frontend/node_modules/@tauri-apps/cli/schema.json",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../fronted run build",
-    "beforeDevCommand": "npm --prefix ../fronted run build",
-    "devPath": "../fronted/dist",
-    "distDir": "../fronted/dist"
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "beforeDevCommand": "npm --prefix ../frontend run build",
+    "devPath": "../frontend/dist",
+    "distDir": "../frontend/dist"
   },
   "package": {
     "productName": "Skill Hub",
