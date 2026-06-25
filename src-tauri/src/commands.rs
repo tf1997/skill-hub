@@ -3,6 +3,7 @@ use std::{
     fs,
     io::Cursor,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -17,34 +18,43 @@ use crate::{
     admin_config,
     db::{
         app_bootstrap, canonical_display_path, enforce_compiled_source, insert_audit,
-        list_bindings_inner, list_cached_packages_inner, list_cached_versions_inner,
-        list_local_skills_inner, list_market_skills_inner, list_projects_inner, list_sources_inner,
-        list_target_roots_inner, list_update_candidates_inner, market_project_cache_path, new_id,
-        now, AppState, COMPILED_SOURCE_BUCKET, COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION,
-        LOCAL_SOURCE_ID,
+        list_bindings_inner, list_cached_packages_inner, list_cached_plugin_versions_inner,
+        list_cached_versions_inner, list_local_skills_inner, list_market_plugins_inner,
+        list_market_skills_inner, list_plugin_bindings_inner, list_projects_inner,
+        list_sources_inner, list_target_roots_inner, list_update_candidates_inner,
+        market_project_cache_path, new_id, now, AppState, COMPILED_SOURCE_BUCKET,
+        COMPILED_SOURCE_ENDPOINT, COMPILED_SOURCE_REGION, LOCAL_SOURCE_ID,
     },
     models::{
-        AdminAuditLog, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession, AdminUnlockRequest,
-        AppBootstrap, ArchiveMarketSkillRequest, CachedSkillPackage, CatalogDoc, CategoriesDoc,
-        Category, CommandError, DeleteCachedSkillRequest, DeleteLocalSkillRequest,
-        DeleteMarketCategoryRequest, DeleteMarketProjectRequest, ImportLocalSkillRequest, InstallCachedSkillRequest,
-        InstallSkillRequest, ListAdminAuditLogsRequest, LocalSkill, MarketProject, MarketSkill,
-        PackageInfo, Project, ProjectsDoc, PublishDraftRequest, PublishMeta, QuickRepublishRequest,
-        SaveMarketCategoryRequest, SaveMarketProjectRequest, SaveProjectRequest,
-        SavePublishMetaRequest, SaveSourceRequest, SaveTargetRootRequest, SetBindingEnabledRequest,
-        SetLocalSkillEnabledRequest, SkillBinding, SkillManifest, SkillPreview, SkillPreviewFile, SkillPreviewFileEntry,
-        SkillPreviewRequest, SkillVersion, Source, TargetRoot, UpdateCandidate,
-        UpgradeBindingRequest,
+        AdminAuditLog, AdminDraftPlugin, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession,
+        AdminUnlockRequest, AppBootstrap, ArchiveMarketPluginRequest, ArchiveMarketSkillRequest,
+        CachedSkillPackage, CatalogDoc, CategoriesDoc, Category, CommandError,
+        DeleteCachedSkillRequest, DeleteLocalSkillRequest, DeleteMarketCategoryRequest,
+        DeleteMarketProjectRequest, ImportLocalSkillRequest, InstallCachedSkillRequest,
+        InstallPluginRequest, InstallSkillRequest, ListAdminAuditLogsRequest, LocalPlugin,
+        LocalSkill, MarketPlugin, MarketProject, MarketSkill, PackageInfo, PluginBinding,
+        PluginCatalogDoc, PluginManifest, PluginPackageRef, PluginPreviewRequest, PluginSourceMeta,
+        PluginVersion, PluginVersionPackages, Project, ProjectsDoc, PublishDraftRequest,
+        PublishMeta, PublishPluginDraftRequest, QuickRepublishRequest, SaveMarketCategoryRequest,
+        SaveMarketProjectRequest, SaveProjectRequest, SavePublishMetaRequest, SaveSourceRequest,
+        SaveTargetRootRequest, SetBindingEnabledRequest, SetLocalSkillEnabledRequest,
+        SetPluginBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
+        SkillPreviewFile, SkillPreviewFileEntry, SkillPreviewRequest, SkillVersion, Source,
+        TargetRoot, UninstallPluginRequest, UpdateCandidate, UpgradeBindingRequest,
+        UpgradePluginBindingRequest,
     },
 };
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
 
 const DRAFT_GITLAB_PREFIX: &str = "draft/gitlab/skills/";
+const PLUGIN_DRAFT_PREFIX: &str = "draft/gitlab/plugins/";
 const DRAFT_ADMIN_PREFIX: &str = "draft/admin/gitlab/skills/";
+const PLUGIN_ADMIN_PREFIX: &str = "draft/admin/gitlab/plugins/";
 const ARCHIVED_ADMIN_PREFIX: &str = "draft/admin/archived/skills/";
 const PROJECTS_OBJECT: &str = "projects.v1.json";
 const CATALOG_OBJECT: &str = "catalog.v1.json";
+const PLUGIN_CATALOG_OBJECT: &str = "plugin-catalog.v1.json";
 const CATEGORIES_OBJECT: &str = "categories.v1.json";
 const FIXED_PUBLISH_NAMESPACE: &str = "DT";
 const PREVIEW_MAX_FILES: usize = 8;
@@ -85,6 +95,34 @@ pub async fn list_market_skills(state: State<'_, AppState>) -> CommandResult<Vec
         }
 
         Ok(skills)
+    })())
+}
+
+#[tauri::command]
+pub async fn list_market_plugins(state: State<'_, AppState>) -> CommandResult<Vec<MarketPlugin>> {
+    let _metadata_sync_error = refresh_catalog_best_effort(&state).await;
+    map_result((|| {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let bindings = list_plugin_bindings_inner(&conn)?;
+        let mut plugins = list_market_plugins_inner(&conn)?;
+
+        for plugin in &mut plugins {
+            plugin.installed_bindings = bindings
+                .iter()
+                .filter(|binding| {
+                    binding.namespace == plugin.namespace && binding.plugin_id == plugin.id
+                })
+                .cloned()
+                .collect();
+            plugin.cached_versions = list_cached_plugin_versions_inner(
+                &conn,
+                plugin.source_id.as_deref(),
+                &plugin.namespace,
+                &plugin.id,
+            )?;
+        }
+
+        Ok(plugins)
     })())
 }
 
@@ -175,6 +213,14 @@ pub async fn list_admin_drafts(
 }
 
 #[tauri::command]
+pub async fn list_admin_plugin_drafts(
+    admin_key: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<AdminDraftPlugin>> {
+    map_result(list_admin_plugin_drafts_inner(&admin_key, &state.local_macs).await)
+}
+
+#[tauri::command]
 pub async fn list_admin_audit_logs(
     request: ListAdminAuditLogsRequest,
     state: State<'_, AppState>,
@@ -188,6 +234,14 @@ pub async fn preview_admin_draft(
     state: State<'_, AppState>,
 ) -> CommandResult<SkillPreview> {
     map_result(preview_admin_draft_inner(request, &state.local_macs).await)
+}
+
+#[tauri::command]
+pub async fn preview_admin_plugin_draft(
+    request: AdminDraftPreviewRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<SkillPreview> {
+    map_result(preview_admin_plugin_draft_inner(request, &state.local_macs).await)
 }
 
 #[tauri::command]
@@ -257,12 +311,40 @@ pub async fn archive_market_skill(
 }
 
 #[tauri::command]
+pub async fn archive_market_plugin(
+    request: ArchiveMarketPluginRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AppBootstrap> {
+    let result = async {
+        archive_market_plugin_inner(request, &state.local_macs).await?;
+        refresh_catalog_inner(&state).await?;
+        app_bootstrap(&state, None)
+    }
+    .await;
+    map_result(result)
+}
+
+#[tauri::command]
 pub async fn publish_draft(
     request: PublishDraftRequest,
     state: State<'_, AppState>,
 ) -> CommandResult<AppBootstrap> {
     let result = async {
         publish_draft_inner(request, &state.local_macs).await?;
+        refresh_catalog_inner(&state).await?;
+        app_bootstrap(&state, None)
+    }
+    .await;
+    map_result(result)
+}
+
+#[tauri::command]
+pub async fn publish_plugin_draft(
+    request: PublishPluginDraftRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AppBootstrap> {
+    let result = async {
+        publish_plugin_draft_inner(request, &state.local_macs).await?;
         refresh_catalog_inner(&state).await?;
         app_bootstrap(&state, None)
     }
@@ -450,6 +532,7 @@ async fn list_admin_drafts_inner(
             publish_meta: Some(PublishMeta {
                 namespace: namespace.to_string(),
                 skill_id: skill_id.to_string(),
+                version: None,
                 name: name.to_string(),
                 summary: summary.to_string(),
                 tags: Vec::new(),
@@ -468,6 +551,208 @@ async fn list_admin_drafts_inner(
             }),
             published_version: None,
             updated_at: archived_at,
+        });
+    }
+
+    drafts.sort_by(|a, b| a.gitlab_source_path.cmp(&b.gitlab_source_path));
+    Ok(drafts)
+}
+
+async fn list_admin_plugin_drafts_inner(
+    admin_key: &str,
+    local_macs: &[String],
+) -> Result<Vec<AdminDraftPlugin>> {
+    ensure_admin_allowed(admin_key, local_macs).await?;
+    let client = AdminObjectClient::new();
+    let objects = client.list_objects(PLUGIN_DRAFT_PREFIX).await?;
+    let mut drafts = Vec::new();
+
+    for source_path in collect_plugin_draft_source_paths(&objects) {
+        if source_path.trim().is_empty() {
+            continue;
+        }
+
+        let state_path = plugin_admin_object_path(&source_path, "state.v1.json")?;
+        let state_json = client
+            .get_optional_json::<serde_json::Value>(&state_path)
+            .await?;
+        let published_version = state_json
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .get("publishedVersion")
+                    .or_else(|| value.get("published_version"))
+            })
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        let state_status = state_json
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        let draft_location = parse_gitlab_source_path(&source_path);
+        let gitlab_category_path = draft_location.category_path.clone();
+
+        let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
+        let draft_objects = client.list_objects(&draft_root).await?;
+        let validation_path = format!("{draft_root}validation.json");
+        let validation_status = client
+            .get_optional_json::<serde_json::Value>(&validation_path)
+            .await?
+            .and_then(|value| validation_status_from_json(&value));
+        let content_root = resolve_plugin_draft_content_prefix(&draft_root, &draft_objects);
+        let draft_prefix = content_root
+            .as_ref()
+            .map(|content| content.prefix.clone())
+            .unwrap_or_else(|| draft_root.clone());
+        let source_available = has_plugin_source_files(&draft_prefix, &draft_objects);
+        let readme_metadata = read_plugin_readme_metadata_from_objects(
+            &client,
+            &draft_prefix,
+            &draft_objects,
+        )
+        .await
+        .ok();
+        let readme_metadata_complete = readme_metadata
+            .as_ref()
+            .is_some_and(is_plugin_readme_metadata_complete);
+        let pluginhub = match content_root {
+            Some(content_root) => {
+                client
+                    .get_optional_json::<PluginSourceMeta>(&content_root.pluginhub_path)
+                    .await?
+            }
+            None => None,
+        };
+        let readme_default_meta = readme_metadata
+            .as_ref()
+            .map(|metadata| default_plugin_publish_meta_from_readme(&source_path, metadata));
+        let (
+            namespace,
+            plugin_id,
+            name,
+            summary,
+            version,
+            targets,
+            scopes,
+            components,
+            risk_level,
+            default_meta,
+        ) = match pluginhub {
+            Some(meta) => {
+                let default_meta = merge_plugin_readme_defaults(
+                    default_plugin_publish_meta(&meta),
+                    readme_default_meta.clone(),
+                );
+                (
+                    non_empty_string(meta.namespace),
+                    non_empty_string(meta.id),
+                    non_empty_string(meta.name),
+                    non_empty_string(meta.summary),
+                    non_empty_string(meta.version),
+                    meta.targets,
+                    meta.scopes,
+                    meta.components,
+                    meta.risk_level.filter(|value| !value.trim().is_empty()),
+                    Some(default_meta),
+                )
+            }
+            None => (
+                readme_default_meta
+                    .as_ref()
+                    .map(|meta| meta.namespace.clone())
+                    .and_then(non_empty_string),
+                readme_default_meta
+                    .as_ref()
+                    .map(|meta| meta.skill_id.clone())
+                    .and_then(non_empty_string),
+                readme_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.name.clone())
+                    .and_then(non_empty_string),
+                readme_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.description.clone())
+                    .and_then(non_empty_string),
+                readme_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.version.clone())
+                    .and_then(non_empty_string),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                readme_default_meta,
+            ),
+        };
+        let meta_path = plugin_admin_object_path(&source_path, "publish-meta.v1.json")?;
+        let publish_meta = match client.get_optional_json::<PublishMeta>(&meta_path).await? {
+            Some(meta) => Some(normalize_plugin_publish_meta(meta, default_meta.as_ref())),
+            None => default_meta,
+        };
+        let version = version.or_else(|| {
+            publish_meta
+                .as_ref()
+                .and_then(|meta| meta.version.clone())
+                .and_then(non_empty_string)
+        });
+        let targets = if targets.is_empty() {
+            publish_meta
+                .as_ref()
+                .map(|meta| meta.targets.clone())
+                .unwrap_or_default()
+        } else {
+            targets
+        };
+        let scopes = if scopes.is_empty() {
+            publish_meta
+                .as_ref()
+                .map(|meta| meta.levels.clone())
+                .unwrap_or_default()
+        } else {
+            scopes
+        };
+        let components = if components.is_empty() {
+            infer_plugin_components_from_object_paths(&draft_prefix, &draft_objects)
+        } else {
+            components
+        };
+        let namespace = namespace.or_else(|| publish_meta.as_ref().map(|meta| meta.namespace.clone()));
+        let plugin_id = plugin_id.or_else(|| publish_meta.as_ref().map(|meta| meta.skill_id.clone()));
+        let name = name.or_else(|| publish_meta.as_ref().map(|meta| meta.name.clone()));
+        let summary = summary.or_else(|| publish_meta.as_ref().map(|meta| meta.summary.clone()));
+
+        let status = plugin_draft_status(
+            source_available,
+            readme_metadata_complete,
+            version.as_deref(),
+            published_version.as_deref(),
+            state_status.as_deref(),
+            &targets,
+            publish_meta.as_ref(),
+            validation_status.as_deref(),
+        );
+
+        drafts.push(AdminDraftPlugin {
+            gitlab_source_path: source_path,
+            draft_slug: draft_location.draft_slug,
+            gitlab_category_path,
+            source_available,
+            readme_metadata_complete,
+            namespace,
+            plugin_id,
+            name,
+            summary,
+            version,
+            targets,
+            scopes,
+            components,
+            risk_level,
+            status,
+            validation_status,
+            publish_meta,
+            published_version,
+            updated_at: None,
         });
     }
 
@@ -592,11 +877,130 @@ async fn preview_admin_draft_inner(
     })
 }
 
+async fn preview_admin_plugin_draft_inner(
+    request: AdminDraftPreviewRequest,
+    local_macs: &[String],
+) -> Result<SkillPreview> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
+    let client = AdminObjectClient::new();
+    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
+    let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
+    let objects = client.list_objects(&draft_root).await?;
+    if objects.is_empty() {
+        return Err(anyhow!("Plugin draft not found: {source_path}"));
+    }
+    let content_root = resolve_plugin_draft_content_prefix(&draft_root, &objects);
+    let draft_prefix = content_root
+        .as_ref()
+        .map(|content| content.prefix.clone())
+        .unwrap_or_else(|| draft_root.clone());
+
+    let meta = match content_root.as_ref() {
+        Some(content) => client
+            .get_optional_json::<PluginSourceMeta>(&content.pluginhub_path)
+            .await?,
+        None => None,
+    };
+    let meta_path = plugin_admin_object_path(&source_path, "publish-meta.v1.json")?;
+    let publish_meta = client
+        .get_optional_json::<PublishMeta>(&meta_path)
+        .await?
+        .map(normalize_publish_meta);
+    if let Some(meta) = meta.as_ref() {
+        ensure_can_manage_plugin_publish_target(&authorization, meta)?;
+    } else if let Some(meta) = publish_meta.as_ref() {
+        ensure_can_manage_publish_target(&authorization, meta)?;
+    }
+    let title = meta
+        .as_ref()
+        .map(|value| value.name.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            publish_meta
+                .as_ref()
+                .map(|value| value.name.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .or_else(|| parse_gitlab_source_path(&source_path).draft_slug)
+        .unwrap_or_else(|| source_path.clone());
+    let target = meta
+        .as_ref()
+        .map(|value| {
+            let scope = value.publish_scope.as_deref().unwrap_or("public");
+            let project = value
+                .publish_project_slug
+                .as_deref()
+                .unwrap_or("unselected");
+            format!("{scope} / {project}")
+        })
+        .or_else(|| {
+            publish_meta.as_ref().map(|value| {
+                if value.publish_scope == "project" {
+                    format!(
+                        "project / {}",
+                        value
+                            .publish_project_slug
+                            .as_deref()
+                            .unwrap_or("unselected")
+                    )
+                } else {
+                    format!(
+                        "public / {}",
+                        value
+                            .publish_category_slug
+                            .as_deref()
+                            .unwrap_or("unselected")
+                    )
+                }
+            })
+        })
+        .unwrap_or_else(|| "publish metadata missing".to_string());
+    let mut file_list = collect_plugin_draft_preview_file_list(&draft_prefix, &objects);
+    if publish_meta.is_some()
+        && !file_list
+            .iter()
+            .any(|file| file.path == "publish-meta.v1.json")
+    {
+        file_list.push(preview_file_entry("publish-meta.v1.json"));
+    }
+    file_list.sort_by(|a, b| a.path.cmp(&b.path));
+    let files = collect_draft_preview_files(
+        &client,
+        &draft_prefix,
+        &file_list,
+        selected_path.as_deref(),
+        publish_meta.as_ref(),
+    )
+    .await?;
+
+    Ok(SkillPreview {
+        title,
+        root_path: format!(
+            "minio://{}/{}{}",
+            COMPILED_SOURCE_BUCKET, PLUGIN_DRAFT_PREFIX, source_path
+        ),
+        origin: format!("MinIO plugin draft preview - {target}"),
+        files,
+        file_list,
+    })
+}
+
 async fn save_publish_meta_inner(
     request: SavePublishMetaRequest,
     local_macs: &[String],
 ) -> Result<PublishMeta> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
+    if request
+        .artifact_kind
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("plugin"))
+    {
+        return save_plugin_publish_meta_inner(request, &authorization).await;
+    }
+
     let client = AdminObjectClient::new();
     let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
     let mut meta = normalize_publish_meta_for_source(request.meta, &source_path);
@@ -617,6 +1021,49 @@ async fn save_publish_meta_inner(
             "gitlabSourcePath": source_path,
             "namespace": meta.namespace.clone(),
             "skillId": meta.skill_id.clone(),
+            "publishScope": meta.publish_scope.clone(),
+            "publishCategorySlug": meta.publish_category_slug.clone(),
+            "publishProjectSlug": meta.publish_project_slug.clone()
+        }),
+    )
+    .await?;
+    Ok(meta)
+}
+
+async fn save_plugin_publish_meta_inner(
+    request: SavePublishMetaRequest,
+    authorization: &admin_config::AdminAuthorization,
+) -> Result<PublishMeta> {
+    let client = AdminObjectClient::new();
+    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
+    let draft_objects = client.list_objects(&draft_root).await?;
+    let default_meta = match resolve_plugin_draft_content_prefix(&draft_root, &draft_objects) {
+        Some(content_root) => client
+            .get_optional_json::<PluginSourceMeta>(&content_root.pluginhub_path)
+            .await?
+            .as_ref()
+            .map(default_plugin_publish_meta),
+        None => None,
+    };
+    let mut meta = normalize_plugin_publish_meta(request.meta, default_meta.as_ref());
+    validate_publish_meta(&meta)?;
+    ensure_can_manage_publish_target(authorization, &meta)?;
+    validate_publish_target(&client, &meta).await?;
+    meta.updated_at = Some(now());
+    if meta.updated_by.as_deref().unwrap_or("").trim().is_empty() {
+        meta.updated_by = Some(admin_actor(authorization));
+    }
+    let path = plugin_admin_object_path(&source_path, "publish-meta.v1.json")?;
+    client.put_json(&path, &meta).await?;
+    write_admin_audit(
+        &client,
+        authorization,
+        "savePluginPublishMeta",
+        serde_json::json!({
+            "gitlabSourcePath": source_path,
+            "namespace": meta.namespace.clone(),
+            "pluginId": meta.skill_id.clone(),
             "publishScope": meta.publish_scope.clone(),
             "publishCategorySlug": meta.publish_category_slug.clone(),
             "publishProjectSlug": meta.publish_project_slug.clone()
@@ -1057,6 +1504,273 @@ async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]
     Ok(())
 }
 
+async fn publish_plugin_draft_inner(
+    request: PublishPluginDraftRequest,
+    local_macs: &[String],
+) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
+    let client = AdminObjectClient::new();
+    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
+    let draft_objects = client.list_objects(&draft_root).await?;
+    let source_prefix = resolve_plugin_draft_content_prefix(&draft_root, &draft_objects)
+        .map(|content_root| content_root.prefix)
+        .unwrap_or_else(|| draft_root.clone());
+
+    let state_path = plugin_admin_object_path(&source_path, "state.v1.json")?;
+    let state_json = client
+        .get_optional_json::<serde_json::Value>(&state_path)
+        .await?;
+    let state_archived = state_json
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("archived"));
+
+    let source_objects = draft_objects
+        .iter()
+        .filter(|object| object.starts_with(&source_prefix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if source_objects.is_empty() {
+        return Err(anyhow!("PLUGIN_DRAFT_NOT_FOUND: plugin 草稿根目录为空"));
+    }
+    let validation_path = format!("{draft_root}validation.json");
+    let validation_status = client
+        .get_optional_json::<serde_json::Value>(&validation_path)
+        .await?
+        .and_then(|value| validation_status_from_json(&value));
+    if validation_failed(validation_status.as_deref()) {
+        return Err(anyhow!(
+            "PLUGIN_VALIDATION_FAILED: 草稿 validation.json 未通过，禁止发布: {}",
+            validation_status.unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+    let files = read_plugin_draft_files(&client, &source_prefix, &source_objects).await?;
+    if files.is_empty() {
+        return Err(anyhow!("PLUGIN_DRAFT_NOT_FOUND: plugin 草稿根目录为空"));
+    }
+    let meta_path = plugin_admin_object_path(&source_path, "publish-meta.v1.json")?;
+    let saved_meta = client.get_optional_json::<PublishMeta>(&meta_path).await?;
+    let prepared = prepare_plugin_publish(&files, saved_meta)?;
+    let meta = &prepared.meta;
+    ensure_can_manage_plugin_publish_target(&authorization, meta)?;
+    validate_plugin_publish_target(&client, meta).await?;
+
+    let published_version = state_json
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("publishedVersion")
+                .or_else(|| value.get("published_version"))
+        })
+        .and_then(|value| value.as_str());
+    if !state_archived && published_version == Some(meta.version.as_str()) {
+        return Err(anyhow!("PLUGIN_PUBLISH_OBJECT_EXISTS: 当前版本已发布"));
+    }
+
+    let base = format!(
+        "plugins/{}/{}/versions/{}",
+        meta.namespace, meta.id, meta.version
+    );
+    let plugin_object = format!("{base}/plugin.json");
+    let inventory_object = format!("{base}/component-inventory.json");
+    let risk_object = format!("{base}/risk-report.json");
+    let changelog_object = format!("{base}/changelog.md");
+    let manifest_object = format!("plugins/{}/{}/manifest.json", meta.namespace, meta.id);
+
+    let mut manifest = client
+        .get_optional_json::<PluginManifest>(&manifest_object)
+        .await?
+        .unwrap_or_else(|| PluginManifest {
+            schema: "skillhub.plugin-manifest.v1".to_string(),
+            namespace: meta.namespace.clone(),
+            id: meta.id.clone(),
+            name: meta.name.clone(),
+            summary: meta.summary.clone(),
+            categories: plugin_publish_categories(meta),
+            tags: meta.tags.clone(),
+            targets: meta.targets.clone(),
+            scopes: meta.scopes.clone(),
+            components: meta.components.clone(),
+            risk_level: prepared.risk_level.clone(),
+            latest_version: meta.version.clone(),
+            versions: Vec::new(),
+            updated_at: Some(now()),
+        });
+    let mut catalog = load_remote_plugin_catalog(&client).await?;
+    let should_write_version = should_publish_plugin_version(&manifest, &catalog, meta)?;
+
+    let old_categories = catalog
+        .plugins
+        .iter()
+        .find(|plugin| plugin.namespace == meta.namespace && plugin.id == meta.id)
+        .map(|plugin| plugin.categories.clone())
+        .unwrap_or_default();
+    let new_categories = plugin_publish_categories(meta);
+    let affected_categories = merge_categories(old_categories, new_categories.clone());
+
+    manifest.name = meta.name.clone();
+    manifest.summary = meta.summary.clone();
+    manifest.categories = new_categories.clone();
+    manifest.tags = meta.tags.clone();
+    manifest.targets = meta.targets.clone();
+    manifest.scopes = meta.scopes.clone();
+    manifest.components = meta.components.clone();
+    manifest.risk_level = prepared.risk_level.clone();
+    manifest.latest_version = meta.version.clone();
+    manifest.updated_at = Some(now());
+
+    let mut package_refs = PluginVersionPackages::default();
+    for (target, package) in &prepared.packages {
+        let package_object = format!("{base}/package.{target}.zip");
+        let sha_object = format!("{base}/package.{target}.sha256");
+        let package_ref = PluginPackageRef {
+            package_path: package_object,
+            sha256_path: sha_object,
+            signature_path: None,
+            package: Some(PackageInfo {
+                file: format!("package.{target}.zip"),
+                sha256: package.sha256.clone(),
+                size: package.size,
+            }),
+        };
+        match target.as_str() {
+            "codex" => package_refs.codex = Some(package_ref),
+            "claude" => package_refs.claude = Some(package_ref),
+            _ => {}
+        }
+    }
+
+    if should_write_version {
+        manifest.versions.push(PluginVersion {
+            version: meta.version.clone(),
+            plugin_path: plugin_object.clone(),
+            packages: package_refs,
+            component_inventory_path: Some(inventory_object.clone()),
+            risk_report_path: Some(risk_object.clone()),
+            changelog_path: Some(changelog_object.clone()),
+            created_at: Some(now()),
+        });
+    }
+
+    catalog
+        .plugins
+        .retain(|plugin| !(plugin.namespace == meta.namespace && plugin.id == meta.id));
+    catalog.generated_at = Some(now());
+    catalog.plugins.push(MarketPlugin {
+        namespace: meta.namespace.clone(),
+        id: meta.id.clone(),
+        name: meta.name.clone(),
+        summary: meta.summary.clone(),
+        latest_version: meta.version.clone(),
+        categories: new_categories,
+        tags: meta.tags.clone(),
+        targets: meta.targets.clone(),
+        scopes: meta.scopes.clone(),
+        components: meta.components.clone(),
+        risk_level: prepared.risk_level.clone(),
+        manifest_path: manifest_object.clone(),
+        updated_at: Some(now()),
+        source_id: None,
+        installed_bindings: Vec::new(),
+        cached_versions: Vec::new(),
+    });
+    catalog.plugins.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if should_write_version {
+        client
+            .put_json(&plugin_object, &build_plugin_json(&prepared))
+            .await?;
+        for (target, package) in &prepared.packages {
+            client
+                .put_bytes(
+                    &format!("{base}/package.{target}.zip"),
+                    package.bytes.clone(),
+                    "application/zip",
+                )
+                .await?;
+            client
+                .put_text(
+                    &format!("{base}/package.{target}.sha256"),
+                    &(package.sha256.clone() + "\n"),
+                    "text/plain; charset=utf-8",
+                )
+                .await?;
+        }
+        client
+            .put_json(&inventory_object, &prepared.component_inventory)
+            .await?;
+        client.put_json(&risk_object, &prepared.risk_report).await?;
+        client
+            .put_text(
+                &changelog_object,
+                &plugin_changelog(&files),
+                "text/markdown; charset=utf-8",
+            )
+            .await?;
+    }
+
+    client.put_json(&manifest_object, &manifest).await?;
+    write_plugin_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
+    client
+        .put_json(
+            "indexes/plugin-search-lite.json",
+            &build_plugin_search_lite_index(&catalog),
+        )
+        .await?;
+
+    let source_fingerprint = draft_source_fingerprint(&files);
+    let job_id = new_id();
+    let job_path = format!("admin/publish-jobs/{job_id}.json");
+    let state = serde_json::json!({
+        "gitlabSourcePath": source_path,
+        "namespace": meta.namespace,
+        "pluginId": meta.id,
+        "publishedVersion": meta.version,
+        "publishedAt": now(),
+        "publishedBy": admin_actor(&authorization),
+        "publishScope": meta.publish_scope.as_deref().unwrap_or("public"),
+        "publishCategorySlug": plugin_publish_category_slug(meta),
+        "publishProjectSlug": meta.publish_project_slug,
+        "publishedSourceFingerprint": source_fingerprint,
+        "lastPublishJobId": job_id,
+        "status": "published",
+        "updatedAt": now()
+    });
+    let publish_job = serde_json::json!({
+        "schema": "skillhub.plugin-publish-job.v1",
+        "jobId": state["lastPublishJobId"],
+        "status": "succeeded",
+        "gitlabSourcePath": state["gitlabSourcePath"],
+        "namespace": state["namespace"],
+        "pluginId": state["pluginId"],
+        "version": state["publishedVersion"],
+        "publishScope": state["publishScope"],
+        "publishCategorySlug": state["publishCategorySlug"],
+        "publishProjectSlug": state["publishProjectSlug"],
+        "sourceFingerprint": state["publishedSourceFingerprint"],
+        "createdAt": state["publishedAt"],
+        "updatedAt": state["updatedAt"]
+    });
+    client.put_json(&state_path, &state).await?;
+    client.put_json(&job_path, &publish_job).await?;
+    write_admin_audit(
+        &client,
+        &authorization,
+        "publishPluginDraft",
+        serde_json::json!({
+            "job": publish_job,
+            "state": state
+        }),
+    )
+    .await?;
+
+    // Catalog is the final write so clients never see a half-published plugin.
+    client.put_json(PLUGIN_CATALOG_OBJECT, &catalog).await?;
+    Ok(())
+}
+
 async fn quick_republish_archived_skill_inner(
     request: QuickRepublishRequest,
     local_macs: &[String],
@@ -1351,6 +2065,89 @@ async fn archive_market_skill_inner(
     Ok(())
 }
 
+async fn archive_market_plugin_inner(
+    request: ArchiveMarketPluginRequest,
+    local_macs: &[String],
+) -> Result<()> {
+    let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
+    validate_object_segment("namespace", &request.namespace)?;
+    validate_object_segment("plugin id", &request.plugin_id)?;
+
+    let client = AdminObjectClient::new();
+    let mut catalog = load_remote_plugin_catalog(&client).await?;
+    let Some(plugin) = catalog
+        .plugins
+        .iter()
+        .find(|plugin| plugin.namespace == request.namespace && plugin.id == request.plugin_id)
+        .cloned()
+    else {
+        return Err(anyhow!(
+            "市场 plugin 不存在: {}/{}",
+            request.namespace,
+            request.plugin_id
+        ));
+    };
+    ensure_can_manage_skill_categories(&authorization, &plugin.categories)?;
+
+    catalog
+        .plugins
+        .retain(|item| !(item.namespace == request.namespace && item.id == request.plugin_id));
+    let affected_categories = plugin.categories.clone();
+    catalog.generated_at = Some(now());
+    write_plugin_market_indexes_for_categories(&client, &catalog, &affected_categories).await?;
+    client
+        .put_json(
+            "indexes/plugin-search-lite.json",
+            &build_plugin_search_lite_index(&catalog),
+        )
+        .await?;
+    client.put_json(PLUGIN_CATALOG_OBJECT, &catalog).await?;
+
+    let source_path =
+        find_draft_source_for_plugin(&client, &request.namespace, &request.plugin_id).await?;
+    let archive_source_path = source_path
+        .clone()
+        .unwrap_or_else(|| format!("{}/{}", request.namespace, request.plugin_id));
+    let state = serde_json::json!({
+        "gitlabSourcePath": archive_source_path,
+        "namespace": request.namespace,
+        "pluginId": request.plugin_id,
+        "name": plugin.name,
+        "summary": plugin.summary,
+        "categories": plugin.categories,
+        "publishedVersion": plugin.latest_version,
+        "archivedAt": now(),
+        "archivedBy": admin_actor(&authorization),
+        "reason": request.reason.unwrap_or_default(),
+        "status": "archived",
+        "updatedAt": now()
+    });
+    let state_path = source_path
+        .as_ref()
+        .map(|path| plugin_admin_object_path(path, "state.v1.json"))
+        .transpose()?
+        .unwrap_or_else(|| {
+            format!(
+                "draft/admin/archived/plugins/{}/{}/state.v1.json",
+                request.namespace, request.plugin_id
+            )
+        });
+    client.put_json(&state_path, &state).await?;
+    write_admin_audit(
+        &client,
+        &authorization,
+        "archiveMarketPlugin",
+        serde_json::json!({
+            "namespace": request.namespace,
+            "pluginId": request.plugin_id,
+            "categories": plugin.categories,
+            "statePath": state_path,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_target_roots(state: State<'_, AppState>) -> CommandResult<Vec<TargetRoot>> {
     map_result((|| {
@@ -1404,6 +2201,14 @@ pub async fn install_skill(
     state: State<'_, AppState>,
 ) -> CommandResult<SkillBinding> {
     map_result(install_skill_inner(request, &state).await)
+}
+
+#[tauri::command]
+pub async fn install_plugin(
+    request: InstallPluginRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<PluginBinding> {
+    map_result(install_plugin_inner(request, &state).await)
 }
 
 #[tauri::command]
@@ -1619,6 +2424,259 @@ async fn install_skill_inner(
         .ok_or_else(|| anyhow!("安装后读取绑定失败"))
 }
 
+async fn install_plugin_inner(
+    request: InstallPluginRequest,
+    state: &AppState,
+) -> Result<PluginBinding> {
+    validate_plugin_target(&request.target)?;
+    validate_plugin_scope(&request.scope)?;
+    let _metadata_sync_error = refresh_catalog_best_effort(state).await;
+
+    if request.scope == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
+        return Err(anyhow!(
+            "PLUGIN_MARKETPLACE_WRITE_FAILED: project scope requires projectPath"
+        ));
+    }
+
+    let (source_id, plugin, source) = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let source_id = request.source_id.clone().or_else(|| {
+            default_source_for_plugin(&conn, &request.namespace, &request.plugin_id)
+                .ok()
+                .flatten()
+        });
+        let plugin = find_market_plugin(
+            &conn,
+            source_id.as_deref(),
+            &request.namespace,
+            &request.plugin_id,
+        )?;
+        if !plugin
+            .targets
+            .iter()
+            .any(|target| target == &request.target)
+        {
+            return Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {}", request.target));
+        }
+        if !plugin.scopes.iter().any(|scope| scope == &request.scope) {
+            return Err(anyhow!(
+                "PLUGIN_SOURCE_INVALID: unsupported scope {}",
+                request.scope
+            ));
+        }
+        let source = source_id.as_deref().and_then(|id| {
+            list_sources_inner(&conn)
+                .ok()?
+                .into_iter()
+                .find(|item| item.id == id)
+        });
+        if request.enable {
+            ensure_plugin_scope_can_enable(
+                &conn,
+                None,
+                &request.namespace,
+                &request.plugin_id,
+                &request.target,
+                &request.scope,
+            )?;
+            if let Some(existing) = find_same_plugin_binding(
+                &conn,
+                &request.namespace,
+                &request.plugin_id,
+                &request.target,
+                &request.scope,
+                request.project_path.as_deref(),
+            )? {
+                return Ok(existing);
+            }
+        }
+        (source_id, plugin, source)
+    };
+
+    let version = request
+        .version
+        .clone()
+        .unwrap_or_else(|| plugin.latest_version.clone());
+    let version_info = match source.as_ref() {
+        Some(source) => {
+            Some(fetch_plugin_manifest_version(source, &plugin.manifest_path, &version).await?)
+        }
+        _ => None,
+    };
+    let package_dir = prepare_plugin_package(
+        state,
+        source.as_ref(),
+        &plugin,
+        &version,
+        &request.target,
+        version_info.as_ref(),
+    )
+    .await?;
+    let component_inventory_json =
+        plugin_component_inventory_json(source.as_ref(), version_info.as_ref(), &plugin).await?;
+
+    let package_id = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        ensure_plugin_package_record(
+            &conn,
+            source_id.as_deref(),
+            &plugin,
+            &version,
+            &request.target,
+            &package_dir,
+            version_info.as_ref().and_then(|info| {
+                plugin_package_ref_for_target(info, &request.target)
+                    .and_then(|package_ref| package_ref.package.as_ref())
+                    .map(|package| package.sha256.as_str())
+            }),
+            &component_inventory_json,
+        )?
+    };
+
+    if !request.enable {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let plugin_ref = format!("{}/{}@{}", plugin.namespace, plugin.id, version);
+        insert_audit(
+            &conn,
+            "cache_plugin",
+            Some(&plugin_ref),
+            "success",
+            Some(&request.target),
+        )?;
+        return Ok(PluginBinding {
+            id: package_id.clone(),
+            package_id,
+            source_id,
+            namespace: request.namespace,
+            plugin_id: request.plugin_id,
+            plugin_name: plugin.name,
+            version,
+            target: request.target,
+            scope: request.scope,
+            project_path: request.project_path,
+            marketplace_id: None,
+            marketplace_name: "skillhub".to_string(),
+            platform_ref: String::new(),
+            enabled: false,
+            install_mode: "cache".to_string(),
+            update_policy: request
+                .update_policy
+                .unwrap_or_else(|| "follow_latest".to_string()),
+            status: "cached".to_string(),
+            created_at: now(),
+            updated_at: now(),
+        });
+    }
+
+    let marketplace = materialize_plugin_marketplace(
+        state,
+        &plugin,
+        &version,
+        &request.target,
+        &request.scope,
+        request.project_path.as_deref(),
+        &package_dir,
+    )?;
+    sync_codex_plugin_install(
+        &request.target,
+        &plugin.id,
+        &marketplace.name,
+        &marketplace.root_path,
+    )?;
+    sync_claude_plugin_install(
+        &request.target,
+        &plugin.id,
+        &marketplace.name,
+        &request.scope,
+        &marketplace.root_path,
+    )?;
+    let now = now();
+    let id = new_id();
+    let install_mode = request
+        .install_mode
+        .unwrap_or_else(|| "marketplace".to_string());
+    let update_policy = request
+        .update_policy
+        .unwrap_or_else(|| "follow_latest".to_string());
+    let platform_ref = format!("{}@{}", plugin.id, marketplace.name);
+
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    conn.execute(
+        "INSERT INTO plugin_marketplaces
+         (id, target, scope, project_path, marketplace_name, root_path, marketplace_path, status, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'materialized', ?8)
+         ON CONFLICT(target, scope, project_path, marketplace_name) DO UPDATE SET
+           root_path = excluded.root_path,
+           marketplace_path = excluded.marketplace_path,
+           status = excluded.status,
+           updated_at = excluded.updated_at",
+        params![
+            marketplace.id,
+            request.target,
+            request.scope,
+            request.project_path,
+            marketplace.name,
+            canonical_display_path(&marketplace.root_path),
+            canonical_display_path(&marketplace.marketplace_path),
+            now
+        ],
+    )?;
+    let marketplace_id: String = conn.query_row(
+        "SELECT id FROM plugin_marketplaces
+         WHERE target = ?1
+           AND scope = ?2
+           AND COALESCE(project_path, '') = COALESCE(?3, '')
+           AND marketplace_name = ?4
+         LIMIT 1",
+        params![
+            request.target,
+            request.scope,
+            request.project_path,
+            marketplace.name
+        ],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO plugin_bindings
+         (id, package_id, source_id, namespace, plugin_id, plugin_name, version, target, scope,
+          project_path, marketplace_id, marketplace_name, platform_ref, enabled, install_mode,
+          update_policy, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'installed', ?17, ?18)",
+        params![
+            id,
+            package_id,
+            source_id,
+            request.namespace,
+            request.plugin_id,
+            plugin.name,
+            version,
+            request.target,
+            request.scope,
+            request.project_path,
+            marketplace_id,
+            marketplace.name,
+            platform_ref,
+            if request.enable { 1_i64 } else { 0_i64 },
+            install_mode,
+            update_policy,
+            now,
+            now
+        ],
+    )?;
+    let plugin_ref = format!("{}/{}@{}", plugin.namespace, plugin.id, version);
+    insert_audit(
+        &conn,
+        "install_plugin",
+        Some(&plugin_ref),
+        "success",
+        Some(&request.target),
+    )?;
+    list_plugin_bindings_inner(&conn)?
+        .into_iter()
+        .find(|binding| binding.id == id)
+        .ok_or_else(|| anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: failed to read plugin binding"))
+}
+
 fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState) -> Result<()> {
     let conn = state.conn.lock().expect("db mutex poisoned");
     let cached: Option<(String, String)> = conn
@@ -1664,9 +2722,20 @@ fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState
     Ok(())
 }
 
-fn delete_local_skill_inner(request: DeleteLocalSkillRequest, state: &AppState) -> Result<Vec<LocalSkill>> {
+fn delete_local_skill_inner(
+    request: DeleteLocalSkillRequest,
+    state: &AppState,
+) -> Result<Vec<LocalSkill>> {
     let conn = state.conn.lock().expect("db mutex poisoned");
-    let row: Option<(String, Option<String>, Option<String>, bool, String, String, String)> = conn
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        String,
+        String,
+        String,
+    )> = conn
         .query_row(
             "SELECT path, detected_manifest, skill_id, managed_by_skillhub, status, target, level
              FROM local_skills
@@ -1686,20 +2755,29 @@ fn delete_local_skill_inner(request: DeleteLocalSkillRequest, state: &AppState) 
         )
         .optional()?;
 
-    let Some((path, detected_manifest, skill_id, managed_by_skillhub, status, target, level)) = row else {
+    let Some((path, detected_manifest, skill_id, managed_by_skillhub, status, target, level)) = row
+    else {
         return list_local_skills_inner(&conn);
     };
     if managed_by_skillhub {
-        return Err(anyhow!("该 skill 由 Skill Hub 管理，请使用生效矩阵中的卸载操作"));
+        return Err(anyhow!(
+            "该 skill 由 Skill Hub 管理，请使用生效矩阵中的卸载操作"
+        ));
     }
     if status == "missing" {
-        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        conn.execute(
+            "DELETE FROM local_skills WHERE id = ?1",
+            params![request.id],
+        )?;
         return list_local_skills_inner(&conn);
     }
 
     let path_buf = PathBuf::from(&path);
     if !path_buf.is_dir() {
-        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        conn.execute(
+            "DELETE FROM local_skills WHERE id = ?1",
+            params![request.id],
+        )?;
         return list_local_skills_inner(&conn);
     }
     if !path_buf.join("SKILL.md").is_file() {
@@ -1707,14 +2785,23 @@ fn delete_local_skill_inner(request: DeleteLocalSkillRequest, state: &AppState) 
     }
 
     fs::remove_dir_all(&path_buf).context("删除本地 skill 目录失败")?;
-    conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+    conn.execute(
+        "DELETE FROM local_skills WHERE id = ?1",
+        params![request.id],
+    )?;
 
     let audit_ref = skill_id
         .filter(|value| !value.trim().is_empty())
         .or(detected_manifest)
         .unwrap_or_else(|| path.clone());
     let target_scope = format!("{target}:{level}");
-    insert_audit(&conn, "delete_local_skill", Some(&audit_ref), "success", Some(&target_scope))?;
+    insert_audit(
+        &conn,
+        "delete_local_skill",
+        Some(&audit_ref),
+        "success",
+        Some(&target_scope),
+    )?;
     list_local_skills_inner(&conn)
 }
 
@@ -1723,7 +2810,15 @@ fn set_local_skill_enabled_inner(
     state: &AppState,
 ) -> Result<Vec<LocalSkill>> {
     let conn = state.conn.lock().expect("db mutex poisoned");
-    let row: Option<(String, Option<String>, Option<String>, bool, bool, String, String)> = conn
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        String,
+        String,
+    )> = conn
         .query_row(
             "SELECT path, detected_manifest, skill_id, managed_by_skillhub, enabled, target, level
              FROM local_skills
@@ -1743,11 +2838,15 @@ fn set_local_skill_enabled_inner(
         )
         .optional()?;
 
-    let Some((path, detected_manifest, skill_id, managed_by_skillhub, enabled, target, level)) = row else {
+    let Some((path, detected_manifest, skill_id, managed_by_skillhub, enabled, target, level)) =
+        row
+    else {
         return list_local_skills_inner(&conn);
     };
     if managed_by_skillhub {
-        return Err(anyhow!("Skill Hub 管理的市场绑定请使用生效矩阵中的市场开关"));
+        return Err(anyhow!(
+            "Skill Hub 管理的市场绑定请使用生效矩阵中的市场开关"
+        ));
     }
     if enabled == request.enabled {
         return list_local_skills_inner(&conn);
@@ -1761,7 +2860,10 @@ fn set_local_skill_enabled_inner(
     };
 
     if !current_path.is_dir() {
-        conn.execute("DELETE FROM local_skills WHERE id = ?1", params![request.id])?;
+        conn.execute(
+            "DELETE FROM local_skills WHERE id = ?1",
+            params![request.id],
+        )?;
         return list_local_skills_inner(&conn);
     }
     if !current_path.join("SKILL.md").is_file() {
@@ -1803,7 +2905,13 @@ fn set_local_skill_enabled_inner(
         "disable_local_skill"
     };
     let target_scope = format!("{target}:{level}");
-    insert_audit(&conn, action, Some(&audit_ref), "success", Some(&target_scope))?;
+    insert_audit(
+        &conn,
+        action,
+        Some(&audit_ref),
+        "success",
+        Some(&target_scope),
+    )?;
     list_local_skills_inner(&conn)
 }
 
@@ -1858,10 +2966,9 @@ fn import_local_skill_to_cache_inner(
         }
 
         let cached_packages = list_cached_packages_inner(&conn)?;
-        if cached_packages
-            .iter()
-            .any(|package| canonical_display_path(Path::new(&package.package_path)) == source_display_path)
-        {
+        if cached_packages.iter().any(|package| {
+            canonical_display_path(Path::new(&package.package_path)) == source_display_path
+        }) {
             return Err(anyhow!("该目录已经是 Skill Hub 缓存目录，不能重复导入"));
         }
         if let Some(existing) = cached_packages
@@ -2120,6 +3227,30 @@ async fn fetch_manifest_version(
         .ok_or_else(|| anyhow!("manifest 中不存在版本 {version}"))
 }
 
+async fn fetch_plugin_manifest_version(
+    source: &Source,
+    manifest_path: &str,
+    version: &str,
+) -> Result<PluginVersion> {
+    let manifest_url = object_url(source, manifest_path)?;
+    let manifest: PluginManifest = reqwest::Client::new()
+        .get(manifest_url)
+        .send()
+        .await
+        .context("PLUGIN_SOURCE_INVALID: request plugin manifest failed")?
+        .error_for_status()
+        .context("PLUGIN_SOURCE_INVALID: plugin manifest response failed")?
+        .json()
+        .await
+        .context("PLUGIN_SOURCE_INVALID: parse plugin manifest failed")?;
+
+    manifest
+        .versions
+        .into_iter()
+        .find(|item| item.version == version)
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: manifest missing version {version}"))
+}
+
 async fn prepare_package(
     state: &AppState,
     source: Option<&Source>,
@@ -2182,6 +3313,130 @@ async fn prepare_package(
     Ok(package_dir)
 }
 
+async fn prepare_plugin_package(
+    state: &AppState,
+    source: Option<&Source>,
+    plugin: &MarketPlugin,
+    version: &str,
+    target: &str,
+    version_info: Option<&PluginVersion>,
+) -> Result<PathBuf> {
+    let manifest_file = match target {
+        "codex" => ".codex-plugin/plugin.json",
+        "claude" => ".claude-plugin/plugin.json",
+        _ => return Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
+    };
+    let package_dir = state
+        .app_dir
+        .join("plugin-packages")
+        .join(format!("{}.{}", plugin.namespace, plugin.id))
+        .join(version)
+        .join(target);
+
+    if package_dir.join(manifest_file).exists() {
+        return Ok(package_dir);
+    }
+
+    let source = source.ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing MinIO source"))?;
+    let version_info = version_info
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing plugin version info"))?;
+    let package_ref = plugin_package_ref_for_target(version_info, target)
+        .ok_or_else(|| anyhow!("PLUGIN_TARGET_UNSUPPORTED: missing package for {target}"))?;
+    let package_url = object_url(source, &package_ref.package_path)?;
+    let bytes = reqwest::Client::new()
+        .get(package_url)
+        .send()
+        .await
+        .context("PLUGIN_PACKAGE_BUILD_FAILED: download plugin package failed")?
+        .error_for_status()
+        .context("PLUGIN_PACKAGE_BUILD_FAILED: plugin package response failed")?
+        .bytes()
+        .await
+        .context("PLUGIN_PACKAGE_BUILD_FAILED: read plugin package failed")?;
+
+    if let Some(expected) = package_ref
+        .package
+        .as_ref()
+        .map(|package| package.sha256.as_str())
+        .filter(|value| !value.trim().is_empty())
+    {
+        verify_sha256(&bytes, expected)?;
+    } else {
+        let hash_url = object_url(source, &package_ref.sha256_path)?;
+        let expected = reqwest::Client::new()
+            .get(hash_url)
+            .send()
+            .await
+            .context("PLUGIN_PACKAGE_CHECKSUM_MISMATCH: download sha256 failed")?
+            .error_for_status()
+            .context("PLUGIN_PACKAGE_CHECKSUM_MISMATCH: sha256 response failed")?
+            .text()
+            .await
+            .context("PLUGIN_PACKAGE_CHECKSUM_MISMATCH: read sha256 failed")?;
+        verify_sha256(&bytes, expected.trim())?;
+    }
+
+    if package_dir.exists() {
+        ensure_safe_plugin_package_cache_path(state, &package_dir)?;
+        fs::remove_dir_all(&package_dir)
+            .context("PLUGIN_PACKAGE_BUILD_FAILED: clean old package failed")?;
+    }
+    fs::create_dir_all(&package_dir)?;
+    extract_zip_preserving_json_safely(&bytes, &package_dir)?;
+    if !package_dir.join(manifest_file).is_file() {
+        return Err(anyhow!(
+            "PLUGIN_MANIFEST_INVALID: package missing {manifest_file}"
+        ));
+    }
+    Ok(package_dir)
+}
+
+fn plugin_package_ref_for_target<'a>(
+    version_info: &'a PluginVersion,
+    target: &str,
+) -> Option<&'a PluginPackageRef> {
+    match target {
+        "codex" => version_info.packages.codex.as_ref(),
+        "claude" => version_info.packages.claude.as_ref(),
+        _ => None,
+    }
+}
+
+async fn plugin_component_inventory_json(
+    source: Option<&Source>,
+    version_info: Option<&PluginVersion>,
+    plugin: &MarketPlugin,
+) -> Result<String> {
+    let Some(source) = source else {
+        return serde_json::to_string(&serde_json::json!({
+            "schema": "skillhub.plugin-component-inventory.v1",
+            "targets": {},
+            "components": plugin.components
+        }))
+        .map_err(Into::into);
+    };
+    let Some(path) = version_info.and_then(|info| info.component_inventory_path.as_deref()) else {
+        return serde_json::to_string(&serde_json::json!({
+            "schema": "skillhub.plugin-component-inventory.v1",
+            "targets": {},
+            "components": plugin.components
+        }))
+        .map_err(Into::into);
+    };
+    let url = object_url(source, path)?;
+    let value: serde_json::Value = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .context("PLUGIN_COMPONENT_SCAN_FAILED: request component inventory failed")?
+        .error_for_status()
+        .context("PLUGIN_COMPONENT_SCAN_FAILED: component inventory response failed")?
+        .json()
+        .await
+        .context("PLUGIN_COMPONENT_SCAN_FAILED: parse component inventory failed")?;
+    serde_json::to_string(&value).map_err(Into::into)
+}
+
 fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -2208,6 +3463,34 @@ fn extract_zip_safely(bytes: &[u8], destination: &Path) -> Result<()> {
             continue;
         }
 
+        if file.is_dir() {
+            fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut outfile = fs::File::create(&out_path)?;
+            std::io::copy(&mut file, &mut outfile)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_zip_preserving_json_safely(bytes: &[u8], destination: &Path) -> Result<()> {
+    let reader = Cursor::new(bytes);
+    let mut archive =
+        ZipArchive::new(reader).context("PLUGIN_PACKAGE_BUILD_FAILED: open zip failed")?;
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        let Some(enclosed_name) = file.enclosed_name().map(|path| path.to_owned()) else {
+            return Err(anyhow!(
+                "PLUGIN_PACKAGE_BUILD_FAILED: zip contains unsafe path"
+            ));
+        };
+
+        let out_path = destination.join(enclosed_name);
         if file.is_dir() {
             fs::create_dir_all(&out_path)?;
         } else {
@@ -2320,6 +3603,20 @@ pub async fn upgrade_skill_binding(
     map_result(result)
 }
 
+#[tauri::command]
+pub async fn upgrade_plugin_binding(
+    request: UpgradePluginBindingRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<AppBootstrap> {
+    let result = async {
+        upgrade_plugin_binding_inner(request, state.inner()).await?;
+        refresh_catalog_inner(state.inner()).await?;
+        app_bootstrap(state.inner(), None)
+    }
+    .await;
+    map_result(result)
+}
+
 async fn upgrade_skill_binding_inner(
     request: UpgradeBindingRequest,
     state: &AppState,
@@ -2409,6 +3706,142 @@ async fn upgrade_skill_binding_inner(
     Ok(())
 }
 
+async fn upgrade_plugin_binding_inner(
+    request: UpgradePluginBindingRequest,
+    state: &AppState,
+) -> Result<()> {
+    let binding = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        find_plugin_binding(&conn, &request.binding_id)?
+    };
+
+    let (plugin, source) = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let plugin = find_market_plugin(
+            &conn,
+            binding.source_id.as_deref(),
+            &binding.namespace,
+            &binding.plugin_id,
+        )?;
+        let source = binding.source_id.as_ref().and_then(|id| {
+            list_sources_inner(&conn)
+                .ok()?
+                .into_iter()
+                .find(|item| item.id == *id)
+        });
+        (plugin, source)
+    };
+
+    if binding.version == plugin.latest_version {
+        return Err(anyhow!("Plugin 已是最新版本"));
+    }
+    if binding.update_policy == "pinned" {
+        return Err(anyhow!("Plugin 版本已锁定"));
+    }
+
+    let version = plugin.latest_version.clone();
+    let version_info = match source.as_ref() {
+        Some(source) => {
+            Some(fetch_plugin_manifest_version(source, &plugin.manifest_path, &version).await?)
+        }
+        _ => None,
+    };
+    let package_dir = prepare_plugin_package(
+        state,
+        source.as_ref(),
+        &plugin,
+        &version,
+        &binding.target,
+        version_info.as_ref(),
+    )
+    .await?;
+    let component_inventory_json =
+        plugin_component_inventory_json(source.as_ref(), version_info.as_ref(), &plugin).await?;
+    let package_id = {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        ensure_plugin_package_record(
+            &conn,
+            binding.source_id.as_deref(),
+            &plugin,
+            &version,
+            &binding.target,
+            &package_dir,
+            version_info.as_ref().and_then(|info| {
+                plugin_package_ref_for_target(info, &binding.target)
+                    .and_then(|package_ref| package_ref.package.as_ref())
+                    .map(|package| package.sha256.as_str())
+            }),
+            &component_inventory_json,
+        )?
+    };
+
+    if binding.enabled {
+        let marketplace = materialize_plugin_marketplace(
+            state,
+            &plugin,
+            &version,
+            &binding.target,
+            &binding.scope,
+            binding.project_path.as_deref(),
+            &package_dir,
+        )?;
+        sync_codex_plugin_install(
+            &binding.target,
+            &plugin.id,
+            &marketplace.name,
+            &marketplace.root_path,
+        )?;
+        sync_claude_plugin_install(
+            &binding.target,
+            &plugin.id,
+            &marketplace.name,
+            &binding.scope,
+            &marketplace.root_path,
+        )?;
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO plugin_marketplaces
+             (id, target, scope, project_path, marketplace_name, root_path, marketplace_path, status, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'materialized', ?8)
+             ON CONFLICT(target, scope, project_path, marketplace_name) DO UPDATE SET
+               root_path = excluded.root_path,
+               marketplace_path = excluded.marketplace_path,
+               status = excluded.status,
+               updated_at = excluded.updated_at",
+            params![
+                binding.marketplace_id.clone().unwrap_or_else(new_id),
+                binding.target,
+                binding.scope,
+                binding.project_path,
+                marketplace.name,
+                canonical_display_path(&marketplace.root_path),
+                canonical_display_path(&marketplace.marketplace_path),
+                now()
+            ],
+        )?;
+    }
+
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    conn.execute(
+        "UPDATE plugin_bindings
+         SET package_id = ?1, version = ?2, plugin_name = ?3, status = 'installed', updated_at = ?4
+         WHERE id = ?5",
+        params![package_id, version, plugin.name, now(), request.binding_id],
+    )?;
+    let plugin_ref = format!(
+        "{}/{}@{}",
+        binding.namespace, binding.plugin_id, plugin.latest_version
+    );
+    insert_audit(
+        &conn,
+        "upgrade_plugin",
+        Some(&plugin_ref),
+        "success",
+        Some(&binding.target),
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn uninstall_binding(
     binding_id: String,
@@ -2431,6 +3864,22 @@ pub async fn uninstall_binding(
         insert_audit(&conn, "uninstall", Some(&skill_ref), "success", None)?;
         list_bindings_inner(&conn)
     })())
+}
+
+#[tauri::command]
+pub async fn set_plugin_binding_enabled(
+    request: SetPluginBindingEnabledRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<PluginBinding> {
+    map_result(set_plugin_binding_enabled_inner(request, &state))
+}
+
+#[tauri::command]
+pub async fn uninstall_plugin(
+    request: UninstallPluginRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<PluginBinding>> {
+    map_result(uninstall_plugin_inner(request, &state))
 }
 
 #[tauri::command]
@@ -2618,11 +4067,24 @@ pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<
 }
 
 #[tauri::command]
+pub async fn scan_local_plugins(state: State<'_, AppState>) -> CommandResult<Vec<LocalPlugin>> {
+    map_result(scan_local_plugins_inner(&state))
+}
+
+#[tauri::command]
 pub async fn preview_skill(
     request: SkillPreviewRequest,
     state: State<'_, AppState>,
 ) -> CommandResult<SkillPreview> {
     map_result(preview_skill_inner(request, &state).await)
+}
+
+#[tauri::command]
+pub async fn preview_plugin(
+    request: PluginPreviewRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<SkillPreview> {
+    map_result(preview_plugin_inner(request, &state).await)
 }
 
 #[tauri::command]
@@ -2656,6 +4118,7 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
     let client = reqwest::Client::new();
     for source in sources {
         let catalog_url = object_url(&source, "catalog.v1.json")?;
+        let plugin_catalog_url = object_url(&source, PLUGIN_CATALOG_OBJECT)?;
         let categories_url = object_url(&source, "categories.v1.json")?;
         let projects_url = object_url(&source, "projects.v1.json")?;
 
@@ -2677,6 +4140,21 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
             .json()
             .await
             .context("解析 catalog.v1.json 失败")?;
+
+        let plugin_catalog_doc: Option<PluginCatalogDoc> =
+            match client.get(plugin_catalog_url).send().await {
+                Ok(response) => {
+                    if response.status() == reqwest::StatusCode::NOT_FOUND {
+                        None
+                    } else {
+                        match response.error_for_status() {
+                            Ok(ok_response) => ok_response.json().await.ok(),
+                            Err(_) => None,
+                        }
+                    }
+                }
+                Err(_) => None,
+            };
 
         let categories_doc: Option<CategoriesDoc> = match client.get(categories_url).send().await {
             Ok(response) => match response.error_for_status() {
@@ -2712,6 +4190,10 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
         let conn = state.conn.lock().expect("db mutex poisoned");
         conn.execute(
             "DELETE FROM catalog_cache WHERE source_id = ?1",
+            params![source.id.as_str()],
+        )?;
+        conn.execute(
+            "DELETE FROM plugin_catalog_cache WHERE source_id = ?1",
             params![source.id.as_str()],
         )?;
 
@@ -2750,6 +4232,49 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
                     now()
                 ],
             )?;
+        }
+
+        if let Some(plugin_catalog) = plugin_catalog_doc {
+            for mut plugin in plugin_catalog.plugins {
+                plugin.source_id = Some(source.id.clone());
+                conn.execute(
+                    "INSERT INTO plugin_catalog_cache
+                     (source_id, namespace, plugin_id, latest_version, name, summary, categories_json,
+                      tags_json, targets_json, scopes_json, components_json, risk_level, manifest_path,
+                      raw_manifest, etag, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, ?15)
+                     ON CONFLICT(source_id, namespace, plugin_id) DO UPDATE SET
+                       latest_version = excluded.latest_version,
+                       name = excluded.name,
+                       summary = excluded.summary,
+                       categories_json = excluded.categories_json,
+                       tags_json = excluded.tags_json,
+                       targets_json = excluded.targets_json,
+                       scopes_json = excluded.scopes_json,
+                       components_json = excluded.components_json,
+                       risk_level = excluded.risk_level,
+                       manifest_path = excluded.manifest_path,
+                       raw_manifest = excluded.raw_manifest,
+                       updated_at = excluded.updated_at",
+                    params![
+                        source.id.as_str(),
+                        plugin.namespace,
+                        plugin.id,
+                        plugin.latest_version,
+                        plugin.name,
+                        plugin.summary,
+                        serde_json::to_string(&plugin.categories)?,
+                        serde_json::to_string(&plugin.tags)?,
+                        serde_json::to_string(&plugin.targets)?,
+                        serde_json::to_string(&plugin.scopes)?,
+                        serde_json::to_string(&plugin.components)?,
+                        plugin.risk_level,
+                        plugin.manifest_path,
+                        serde_json::to_string(&plugin)?,
+                        now()
+                    ],
+                )?;
+            }
         }
 
         conn.execute(
@@ -2874,6 +4399,7 @@ fn default_publish_meta_from_draft(
     PublishMeta {
         namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
         skill_id: skill_id.clone(),
+        version: metadata.version.clone(),
         name: metadata.name.clone().unwrap_or_else(|| skill_id.clone()),
         summary: metadata.description.clone().unwrap_or_default(),
         tags: metadata.tags.clone(),
@@ -2909,6 +4435,320 @@ fn normalize_publish_meta_for_source(meta: PublishMeta, source_path: &str) -> Pu
     meta.skill_id = draft_skill_id_from_source_path(source_path);
     meta
 }
+
+fn default_plugin_publish_meta(meta: &PluginSourceMeta) -> PublishMeta {
+    PublishMeta {
+        namespace: meta.namespace.clone(),
+        skill_id: meta.id.clone(),
+        version: Some(meta.version.clone()).filter(|value| !value.trim().is_empty()),
+        name: meta.name.clone(),
+        summary: meta.summary.clone(),
+        tags: meta.tags.clone(),
+        targets: meta.targets.clone(),
+        levels: meta.scopes.clone(),
+        publish_scope: "public".to_string(),
+        publish_category_slug: None,
+        publish_project_slug: None,
+        changelog: String::new(),
+        updated_at: None,
+        updated_by: None,
+    }
+}
+
+fn default_plugin_publish_meta_from_readme(
+    source_path: &str,
+    metadata: &DraftSkillMetadata,
+) -> PublishMeta {
+    let plugin_id = draft_skill_id_from_source_path(source_path);
+    PublishMeta {
+        namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
+        skill_id: plugin_id.clone(),
+        version: metadata.version.clone(),
+        name: metadata.name.clone().unwrap_or_else(|| plugin_id.clone()),
+        summary: metadata.description.clone().unwrap_or_default(),
+        tags: metadata.tags.clone(),
+        targets: Vec::new(),
+        levels: vec!["user".to_string(), "project".to_string()],
+        publish_scope: "public".to_string(),
+        publish_category_slug: None,
+        publish_project_slug: None,
+        changelog: String::new(),
+        updated_at: None,
+        updated_by: None,
+    }
+}
+
+fn merge_plugin_readme_defaults(
+    mut defaults: PublishMeta,
+    readme_defaults: Option<PublishMeta>,
+) -> PublishMeta {
+    let Some(readme_defaults) = readme_defaults else {
+        return defaults;
+    };
+    if let Some(version) = readme_defaults
+        .version
+        .filter(|value| !value.trim().is_empty())
+    {
+        defaults.version = Some(version);
+    }
+    if !readme_defaults.name.trim().is_empty() {
+        defaults.name = readme_defaults.name;
+    }
+    if !readme_defaults.summary.trim().is_empty() {
+        defaults.summary = readme_defaults.summary;
+    }
+    if !readme_defaults.tags.is_empty() {
+        defaults.tags = readme_defaults.tags;
+    }
+    defaults
+}
+
+fn normalize_plugin_publish_meta(meta: PublishMeta, defaults: Option<&PublishMeta>) -> PublishMeta {
+    let mut meta = normalize_publish_meta(meta);
+    meta.levels = meta
+        .levels
+        .into_iter()
+        .map(|level| match level.trim() {
+            "personal" => "user".to_string(),
+            value => value.to_string(),
+        })
+        .filter(|level| !level.is_empty())
+        .collect();
+    if let Some(defaults) = defaults {
+        meta.namespace = defaults.namespace.clone();
+        meta.skill_id = defaults.skill_id.clone();
+        if meta
+            .version
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            meta.version = defaults.version.clone();
+        }
+        if meta.name.trim().is_empty() {
+            meta.name = defaults.name.clone();
+        }
+        if meta.summary.trim().is_empty() {
+            meta.summary = defaults.summary.clone();
+        }
+        if meta.tags.is_empty() {
+            meta.tags = defaults.tags.clone();
+        }
+        if meta.targets.is_empty() {
+            meta.targets = defaults.targets.clone();
+        }
+        if meta.levels.is_empty() {
+            meta.levels = defaults.levels.clone();
+        }
+        if meta.publish_scope.trim().is_empty() {
+            meta.publish_scope = defaults.publish_scope.clone();
+        }
+        if meta.publish_scope == "project" && meta.publish_project_slug.is_none() {
+            meta.publish_project_slug = defaults.publish_project_slug.clone();
+        }
+        if meta.publish_scope != "project" && meta.publish_category_slug.is_none() {
+            meta.publish_category_slug = defaults.publish_category_slug.clone();
+        }
+    }
+    if meta.levels.is_empty() {
+        meta.levels = vec!["user".to_string(), "project".to_string()];
+    }
+    meta
+}
+
+fn apply_plugin_publish_meta(
+    mut source: PluginSourceMeta,
+    saved_meta: Option<PublishMeta>,
+) -> PluginSourceMeta {
+    let defaults = default_plugin_publish_meta(&source);
+    let saved_identity = saved_meta
+        .as_ref()
+        .map(|meta| (meta.namespace.trim().to_string(), meta.skill_id.trim().to_string()));
+    let meta = normalize_plugin_publish_meta(
+        saved_meta.unwrap_or_else(|| defaults.clone()),
+        Some(&defaults),
+    );
+    let mut meta = meta;
+    if let Some((namespace, skill_id)) = saved_identity {
+        if !namespace.is_empty() {
+            meta.namespace = namespace;
+        }
+        if !skill_id.is_empty() {
+            meta.skill_id = skill_id;
+        }
+    }
+    if let Some(version) = meta.version.clone().filter(|value| !value.trim().is_empty()) {
+        source.version = version;
+    }
+    source.name = meta.name;
+    source.summary = meta.summary;
+    source.namespace = meta.namespace;
+    source.id = meta.skill_id;
+    source.author = source.author.filter(|value| !value.trim().is_empty());
+    source.tags = meta.tags;
+    source.targets = meta.targets;
+    source.scopes = meta.levels;
+    source.publish_scope = Some(meta.publish_scope.clone());
+    source.publish_project_slug = meta.publish_project_slug;
+    source.categories = if meta.publish_scope == "project" {
+        Vec::new()
+    } else {
+        meta.publish_category_slug.into_iter().collect()
+    };
+    source
+}
+
+fn apply_plugin_readme_metadata(
+    mut source: PluginSourceMeta,
+    metadata: &DraftSkillMetadata,
+) -> Result<PluginSourceMeta> {
+    let name = required_plugin_readme_field(metadata.name.as_deref(), "name")?;
+    let summary = required_plugin_readme_field(metadata.description.as_deref(), "description")?;
+    let version = required_plugin_readme_field(metadata.version.as_deref(), "version")?;
+    let author = required_plugin_readme_field(metadata.author.as_deref(), "author")?;
+    source.name = name;
+    source.summary = summary;
+    source.version = version;
+    source.author = Some(author);
+    if !metadata.tags.is_empty() {
+        source.tags = metadata.tags.clone();
+    }
+    Ok(source)
+}
+
+fn plugin_source_meta_from_readme(
+    metadata: &DraftSkillMetadata,
+    saved_meta: Option<PublishMeta>,
+    files: &[(String, Vec<u8>)],
+) -> Result<PluginSourceMeta> {
+    let name = required_plugin_readme_field(metadata.name.as_deref(), "name")?;
+    let summary = required_plugin_readme_field(metadata.description.as_deref(), "description")?;
+    let version = required_plugin_readme_field(metadata.version.as_deref(), "version")?;
+    let author = required_plugin_readme_field(metadata.author.as_deref(), "author")?;
+    let saved_identity = saved_meta
+        .as_ref()
+        .map(|meta| (meta.namespace.trim().to_string(), meta.skill_id.trim().to_string()));
+    let defaults = PublishMeta {
+        namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
+        skill_id: saved_meta
+            .as_ref()
+            .map(|meta| meta.skill_id.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| plugin_id_from_readme_name(&name)),
+        version: Some(version.clone()),
+        name: name.clone(),
+        summary: summary.clone(),
+        tags: metadata.tags.clone(),
+        targets: Vec::new(),
+        levels: vec!["user".to_string(), "project".to_string()],
+        publish_scope: "public".to_string(),
+        publish_category_slug: None,
+        publish_project_slug: None,
+        changelog: String::new(),
+        updated_at: None,
+        updated_by: None,
+    };
+    let meta = normalize_plugin_publish_meta(
+        saved_meta.unwrap_or_else(|| defaults.clone()),
+        Some(&defaults),
+    );
+    let mut meta = meta;
+    if let Some((namespace, skill_id)) = saved_identity {
+        if !namespace.is_empty() {
+            meta.namespace = namespace;
+        }
+        if !skill_id.is_empty() {
+            meta.skill_id = skill_id;
+        }
+    }
+    validate_publish_meta(&meta)?;
+    let mut source = PluginSourceMeta {
+        schema: "skillhub.plugin-source.v1".to_string(),
+        namespace: meta.namespace,
+        id: meta.skill_id,
+        version,
+        name: meta.name,
+        summary: meta.summary,
+        author: Some(author),
+        categories: if meta.publish_scope == "project" {
+            Vec::new()
+        } else {
+            meta.publish_category_slug.into_iter().collect()
+        },
+        tags: meta.tags,
+        targets: meta.targets,
+        scopes: meta.levels,
+        components: infer_plugin_components(files),
+        risk_level: None,
+        publish_scope: Some(meta.publish_scope.clone()),
+        publish_project_slug: meta.publish_project_slug,
+        platforms: serde_json::Value::Null,
+    };
+    if source.scopes.is_empty() {
+        source.scopes = vec!["user".to_string(), "project".to_string()];
+    }
+    validate_plugin_source_meta(&source)?;
+    Ok(source)
+}
+
+fn required_plugin_readme_field(value: Option<&str>, field: &str) -> Result<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: README.md 缺少 {field}"))
+}
+
+fn is_plugin_readme_metadata_complete(metadata: &DraftSkillMetadata) -> bool {
+    metadata
+        .name
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && metadata
+            .description
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && metadata
+            .version
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && metadata
+            .author
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn plugin_id_from_readme_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for ch in name.trim().chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+            Some(ch.to_ascii_lowercase())
+        } else if ch == '-' || ch.is_whitespace() {
+            Some('-')
+        } else {
+            None
+        };
+        let Some(mapped) = mapped else {
+            continue;
+        };
+        if mapped == '-' {
+            if last_was_dash {
+                continue;
+            }
+            last_was_dash = true;
+        } else {
+            last_was_dash = false;
+        }
+        slug.push(mapped);
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "plugin".to_string()
+    } else {
+        slug
+    }
+}
+
 
 fn draft_skill_id_from_source_path(source_path: &str) -> String {
     parse_gitlab_source_path(source_path)
@@ -3068,6 +4908,52 @@ fn parse_gitlab_source_path(source_path: &str) -> GitlabDraftLocation {
         category_path: parts,
         draft_slug,
     }
+}
+
+fn non_empty_string(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn plugin_draft_status(
+    source_available: bool,
+    readme_metadata_complete: bool,
+    version: Option<&str>,
+    published_version: Option<&str>,
+    state_status: Option<&str>,
+    targets: &[String],
+    meta: Option<&PublishMeta>,
+    validation_status: Option<&str>,
+) -> String {
+    if state_status.is_some_and(|value| value.eq_ignore_ascii_case("archived")) {
+        return "archived".to_string();
+    }
+    if validation_failed(validation_status) {
+        return "validation_failed".to_string();
+    }
+    if !source_available {
+        return "source_missing".to_string();
+    }
+    if !readme_metadata_complete {
+        return "metadata_incomplete".to_string();
+    }
+    if version.is_none() || targets.is_empty() {
+        return "metadata_incomplete".to_string();
+    }
+    if match meta {
+        Some(value) => !is_publish_meta_ready_for_status(value),
+        None => true,
+    } {
+        return "metadata_incomplete".to_string();
+    }
+    if published_version == version {
+        return "published".to_string();
+    }
+    "ready_to_publish".to_string()
 }
 
 fn draft_status(
@@ -3342,16 +5228,18 @@ fn admin_audit_target(
                 })
             })
         }
-        "savePublishMeta" => {
+        "savePublishMeta" | "savePluginPublishMeta" => {
             audit_field_string(value, payload, &["gitlabSourcePath", "gitlab_source_path"])
-                .or_else(|| namespace_skill_target(payload))
+                .or_else(|| namespace_artifact_target(payload))
         }
-        "publishDraft" => value
+        "publishDraft" | "publishPluginDraft" => value
             .get("state")
-            .and_then(namespace_skill_target)
-            .or_else(|| payload.get("state").and_then(namespace_skill_target))
-            .or_else(|| namespace_skill_target(payload)),
-        "quickRepublishArchivedSkill" | "archiveMarketSkill" => namespace_skill_target(payload),
+            .and_then(namespace_artifact_target)
+            .or_else(|| payload.get("state").and_then(namespace_artifact_target))
+            .or_else(|| namespace_artifact_target(payload)),
+        "quickRepublishArchivedSkill" | "archiveMarketSkill" | "archiveMarketPlugin" => {
+            namespace_artifact_target(payload)
+        }
         _ => audit_field_string(
             value,
             payload,
@@ -3364,15 +5252,17 @@ fn admin_audit_target(
                 "gitlab_source_path",
             ],
         )
-        .or_else(|| namespace_skill_target(payload)),
+        .or_else(|| namespace_artifact_target(payload)),
     }
 }
 
-fn namespace_skill_target(value: &serde_json::Value) -> Option<String> {
+fn namespace_artifact_target(value: &serde_json::Value) -> Option<String> {
     let namespace = audit_value_string(value, "namespace")?;
-    let skill_id =
-        audit_value_string(value, "skillId").or_else(|| audit_value_string(value, "skill_id"))?;
-    let base = format!("{namespace}/{skill_id}");
+    let artifact_id = audit_value_string(value, "skillId")
+        .or_else(|| audit_value_string(value, "skill_id"))
+        .or_else(|| audit_value_string(value, "pluginId"))
+        .or_else(|| audit_value_string(value, "plugin_id"))?;
+    let base = format!("{namespace}/{artifact_id}");
     let version = audit_value_string(value, "version")
         .or_else(|| audit_value_string(value, "publishedVersion"))
         .or_else(|| audit_value_string(value, "published_version"));
@@ -3385,13 +5275,16 @@ fn namespace_skill_target(value: &serde_json::Value) -> Option<String> {
 fn admin_audit_summary(action: &str, target: Option<&str>) -> String {
     let label = match action {
         "savePublishMeta" => "保存发布元数据",
+        "savePluginPublishMeta" => "保存 Plugin 发布元数据",
         "saveMarketProject" => "保存项目",
         "deleteMarketProject" => "删除项目",
         "saveMarketCategory" => "保存公共分类",
         "deleteMarketCategory" => "删除公共分类",
         "publishDraft" => "发布草稿",
+        "publishPluginDraft" => "发布 Plugin 草稿",
         "quickRepublishArchivedSkill" => "快速重新上架",
         "archiveMarketSkill" => "下架 skill",
+        "archiveMarketPlugin" => "下架 plugin",
         other => other,
     };
     match target {
@@ -3488,6 +5381,15 @@ fn admin_object_path(source_path: &str, leaf: &str) -> Result<String> {
     ))
 }
 
+fn plugin_admin_object_path(source_path: &str, leaf: &str) -> Result<String> {
+    Ok(format!(
+        "{}{}/{}",
+        PLUGIN_ADMIN_PREFIX,
+        normalize_relative_object_path(source_path)?,
+        leaf
+    ))
+}
+
 fn publish_categories(meta: &PublishMeta) -> Vec<String> {
     if meta.publish_scope == "project" {
         vec![format!(
@@ -3516,6 +5418,112 @@ fn merge_categories(mut first: Vec<String>, second: Vec<String>) -> Vec<String> 
     first
 }
 
+fn plugin_publish_categories(meta: &PluginSourceMeta) -> Vec<String> {
+    if meta.publish_scope.as_deref() == Some("project") {
+        vec![format!(
+            "project:{}",
+            meta.publish_project_slug.as_deref().unwrap_or("")
+        )]
+    } else if meta.categories.is_empty() {
+        vec!["uncategorized".to_string()]
+    } else {
+        meta.categories.clone()
+    }
+}
+
+fn plugin_publish_category_slug(meta: &PluginSourceMeta) -> Option<String> {
+    if meta.publish_scope.as_deref() == Some("project") {
+        None
+    } else {
+        meta.categories.first().cloned()
+    }
+}
+
+fn build_plugin_search_lite_index(catalog: &PluginCatalogDoc) -> serde_json::Value {
+    let items = catalog
+        .plugins
+        .iter()
+        .map(|plugin| {
+            serde_json::json!({
+                "namespace": plugin.namespace,
+                "id": plugin.id,
+                "name": plugin.name,
+                "summary": plugin.summary,
+                "latestVersion": plugin.latest_version,
+                "categories": plugin.categories,
+                "tags": plugin.tags,
+                "targets": plugin.targets,
+                "scopes": plugin.scopes,
+                "components": plugin.components,
+                "riskLevel": plugin.risk_level,
+                "manifestPath": plugin.manifest_path
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema": "skillhub.index.plugin-search-lite.v1",
+        "generatedAt": now(),
+        "items": items
+    })
+}
+
+fn should_publish_plugin_version(
+    manifest: &PluginManifest,
+    catalog: &PluginCatalogDoc,
+    meta: &PluginSourceMeta,
+) -> Result<bool> {
+    let version_exists = manifest
+        .versions
+        .iter()
+        .any(|item| item.version == meta.version);
+    let already_in_catalog = catalog
+        .plugins
+        .iter()
+        .any(|plugin| plugin.namespace == meta.namespace && plugin.id == meta.id);
+    if version_exists && already_in_catalog {
+        Err(anyhow!(
+            "PLUGIN_PUBLISH_OBJECT_EXISTS: {}@{} 已在市场中",
+            meta.id,
+            meta.version
+        ))
+    } else {
+        Ok(!version_exists)
+    }
+}
+
+async fn validate_plugin_publish_target(
+    client: &AdminObjectClient,
+    meta: &PluginSourceMeta,
+) -> Result<()> {
+    if meta.publish_scope.as_deref() == Some("project") {
+        let project_slug = meta.publish_project_slug.as_deref().unwrap_or("");
+        let projects = load_remote_projects(client).await?;
+        if projects.iter().any(|project| project.slug == project_slug) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "PLUGIN_SOURCE_INVALID: 发布项目不存在 {project_slug}"
+            ))
+        }
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_can_manage_plugin_publish_target(
+    authorization: &admin_config::AdminAuthorization,
+    meta: &PluginSourceMeta,
+) -> Result<()> {
+    if meta.publish_scope.as_deref() == Some("project") {
+        ensure_can_manage_project(
+            authorization,
+            meta.publish_project_slug.as_deref().unwrap_or(""),
+        )
+    } else {
+        ensure_system_admin(authorization)
+    }
+}
+
 async fn load_remote_catalog(client: &AdminObjectClient) -> Result<CatalogDoc> {
     Ok(client
         .get_optional_json::<CatalogDoc>(CATALOG_OBJECT)
@@ -3525,6 +5533,17 @@ async fn load_remote_catalog(client: &AdminObjectClient) -> Result<CatalogDoc> {
             generated_at: Some(now()),
             categories: Vec::new(),
             skills: Vec::new(),
+        }))
+}
+
+async fn load_remote_plugin_catalog(client: &AdminObjectClient) -> Result<PluginCatalogDoc> {
+    Ok(client
+        .get_optional_json::<PluginCatalogDoc>(PLUGIN_CATALOG_OBJECT)
+        .await?
+        .unwrap_or_else(|| PluginCatalogDoc {
+            schema: "skillhub.plugin-catalog.v1".to_string(),
+            generated_at: Some(now()),
+            plugins: Vec::new(),
         }))
 }
 
@@ -3634,6 +5653,39 @@ async fn write_all_market_indexes(client: &AdminObjectClient, catalog: &CatalogD
     Ok(())
 }
 
+async fn write_plugin_market_indexes_for_categories(
+    client: &AdminObjectClient,
+    catalog: &PluginCatalogDoc,
+    categories: &[String],
+) -> Result<()> {
+    for category in categories {
+        let items = catalog
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.categories.iter().any(|item| item == category))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (scope, slug) = category
+            .strip_prefix("project:")
+            .map(|project_slug| ("project", project_slug.to_string()))
+            .unwrap_or_else(|| ("public", category.to_string()));
+        let index = serde_json::json!({
+            "schema": "skillhub.index.plugin-market.v1",
+            "generatedAt": now(),
+            "scope": scope,
+            "slug": slug,
+            "plugins": items
+        });
+        let path = if let Some(project_slug) = category.strip_prefix("project:") {
+            format!("indexes/plugin-category/projects/{project_slug}.json")
+        } else {
+            format!("indexes/plugin-category/{category}.json")
+        };
+        client.put_json(&path, &index).await?;
+    }
+    Ok(())
+}
+
 async fn write_market_indexes_for_categories(
     client: &AdminObjectClient,
     catalog: &CatalogDoc,
@@ -3705,6 +5757,139 @@ async fn find_draft_source_for_skill(
     Ok(None)
 }
 
+async fn find_draft_source_for_plugin(
+    client: &AdminObjectClient,
+    namespace: &str,
+    plugin_id: &str,
+) -> Result<Option<String>> {
+    let admin_objects = client.list_objects(PLUGIN_ADMIN_PREFIX).await?;
+    for object in admin_objects.iter().filter(|object| {
+        object.ends_with("/state.v1.json") && object.starts_with(PLUGIN_ADMIN_PREFIX)
+    }) {
+        let state = client
+            .get_optional_json::<serde_json::Value>(object)
+            .await?
+            .unwrap_or_default();
+        let state_namespace = state
+            .get("namespace")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let state_plugin_id = state
+            .get("pluginId")
+            .or_else(|| state.get("plugin_id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if state_namespace == namespace && state_plugin_id == plugin_id {
+            let source_path = object
+                .trim_start_matches(PLUGIN_ADMIN_PREFIX)
+                .trim_end_matches("/state.v1.json")
+                .to_string();
+            return Ok(Some(source_path));
+        }
+    }
+
+    let draft_objects = client.list_objects(PLUGIN_DRAFT_PREFIX).await?;
+    for source_path in collect_plugin_draft_source_paths(&draft_objects) {
+        let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
+        let Some(content_root) = resolve_plugin_draft_content_prefix(&draft_root, &draft_objects)
+        else {
+            continue;
+        };
+        let Some(meta) = client
+            .get_optional_json::<PluginSourceMeta>(&content_root.pluginhub_path)
+            .await?
+        else {
+            continue;
+        };
+        if meta.namespace == namespace && meta.id == plugin_id {
+            return Ok(Some(source_path));
+        }
+    }
+
+    Ok(None)
+}
+
+fn collect_plugin_draft_source_paths(objects: &[String]) -> Vec<String> {
+    let mut paths = objects
+        .iter()
+        .filter_map(|object| {
+            if !object.starts_with(PLUGIN_DRAFT_PREFIX) || !object.ends_with("/pluginhub.json") {
+                return None;
+            }
+            let relative = object.trim_start_matches(PLUGIN_DRAFT_PREFIX);
+            let source_path = if let Some(path) = relative.strip_suffix("/source/pluginhub.json") {
+                let flat_pluginhub = format!("{PLUGIN_DRAFT_PREFIX}{path}/pluginhub.json");
+                if objects.iter().any(|candidate| candidate == &flat_pluginhub) {
+                    return None;
+                }
+                path
+            } else {
+                relative.strip_suffix("/pluginhub.json")?
+            };
+            if source_path.trim().is_empty()
+                || source_path.contains("..")
+                || source_path.contains('\\')
+            {
+                return None;
+            }
+            Some(source_path.to_string())
+        })
+        .collect::<Vec<_>>();
+    for object in objects {
+        if !object.starts_with(PLUGIN_DRAFT_PREFIX) || object.ends_with('/') {
+            continue;
+        }
+        let relative = object.trim_start_matches(PLUGIN_DRAFT_PREFIX);
+        if let Some(source_path) = infer_plugin_draft_source_path_from_relative(relative) {
+            paths.push(source_path);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn infer_plugin_draft_source_path_from_relative(relative: &str) -> Option<String> {
+    let normalized = relative.replace('\\', "/");
+    if normalized.is_empty() || normalized.contains("..") {
+        return None;
+    }
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let marker_index = parts.iter().position(|part| is_plugin_draft_root_marker(part))?;
+    if marker_index == 0 {
+        return None;
+    }
+    let source_path = parts[..marker_index].join("/");
+    if source_path.trim().is_empty() {
+        None
+    } else {
+        Some(source_path)
+    }
+}
+
+fn is_plugin_draft_root_marker(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().as_str(),
+        "pluginhub.json"
+            | "readme.md"
+            | "changelog.md"
+            | "skills"
+            | "agents"
+            | "hooks"
+            | "assets"
+            | ".mcp.json"
+            | ".app.json"
+            | ".lsp.json"
+            | "monitors"
+            | "bin"
+            | "settings.json"
+    )
+}
+
 async fn read_draft_files(
     client: &AdminObjectClient,
     draft_prefix: &str,
@@ -3723,6 +5908,148 @@ async fn read_draft_files(
         files.push((relative, bytes));
     }
     Ok(files)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PluginDraftContentRoot {
+    prefix: String,
+    pluginhub_path: String,
+}
+
+fn resolve_plugin_draft_content_prefix(
+    draft_root: &str,
+    objects: &[String],
+) -> Option<PluginDraftContentRoot> {
+    let flat_pluginhub_path = format!("{draft_root}pluginhub.json");
+    if objects.iter().any(|object| object == &flat_pluginhub_path) {
+        return Some(PluginDraftContentRoot {
+            prefix: draft_root.to_string(),
+            pluginhub_path: flat_pluginhub_path,
+        });
+    }
+
+    let legacy_prefix = format!("{draft_root}source/");
+    let legacy_pluginhub_path = format!("{legacy_prefix}pluginhub.json");
+    if objects
+        .iter()
+        .any(|object| object == &legacy_pluginhub_path)
+    {
+        return Some(PluginDraftContentRoot {
+            prefix: legacy_prefix,
+            pluginhub_path: legacy_pluginhub_path,
+        });
+    }
+
+    None
+}
+
+async fn read_plugin_draft_files(
+    client: &AdminObjectClient,
+    draft_prefix: &str,
+    objects: &[String],
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    for object in objects {
+        if !object.starts_with(draft_prefix) || object.ends_with('/') {
+            continue;
+        }
+        let relative = object.trim_start_matches(draft_prefix).to_string();
+        if !is_plugin_source_file(&relative) {
+            continue;
+        }
+        let bytes = client.get_bytes(object).await?;
+        files.push((relative, bytes));
+    }
+    Ok(files)
+}
+
+async fn read_plugin_readme_metadata_from_objects(
+    client: &AdminObjectClient,
+    draft_prefix: &str,
+    objects: &[String],
+) -> Result<DraftSkillMetadata> {
+    let object = objects
+        .iter()
+        .find(|object| {
+            object.starts_with(draft_prefix)
+                && !object.ends_with('/')
+                && object
+                    .trim_start_matches(draft_prefix)
+                    .eq_ignore_ascii_case("README.md")
+        })
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: README.md 缺失"))?;
+    let text = client.get_text(object).await?;
+    Ok(parse_skill_frontmatter(&text))
+}
+
+fn collect_plugin_draft_preview_file_list(
+    draft_prefix: &str,
+    objects: &[String],
+) -> Vec<SkillPreviewFileEntry> {
+    let mut relatives = objects
+        .iter()
+        .filter_map(|object| {
+            if !object.starts_with(draft_prefix) || object.ends_with('/') {
+                return None;
+            }
+            let relative = object.trim_start_matches(draft_prefix);
+            if !is_plugin_draft_preview_file(relative) {
+                return None;
+            }
+            Some(relative.to_string())
+        })
+        .collect::<Vec<_>>();
+    relatives.sort();
+    relatives.truncate(PREVIEW_MAX_FILE_LIST);
+    relatives
+        .iter()
+        .map(|relative| preview_file_entry(relative))
+        .collect()
+}
+
+fn is_plugin_draft_preview_file(relative: &str) -> bool {
+    let normalized = relative.replace('\\', "/");
+    if normalized.is_empty() || normalized.contains("..") {
+        return false;
+    }
+    if normalized.starts_with("source/") {
+        return false;
+    }
+    !matches!(
+        normalized.to_ascii_lowercase().as_str(),
+        "draft.json" | "sync-log.json" | "publish-meta.v1.json" | "state.v1.json"
+    )
+}
+
+fn is_plugin_source_file(relative: &str) -> bool {
+    is_plugin_draft_preview_file(relative)
+        && relative.replace('\\', "/").to_ascii_lowercase() != "validation.json"
+}
+
+fn has_plugin_source_files(draft_prefix: &str, objects: &[String]) -> bool {
+    objects.iter().any(|object| {
+        object.starts_with(draft_prefix)
+            && !object.ends_with('/')
+            && is_plugin_source_file(object.trim_start_matches(draft_prefix))
+    })
+}
+
+fn infer_plugin_components_from_object_paths(draft_prefix: &str, objects: &[String]) -> Vec<String> {
+    let files = objects
+        .iter()
+        .filter_map(|object| {
+            if !object.starts_with(draft_prefix) || object.ends_with('/') {
+                return None;
+            }
+            let relative = object.trim_start_matches(draft_prefix).to_string();
+            if is_plugin_source_file(&relative) {
+                Some((relative, Vec::new()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    infer_plugin_components(&files)
 }
 
 fn draft_source_fingerprint(files: &[(String, Vec<u8>)]) -> serde_json::Value {
@@ -3831,6 +6158,7 @@ fn preview_candidate_paths(
         "SKILL.md",
         "publish-meta.v1.json",
         "README.md",
+        "readme.md",
         "CHANGELOG.md",
         "changelog.md",
         "skill.json",
@@ -3870,6 +6198,588 @@ fn is_package_control_file(relative: &str) -> bool {
         relative.replace('\\', "/").to_ascii_lowercase().as_str(),
         "skill.json" | "publish-meta.v1.json" | "state.v1.json" | "validation.json"
     )
+}
+
+#[derive(Debug, Clone)]
+struct PreparedPluginPublish {
+    meta: PluginSourceMeta,
+    packages: BTreeMap<String, PreparedPluginPackage>,
+    component_inventory: serde_json::Value,
+    risk_report: serde_json::Value,
+    risk_level: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedPluginPackage {
+    bytes: Vec<u8>,
+    sha256: String,
+    size: i64,
+}
+
+fn prepare_plugin_publish(
+    files: &[(String, Vec<u8>)],
+    saved_meta: Option<PublishMeta>,
+) -> Result<PreparedPluginPublish> {
+    let readme_metadata = read_plugin_readme_metadata(files)?;
+    let meta = match read_optional_plugin_source_meta(files)? {
+        Some(source) => {
+            let source = apply_plugin_readme_metadata(source, &readme_metadata)?;
+            apply_plugin_publish_meta(source, saved_meta)
+        }
+        None => plugin_source_meta_from_readme(&readme_metadata, saved_meta, files)?,
+    };
+    validate_plugin_source_meta(&meta)?;
+    validate_plugin_source_files(files)?;
+
+    let mut packages = BTreeMap::new();
+    for target in &meta.targets {
+        let bytes = build_plugin_package_zip(files, &meta, target)?;
+        let sha256 = sha256_hex(&bytes);
+        packages.insert(
+            target.clone(),
+            PreparedPluginPackage {
+                size: bytes.len() as i64,
+                sha256,
+                bytes,
+            },
+        );
+    }
+
+    let component_inventory = build_plugin_component_inventory(files, &meta.targets);
+    let risk_report = build_plugin_risk_report(&component_inventory, meta.risk_level.as_deref());
+    let risk_level = risk_report
+        .get("riskLevel")
+        .and_then(|value| value.as_str())
+        .unwrap_or("low")
+        .to_string();
+
+    Ok(PreparedPluginPublish {
+        meta,
+        packages,
+        component_inventory,
+        risk_report,
+        risk_level,
+    })
+}
+
+fn read_plugin_readme_metadata(files: &[(String, Vec<u8>)]) -> Result<DraftSkillMetadata> {
+    let bytes = files
+        .iter()
+        .find(|(path, _)| {
+            normalize_zip_relative_path(path)
+                .as_deref()
+                .is_some_and(|path| path.eq_ignore_ascii_case("README.md"))
+        })
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: README.md 缺失"))?;
+    let content = String::from_utf8(bytes.clone())
+        .context("PLUGIN_SOURCE_INVALID: README.md 必须是 UTF-8")?;
+    let metadata = parse_skill_frontmatter(&content);
+    for field in ["name", "description", "version", "author"] {
+        match field {
+            "name" => {
+                required_plugin_readme_field(metadata.name.as_deref(), field)?;
+            }
+            "description" => {
+                required_plugin_readme_field(metadata.description.as_deref(), field)?;
+            }
+            "version" => {
+                required_plugin_readme_field(metadata.version.as_deref(), field)?;
+            }
+            "author" => {
+                required_plugin_readme_field(metadata.author.as_deref(), field)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(metadata)
+}
+
+fn read_plugin_source_meta(files: &[(String, Vec<u8>)]) -> Result<PluginSourceMeta> {
+    read_optional_plugin_source_meta(files)?
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: pluginhub.json 缺失"))
+}
+
+fn read_optional_plugin_source_meta(files: &[(String, Vec<u8>)]) -> Result<Option<PluginSourceMeta>> {
+    let Some(bytes) = files
+        .iter()
+        .find(|(path, _)| normalize_zip_relative_path(path).as_deref() == Some("pluginhub.json"))
+        .map(|(_, bytes)| bytes)
+    else {
+        return Ok(None);
+    };
+    serde_json::from_slice(bytes)
+        .map(Some)
+        .context("PLUGIN_SOURCE_INVALID: pluginhub.json 解析失败")
+}
+
+fn validate_plugin_source_meta(meta: &PluginSourceMeta) -> Result<()> {
+    if meta.schema.trim() != "skillhub.plugin-source.v1" {
+        return Err(anyhow!(
+            "PLUGIN_SOURCE_INVALID: schema 必须是 skillhub.plugin-source.v1"
+        ));
+    }
+    for (name, value) in [
+        ("namespace", meta.namespace.as_str()),
+        ("id", meta.id.as_str()),
+        ("name", meta.name.as_str()),
+        ("version", meta.version.as_str()),
+        ("summary", meta.summary.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(anyhow!("PLUGIN_SOURCE_INVALID: {name} 不能为空"));
+        }
+    }
+    validate_object_segment("namespace", &meta.namespace)?;
+    validate_object_segment("plugin id", &meta.id)?;
+    validate_object_segment("version", &meta.version)?;
+    if meta.targets.is_empty() {
+        return Err(anyhow!("PLUGIN_SOURCE_INVALID: targets 至少包含一个平台"));
+    }
+    for target in &meta.targets {
+        validate_plugin_target(target)?;
+    }
+    if meta.scopes.is_empty() {
+        return Err(anyhow!("PLUGIN_SOURCE_INVALID: scopes 至少包含一个作用域"));
+    }
+    for scope in &meta.scopes {
+        validate_plugin_scope(scope)?;
+    }
+    Ok(())
+}
+
+fn validate_plugin_target(target: &str) -> Result<()> {
+    match target {
+        "codex" | "claude" => Ok(()),
+        _ => Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
+    }
+}
+
+fn validate_plugin_scope(scope: &str) -> Result<()> {
+    match scope {
+        "user" | "project" | "local" => Ok(()),
+        _ => Err(anyhow!("PLUGIN_SOURCE_INVALID: 不支持的 scope {scope}")),
+    }
+}
+
+fn validate_plugin_source_files(files: &[(String, Vec<u8>)]) -> Result<()> {
+    for (path, _) in files {
+        let Some(path) = normalize_zip_relative_path(path) else {
+            return Err(anyhow!(
+                "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {path}"
+            ));
+        };
+        if path == ".codex-plugin/plugin.json"
+            || path == ".claude-plugin/plugin.json"
+            || path.starts_with(".codex-plugin/")
+            || path.starts_with(".claude-plugin/")
+            || path.starts_with("codex/")
+            || path.starts_with("claude/")
+        {
+            return Err(anyhow!(
+                "PLUGIN_SOURCE_INVALID: 插件草稿只保存通用插件数据，平台目录由发布器动态生成: {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_plugin_package_zip(
+    files: &[(String, Vec<u8>)],
+    meta: &PluginSourceMeta,
+    target: &str,
+) -> Result<Vec<u8>> {
+    validate_plugin_target(target)?;
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let manifest_path = plugin_native_manifest_path(target)?;
+    let manifest = serde_json::to_vec_pretty(&build_native_plugin_manifest(meta, target, files)?)?;
+    writer.start_file(manifest_path, options)?;
+    std::io::Write::write_all(&mut writer, &manifest)?;
+    let mut written = 1_usize;
+
+    for (relative, bytes) in files {
+        let Some(relative) = normalize_zip_relative_path(relative) else {
+            return Err(anyhow!(
+                "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {relative}"
+            ));
+        };
+        if !should_include_common_plugin_file(&relative, target) {
+            continue;
+        }
+        writer.start_file(relative, options)?;
+        std::io::Write::write_all(&mut writer, bytes)?;
+        written += 1;
+    }
+
+    if written == 0 {
+        return Err(anyhow!(
+            "PLUGIN_PACKAGE_BUILD_FAILED: plugin 草稿根目录下没有可打包文件"
+        ));
+    }
+
+    Ok(writer.finish()?.into_inner())
+}
+
+fn plugin_native_manifest_path(target: &str) -> Result<&'static str> {
+    match target {
+        "codex" => Ok(".codex-plugin/plugin.json"),
+        "claude" => Ok(".claude-plugin/plugin.json"),
+        _ => Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
+    }
+}
+
+fn build_native_plugin_manifest(
+    meta: &PluginSourceMeta,
+    target: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<serde_json::Value> {
+    validate_plugin_target(target)?;
+    let paths = common_plugin_paths(files);
+    let mut manifest = serde_json::Map::new();
+    manifest.insert(
+        "name".to_string(),
+        serde_json::Value::String(meta.id.clone()),
+    );
+    manifest.insert(
+        "version".to_string(),
+        serde_json::Value::String(meta.version.clone()),
+    );
+    manifest.insert(
+        "description".to_string(),
+        serde_json::Value::String(meta.summary.clone()),
+    );
+    manifest.insert(
+        "displayName".to_string(),
+        serde_json::Value::String(meta.name.clone()),
+    );
+    manifest.insert(
+        "skillHub".to_string(),
+        serde_json::json!({
+            "schema": "skillhub.generated-platform-plugin.v1",
+            "namespace": meta.namespace,
+            "id": meta.id,
+            "target": target
+        }),
+    );
+    if !direct_child_dirs(&paths, "skills/").is_empty() {
+        manifest.insert(
+            "skills".to_string(),
+            serde_json::Value::String("./skills".to_string()),
+        );
+    }
+    if paths.iter().any(|path| path == ".mcp.json") {
+        manifest.insert(
+            "mcpServers".to_string(),
+            serde_json::Value::String("./.mcp.json".to_string()),
+        );
+    }
+    if target == "codex" && paths.iter().any(|path| path == ".app.json") {
+        manifest.insert(
+            "apps".to_string(),
+            serde_json::Value::String("./.app.json".to_string()),
+        );
+    }
+    Ok(serde_json::Value::Object(manifest))
+}
+
+fn should_include_common_plugin_file(path: &str, target: &str) -> bool {
+    if path == "pluginhub.json" {
+        return false;
+    }
+    if matches!(
+        path,
+        "README.md" | "CHANGELOG.md" | "LICENSE" | "LICENSE.md" | ".mcp.json"
+    ) {
+        return true;
+    }
+    if path.starts_with("skills/") || path.starts_with("hooks/") || path.starts_with("assets/") {
+        return true;
+    }
+    match target {
+        "codex" => path == ".app.json",
+        "claude" => {
+            path == ".lsp.json"
+                || path == "settings.json"
+                || path.starts_with("agents/")
+                || path.starts_with("monitors/")
+                || path.starts_with("bin/")
+        }
+        _ => false,
+    }
+}
+
+fn normalize_zip_relative_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim().trim_matches('/');
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.contains('\0')
+        || trimmed
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn build_plugin_component_inventory(
+    files: &[(String, Vec<u8>)],
+    targets: &[String],
+) -> serde_json::Value {
+    let mut target_map = serde_json::Map::new();
+    for target in targets {
+        let inventory = match target.as_str() {
+            "codex" => codex_component_inventory(files),
+            "claude" => claude_component_inventory(files),
+            _ => serde_json::json!({}),
+        };
+        target_map.insert(target.clone(), inventory);
+    }
+    serde_json::json!({
+        "schema": "skillhub.plugin-component-inventory.v1",
+        "targets": target_map
+    })
+}
+
+fn codex_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value {
+    let paths = common_plugin_paths(files);
+    serde_json::json!({
+        "skills": direct_child_dirs(&paths, "skills/"),
+        "hooks": direct_child_files(&paths, "hooks/"),
+        "mcpServers": file_present(&paths, ".mcp.json"),
+        "apps": file_present(&paths, ".app.json"),
+        "assets": files_under(&paths, "assets/")
+    })
+}
+
+fn claude_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value {
+    let paths = common_plugin_paths(files);
+    serde_json::json!({
+        "skills": direct_child_dirs(&paths, "skills/"),
+        "agents": direct_child_files(&paths, "agents/"),
+        "hooks": direct_child_files(&paths, "hooks/"),
+        "mcpServers": file_present(&paths, ".mcp.json"),
+        "lspServers": file_present(&paths, ".lsp.json"),
+        "monitors": direct_child_files(&paths, "monitors/"),
+        "bin": files_under(&paths, "bin/"),
+        "settings": file_present(&paths, "settings.json")
+    })
+}
+
+fn common_plugin_paths(files: &[(String, Vec<u8>)]) -> Vec<String> {
+    let mut paths = files
+        .iter()
+        .filter_map(|(path, _)| normalize_zip_relative_path(path))
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn infer_plugin_components(files: &[(String, Vec<u8>)]) -> Vec<String> {
+    let paths = common_plugin_paths(files);
+    let mut components = Vec::new();
+    for (component, present) in [
+        ("skills", paths.iter().any(|path| path.starts_with("skills/"))),
+        ("agents", paths.iter().any(|path| path.starts_with("agents/"))),
+        ("hooks", paths.iter().any(|path| path.starts_with("hooks/"))),
+        ("assets", paths.iter().any(|path| path.starts_with("assets/"))),
+        ("mcp", paths.iter().any(|path| path == ".mcp.json")),
+        ("apps", paths.iter().any(|path| path == ".app.json")),
+        ("lsp", paths.iter().any(|path| path == ".lsp.json")),
+        ("monitors", paths.iter().any(|path| path.starts_with("monitors/"))),
+        ("bin", paths.iter().any(|path| path.starts_with("bin/"))),
+        ("settings", paths.iter().any(|path| path == "settings.json")),
+    ] {
+        if present {
+            components.push(component.to_string());
+        }
+    }
+    components
+}
+
+fn direct_child_dirs(paths: &[String], prefix: &str) -> Vec<String> {
+    let mut items = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(prefix))
+        .filter_map(|rest| rest.split('/').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn direct_child_files(paths: &[String], prefix: &str) -> Vec<String> {
+    let mut items = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(prefix))
+        .filter(|rest| !rest.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn files_under(paths: &[String], prefix: &str) -> Vec<String> {
+    direct_child_files(paths, prefix)
+}
+
+fn file_present(paths: &[String], file: &str) -> Vec<String> {
+    if paths.iter().any(|path| path == file) {
+        vec![file.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn build_plugin_risk_report(
+    component_inventory: &serde_json::Value,
+    declared_level: Option<&str>,
+) -> serde_json::Value {
+    let mut reasons = Vec::<String>::new();
+    let Some(targets) = component_inventory
+        .get("targets")
+        .and_then(|value| value.as_object())
+    else {
+        return serde_json::json!({
+            "schema": "skillhub.plugin-risk-report.v1",
+            "riskLevel": declared_level.unwrap_or("low"),
+            "reasons": [],
+            "requiresUserReview": false,
+            "notes": []
+        });
+    };
+
+    for (target, inventory) in targets {
+        for (field, reason) in [
+            ("hooks", "contains hooks"),
+            ("mcpServers", "contains MCP servers"),
+            ("lspServers", "contains LSP servers"),
+            ("monitors", "contains monitors"),
+            ("bin", "contains executable bin files"),
+        ] {
+            if !inventory_array(inventory, field).is_empty() {
+                reasons.push(format!("{target}: {reason}"));
+            }
+        }
+        for (field, reason) in [
+            ("agents", "contains agents"),
+            ("apps", "contains app definitions"),
+            ("settings", "contains settings"),
+        ] {
+            if !inventory_array(inventory, field).is_empty() {
+                reasons.push(format!("{target}: {reason}"));
+            }
+        }
+    }
+    reasons.sort();
+    reasons.dedup();
+
+    let computed = if reasons.iter().any(|reason| {
+        reason.contains("hooks")
+            || reason.contains("MCP")
+            || reason.contains("LSP")
+            || reason.contains("monitors")
+            || reason.contains("executable")
+    }) {
+        "high"
+    } else if reasons.is_empty() {
+        "low"
+    } else {
+        "medium"
+    };
+    let risk_level = max_risk_level(declared_level.unwrap_or(""), computed);
+    let requires_user_review = risk_level == "high";
+    serde_json::json!({
+        "schema": "skillhub.plugin-risk-report.v1",
+        "riskLevel": risk_level,
+        "reasons": reasons,
+        "requiresUserReview": requires_user_review,
+        "notes": [
+            "Codex plugin hooks require user trust review after installation.",
+            "Claude plugin changes require /reload-plugins to take effect in current sessions."
+        ]
+    })
+}
+
+fn inventory_array<'a>(
+    inventory: &'a serde_json::Value,
+    field: &str,
+) -> Vec<&'a serde_json::Value> {
+    inventory
+        .get(field)
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().collect())
+        .unwrap_or_default()
+}
+
+fn max_risk_level(first: &str, second: &str) -> String {
+    fn rank(level: &str) -> i32 {
+        match level {
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0,
+        }
+    }
+    if rank(first) >= rank(second) {
+        first.to_string()
+    } else {
+        second.to_string()
+    }
+}
+
+fn build_plugin_json(prepared: &PreparedPluginPublish) -> serde_json::Value {
+    let mut packages = serde_json::Map::new();
+    for (target, package) in &prepared.packages {
+        packages.insert(
+            target.clone(),
+            serde_json::json!({
+                "file": format!("package.{target}.zip"),
+                "sha256": package.sha256,
+                "size": package.size
+            }),
+        );
+    }
+    serde_json::json!({
+        "schema": "skillhub.plugin.v1",
+        "namespace": prepared.meta.namespace,
+        "id": prepared.meta.id,
+        "name": prepared.meta.name,
+        "version": prepared.meta.version,
+        "summary": prepared.meta.summary,
+        "categories": prepared.meta.categories,
+        "tags": prepared.meta.tags,
+        "targets": prepared.meta.targets,
+        "scopes": prepared.meta.scopes,
+        "components": prepared.meta.components,
+        "riskLevel": prepared.risk_level,
+        "packages": packages
+    })
+}
+
+fn plugin_changelog(files: &[(String, Vec<u8>)]) -> String {
+    for path in ["CHANGELOG.md", "changelog.md"] {
+        if let Some(bytes) = files
+            .iter()
+            .find(|(relative, _)| normalize_zip_relative_path(relative).as_deref() == Some(path))
+            .map(|(_, bytes)| bytes)
+        {
+            if let Ok(text) = String::from_utf8(bytes.clone()) {
+                return text;
+            }
+        }
+    }
+    "Initial plugin publish.\n".to_string()
 }
 
 fn build_skill_json(
@@ -4404,6 +7314,1277 @@ fn find_same_scope_binding(
     }))
 }
 
+fn ensure_plugin_scope_can_enable(
+    conn: &rusqlite::Connection,
+    exclude_binding_id: Option<&str>,
+    namespace: &str,
+    plugin_id: &str,
+    target: &str,
+    desired_scope: &str,
+) -> Result<()> {
+    let bindings = list_plugin_bindings_inner(conn)?;
+    ensure_plugin_scope_can_enable_from_bindings(
+        &bindings,
+        exclude_binding_id,
+        namespace,
+        plugin_id,
+        target,
+        desired_scope,
+    )
+}
+
+fn ensure_plugin_scope_can_enable_from_bindings(
+    bindings: &[PluginBinding],
+    exclude_binding_id: Option<&str>,
+    namespace: &str,
+    plugin_id: &str,
+    target: &str,
+    desired_scope: &str,
+) -> Result<()> {
+    let conflicting_scopes: &[&str] = if desired_scope == "user" || desired_scope == "personal" {
+        &["project"]
+    } else {
+        &["user", "personal"]
+    };
+
+    let conflicts = bindings
+        .iter()
+        .filter(|binding| {
+            exclude_binding_id
+                .map(|exclude| exclude != binding.id)
+                .unwrap_or(true)
+        })
+        .filter(|binding| {
+            binding.namespace == namespace
+                && binding.plugin_id == plugin_id
+                && binding.target == target
+                && conflicting_scopes.contains(&binding.scope.as_str())
+                && binding.enabled
+        })
+        .collect::<Vec<_>>();
+
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+
+    if desired_scope == "user" || desired_scope == "personal" {
+        Err(anyhow!(
+            "PLUGIN_SCOPE_CONFLICT: 该 plugin 已在 {} 个项目中启用，请先禁用项目级绑定",
+            conflicts.len()
+        ))
+    } else {
+        Err(anyhow!(
+            "PLUGIN_SCOPE_CONFLICT: 该 plugin 已在个人级启用，项目级不能再启用"
+        ))
+    }
+}
+
+fn find_same_plugin_binding(
+    conn: &rusqlite::Connection,
+    namespace: &str,
+    plugin_id: &str,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+) -> Result<Option<PluginBinding>> {
+    Ok(list_plugin_bindings_inner(conn)?
+        .into_iter()
+        .find(|binding| {
+            let same_project =
+                scope != "project" || binding.project_path.as_deref() == project_path;
+            binding.namespace == namespace
+                && binding.plugin_id == plugin_id
+                && binding.target == target
+                && binding.scope == scope
+                && same_project
+        }))
+}
+
+#[derive(Debug, Clone)]
+struct MaterializedPluginMarketplace {
+    id: String,
+    name: String,
+    root_path: PathBuf,
+    marketplace_path: PathBuf,
+}
+
+fn materialize_plugin_marketplace(
+    state: &AppState,
+    plugin: &MarketPlugin,
+    version: &str,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    package_dir: &Path,
+) -> Result<MaterializedPluginMarketplace> {
+    let name = plugin_marketplace_name(target, scope, project_path);
+    let root = plugin_marketplace_root(state, target, scope, project_path)?;
+    let plugins_root = root.join("plugins");
+    let plugin_dir_name = format!("{}.{}", plugin.namespace, plugin.id);
+    let plugin_dir = plugins_root.join(&plugin_dir_name);
+    if plugin_dir.exists() {
+        fs::remove_dir_all(&plugin_dir)
+            .context("PLUGIN_MARKETPLACE_WRITE_FAILED: clean plugin marketplace dir failed")?;
+    }
+    fs::create_dir_all(&plugin_dir)?;
+    copy_dir_recursive_including_json(package_dir, &plugin_dir)?;
+
+    let marketplace_path =
+        write_plugin_marketplace_file(target, &root, &plugin_dir_name, plugin, version, &name)?;
+    Ok(MaterializedPluginMarketplace {
+        id: new_id(),
+        name,
+        root_path: root,
+        marketplace_path,
+    })
+}
+
+fn plugin_marketplace_root(
+    state: &AppState,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+) -> Result<PathBuf> {
+    if scope == "project" {
+        let project = project_path
+            .ok_or_else(|| anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: missing projectPath"))?;
+        return Ok(match target {
+            "codex" => PathBuf::from(project),
+            "claude" => PathBuf::from(project),
+            _ => state
+                .app_dir
+                .join("plugin-marketplaces")
+                .join(target)
+                .join("projects")
+                .join(path_hash(project)),
+        });
+    }
+
+    if target == "codex" && scope == "user" {
+        return user_home_dir();
+    }
+
+    Ok(state
+        .app_dir
+        .join("plugin-marketplaces")
+        .join(target)
+        .join(scope))
+}
+
+fn plugin_marketplace_name(target: &str, scope: &str, project_path: Option<&str>) -> String {
+    if target == "codex" && scope == "user" {
+        return "personal".to_string();
+    }
+    if target == "codex" && scope == "project" {
+        if let Some(project_path) = project_path {
+            return format!("skillhub-{}", path_hash(project_path));
+        }
+    }
+    "skillhub".to_string()
+}
+
+fn plugin_marketplace_display_name(marketplace_name: &str) -> String {
+    if marketplace_name == "personal" {
+        "Personal".to_string()
+    } else {
+        "Skill Hub".to_string()
+    }
+}
+
+fn write_plugin_marketplace_file(
+    target: &str,
+    root: &Path,
+    plugin_dir_name: &str,
+    plugin: &MarketPlugin,
+    version: &str,
+    marketplace_name: &str,
+) -> Result<PathBuf> {
+    match target {
+        "codex" => {
+            let market_dir = root.join(".agents").join("plugins");
+            fs::create_dir_all(&market_dir)?;
+            let path = market_dir.join("marketplace.json");
+            let existing = read_json_file(&path).unwrap_or_else(|| {
+                serde_json::json!({
+                    "name": marketplace_name,
+                    "interface": {
+                        "displayName": plugin_marketplace_display_name(marketplace_name)
+                    },
+                    "plugins": []
+                })
+            });
+            let doc = upsert_plugin_marketplace_entry(
+                existing,
+                marketplace_name,
+                None,
+                serde_json::json!({
+                    "name": plugin.id,
+                    "description": plugin.summary,
+                    "version": version,
+                    "source": {
+                        "source": "local",
+                        "path": format!("./plugins/{plugin_dir_name}")
+                    },
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL"
+                    },
+                    "category": plugin.categories.first().cloned().unwrap_or_else(|| "Productivity".to_string())
+                }),
+            );
+            fs::write(&path, serde_json::to_vec_pretty(&doc)?)
+                .context("PLUGIN_MARKETPLACE_WRITE_FAILED: write Codex marketplace failed")?;
+            Ok(path)
+        }
+        "claude" => {
+            let market_dir = root.join(".claude-plugin");
+            fs::create_dir_all(&market_dir)?;
+            let path = market_dir.join("marketplace.json");
+            let existing = read_json_file(&path).unwrap_or_else(|| {
+                serde_json::json!({
+                    "name": marketplace_name,
+                    "plugins": []
+                })
+            });
+            let doc = upsert_plugin_marketplace_entry(
+                existing,
+                marketplace_name,
+                None,
+                serde_json::json!({
+                    "name": plugin.id,
+                    "description": plugin.summary,
+                    "version": version,
+                    "source": {
+                        "type": "path",
+                        "path": format!("./plugins/{plugin_dir_name}")
+                    }
+                }),
+            );
+            fs::write(&path, serde_json::to_vec_pretty(&doc)?)
+                .context("PLUGIN_MARKETPLACE_WRITE_FAILED: write Claude marketplace failed")?;
+            Ok(path)
+        }
+        _ => Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
+    }
+}
+
+fn read_json_file(path: &Path) -> Option<serde_json::Value> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn upsert_plugin_marketplace_entry(
+    mut doc: serde_json::Value,
+    marketplace_name: &str,
+    version: Option<serde_json::Value>,
+    entry: serde_json::Value,
+) -> serde_json::Value {
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let object = doc.as_object_mut().expect("object checked");
+    object.insert(
+        "name".to_string(),
+        serde_json::Value::String(marketplace_name.to_string()),
+    );
+    if let Some(version) = version {
+        object.insert("version".to_string(), version);
+    }
+
+    let entry_name = entry
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let plugins = object
+        .entry("plugins".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if !plugins.is_array() {
+        *plugins = serde_json::Value::Array(Vec::new());
+    }
+    let items = plugins.as_array_mut().expect("array checked");
+    items.retain(|item| {
+        item.get("name")
+            .and_then(|value| value.as_str())
+            .map(|name| name != entry_name)
+            .unwrap_or(true)
+    });
+    items.push(entry);
+    items.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|value| value.as_str()).unwrap_or(""))
+    });
+    doc
+}
+
+fn remove_plugin_marketplace_entry(
+    mut doc: serde_json::Value,
+    plugin_id: &str,
+) -> serde_json::Value {
+    if let Some(items) = doc
+        .get_mut("plugins")
+        .and_then(|plugins| plugins.as_array_mut())
+    {
+        items.retain(|item| {
+            item.get("name")
+                .and_then(|value| value.as_str())
+                .map(|name| name != plugin_id)
+                .unwrap_or(true)
+        });
+    }
+    doc
+}
+
+fn rewrite_plugin_marketplace_entry(
+    target: &str,
+    root: &Path,
+    plugin_dir_name: &str,
+    plugin: &MarketPlugin,
+    version: &str,
+    marketplace_name: &str,
+) -> Result<PathBuf> {
+    write_plugin_marketplace_file(
+        target,
+        root,
+        plugin_dir_name,
+        plugin,
+        version,
+        marketplace_name,
+    )
+}
+
+fn remove_plugin_from_marketplace_file(target: &str, root: &Path, plugin_id: &str) -> Result<()> {
+    let path = plugin_marketplace_path(target, root);
+    let Some(doc) = read_json_file(&path) else {
+        return Ok(());
+    };
+    let doc = remove_plugin_marketplace_entry(doc, plugin_id);
+    fs::write(&path, serde_json::to_vec_pretty(&doc)?)
+        .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove plugin marketplace entry failed")?;
+    Ok(())
+}
+
+fn sync_codex_plugin_install(
+    target: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+    marketplace_root: &Path,
+) -> Result<()> {
+    if target != "codex" {
+        return Ok(());
+    }
+    if marketplace_name != "personal" {
+        let root_path = canonical_display_path(marketplace_root);
+        run_codex_plugin_command(
+            &["plugin", "marketplace", "add", &root_path],
+            CodexCommandFailureMode::IgnoreAlreadyConfigured,
+        )?;
+    }
+    let selector = format!("{plugin_id}@{marketplace_name}");
+    run_codex_plugin_command(
+        &["plugin", "add", &selector],
+        CodexCommandFailureMode::Strict,
+    )
+}
+
+fn sync_codex_plugin_remove(target: &str, plugin_id: &str, marketplace_name: &str) -> Result<()> {
+    if target != "codex" {
+        return Ok(());
+    }
+    let selector = format!("{plugin_id}@{marketplace_name}");
+    run_codex_plugin_command(
+        &["plugin", "remove", &selector],
+        CodexCommandFailureMode::IgnoreMissing,
+    )
+}
+
+fn sync_claude_plugin_install(
+    target: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+    scope: &str,
+    marketplace_root: &Path,
+) -> Result<()> {
+    let Some(commands) = build_claude_plugin_install_commands(
+        target,
+        plugin_id,
+        marketplace_name,
+        scope,
+        marketplace_root,
+    ) else {
+        return Ok(());
+    };
+
+    for args in commands {
+        run_claude_plugin_command(&args, ClaudeCommandFailureMode::IgnoreAlreadyConfigured)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudePluginRemoveAction {
+    Disable,
+    Uninstall,
+}
+
+fn sync_claude_plugin_remove(
+    target: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+    scope: &str,
+    action: ClaudePluginRemoveAction,
+) -> Result<()> {
+    let Some(args) =
+        build_claude_plugin_remove_command(target, plugin_id, marketplace_name, scope, action)
+    else {
+        return Ok(());
+    };
+    run_claude_plugin_command(&args, ClaudeCommandFailureMode::IgnoreMissing)
+}
+
+fn build_claude_plugin_install_commands(
+    target: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+    scope: &str,
+    marketplace_root: &Path,
+) -> Option<Vec<Vec<String>>> {
+    if target != "claude" {
+        return None;
+    }
+    let selector = format!("{plugin_id}@{marketplace_name}");
+    let scope = normalize_claude_plugin_scope(scope);
+    let marketplace_path =
+        canonical_display_path(&plugin_marketplace_path("claude", marketplace_root));
+    Some(vec![
+        vec![
+            "plugin".to_string(),
+            "marketplace".to_string(),
+            "add".to_string(),
+            marketplace_path,
+            "--scope".to_string(),
+            scope.clone(),
+        ],
+        vec![
+            "plugin".to_string(),
+            "install".to_string(),
+            selector.clone(),
+            "--scope".to_string(),
+            scope.clone(),
+        ],
+        vec![
+            "plugin".to_string(),
+            "enable".to_string(),
+            selector,
+            "--scope".to_string(),
+            scope,
+        ],
+    ])
+}
+
+fn build_claude_plugin_remove_command(
+    target: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+    scope: &str,
+    action: ClaudePluginRemoveAction,
+) -> Option<Vec<String>> {
+    if target != "claude" {
+        return None;
+    }
+    let command = match action {
+        ClaudePluginRemoveAction::Disable => "disable",
+        ClaudePluginRemoveAction::Uninstall => "uninstall",
+    };
+    Some(vec![
+        "plugin".to_string(),
+        command.to_string(),
+        format!("{plugin_id}@{marketplace_name}"),
+        "--scope".to_string(),
+        normalize_claude_plugin_scope(scope),
+    ])
+}
+
+fn normalize_claude_plugin_scope(scope: &str) -> String {
+    match scope {
+        "project" | "local" => scope.to_string(),
+        _ => "user".to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeCommandFailureMode {
+    IgnoreMissing,
+    IgnoreAlreadyConfigured,
+}
+
+fn run_claude_plugin_command(
+    args: &[String],
+    failure_mode: ClaudeCommandFailureMode,
+) -> Result<()> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_plugin_command(
+        &[("claude", Vec::new())],
+        &borrowed,
+        "PLUGIN_CLAUDE_INSTALL_FAILED",
+        |message| match failure_mode {
+            ClaudeCommandFailureMode::IgnoreMissing => is_plugin_missing_message(message),
+            ClaudeCommandFailureMode::IgnoreAlreadyConfigured => {
+                is_plugin_already_configured_message(message)
+                    || is_plugin_already_installed_message(message)
+            }
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexCommandFailureMode {
+    Strict,
+    IgnoreMissing,
+    IgnoreAlreadyConfigured,
+}
+
+fn run_codex_plugin_command(args: &[&str], failure_mode: CodexCommandFailureMode) -> Result<()> {
+    let mut candidates = Vec::new();
+    if cfg!(windows) {
+        candidates.push(("cmd", vec!["/C", "codex.cmd"]));
+    }
+    candidates.push(("codex", Vec::new()));
+
+    run_plugin_command(
+        &candidates,
+        args,
+        "PLUGIN_CODEX_INSTALL_FAILED",
+        |message| match failure_mode {
+            CodexCommandFailureMode::Strict => false,
+            CodexCommandFailureMode::IgnoreMissing => is_plugin_missing_message(message),
+            CodexCommandFailureMode::IgnoreAlreadyConfigured => {
+                is_plugin_already_configured_message(message)
+            }
+        },
+    )
+}
+
+fn run_plugin_command<F>(
+    candidates: &[(&str, Vec<&str>)],
+    args: &[&str],
+    error_code: &str,
+    is_ignorable_failure: F,
+) -> Result<()>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut last_error = None;
+    let mut command_not_found = true;
+    for (program, prefix) in candidates {
+        let mut command = Command::new(program);
+        command.args(prefix).args(args);
+        match command.output() {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                command_not_found = false;
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let message = if stderr.is_empty() { stdout } else { stderr };
+                if is_ignorable_failure(&message) {
+                    return Ok(());
+                }
+                last_error = Some(format!(
+                    "{program} exited with {}: {message}",
+                    output.status
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("{program}: {err}"));
+            }
+        }
+    }
+
+    if command_not_found {
+        return Err(anyhow!(
+            "{}: {}",
+            error_code,
+            plugin_cli_missing_guidance(
+                candidates
+                    .first()
+                    .map(|(program, _)| *program)
+                    .unwrap_or("plugin")
+            )
+        ));
+    }
+
+    Err(anyhow!(
+        "{}: {}",
+        error_code,
+        last_error.unwrap_or_else(|| format!(
+            "{} command not found",
+            candidates
+                .first()
+                .map(|(program, _)| *program)
+                .unwrap_or("plugin")
+        ))
+    ))
+}
+
+fn plugin_cli_missing_guidance(program: &str) -> String {
+    match program {
+        "claude" => concat!(
+            "未找到 Claude Code CLI，无法自动安装 Claude plugin。请先安装 Claude Code CLI 后重试：",
+            "Windows PowerShell 运行 `irm https://claude.ai/install.ps1 | iex`，",
+            "或运行 `winget install Anthropic.ClaudeCode`；",
+            "也可以使用 npm：`npm install -g @anthropic-ai/claude-code`。"
+        )
+        .to_string(),
+        "codex" => {
+            "未找到 Codex CLI，无法自动安装 Codex plugin。请先安装 Codex CLI 后重试。".to_string()
+        }
+        other => format!("未找到 {other} CLI，无法自动安装 plugin。请先安装对应 CLI 后重试。"),
+    }
+}
+
+fn is_plugin_missing_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("not installed")
+        || lower.contains("not found")
+        || lower.contains("no plugin")
+        || lower.contains("unknown plugin")
+}
+
+fn is_plugin_already_configured_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("already") || lower.contains("duplicate")) && lower.contains("marketplace")
+}
+
+fn is_plugin_already_installed_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("already") && lower.contains("installed")
+}
+
+fn user_home_dir() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let path = PathBuf::from(home);
+        if !path.as_os_str().is_empty() {
+            return Ok(path);
+        }
+    }
+    Err(anyhow!(
+        "PLUGIN_MARKETPLACE_WRITE_FAILED: cannot resolve user home directory"
+    ))
+}
+
+fn set_plugin_binding_enabled_inner(
+    request: SetPluginBindingEnabledRequest,
+    state: &AppState,
+) -> Result<PluginBinding> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let binding = find_plugin_binding(&conn, &request.binding_id)?;
+    let package_dir: String = conn
+        .query_row(
+            "SELECT package_path FROM plugin_packages WHERE id = ?1",
+            params![binding.package_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: plugin cache package not found")
+        })?;
+    let marketplace_root = plugin_marketplace_root(
+        state,
+        &binding.target,
+        &binding.scope,
+        binding.project_path.as_deref(),
+    )?;
+
+    if request.enabled {
+        ensure_plugin_scope_can_enable(
+            &conn,
+            Some(&binding.id),
+            &binding.namespace,
+            &binding.plugin_id,
+            &binding.target,
+            &binding.scope,
+        )?;
+        let package_dir = PathBuf::from(&package_dir);
+        if !package_dir.exists() {
+            return Err(anyhow!(
+                "PLUGIN_MARKETPLACE_WRITE_FAILED: plugin cache package missing: {}",
+                canonical_display_path(&package_dir)
+            ));
+        }
+        let plugin_dir_name = format!("{}.{}", binding.namespace, binding.plugin_id);
+        let plugin_dir = marketplace_root.join("plugins").join(&plugin_dir_name);
+        if plugin_dir.exists() {
+            fs::remove_dir_all(&plugin_dir)
+                .context("PLUGIN_MARKETPLACE_WRITE_FAILED: clean plugin marketplace dir failed")?;
+        }
+        fs::create_dir_all(&plugin_dir)?;
+        copy_dir_recursive_including_json(&package_dir, &plugin_dir)?;
+        let plugin = market_plugin_from_binding(&binding);
+        rewrite_plugin_marketplace_entry(
+            &binding.target,
+            &marketplace_root,
+            &plugin_dir_name,
+            &plugin,
+            &binding.version,
+            &binding.marketplace_name,
+        )?;
+        sync_codex_plugin_install(
+            &binding.target,
+            &binding.plugin_id,
+            &binding.marketplace_name,
+            &marketplace_root,
+        )?;
+        sync_claude_plugin_install(
+            &binding.target,
+            &binding.plugin_id,
+            &binding.marketplace_name,
+            &binding.scope,
+            &marketplace_root,
+        )?;
+    } else {
+        sync_codex_plugin_remove(
+            &binding.target,
+            &binding.plugin_id,
+            &binding.marketplace_name,
+        )?;
+        sync_claude_plugin_remove(
+            &binding.target,
+            &binding.plugin_id,
+            &binding.marketplace_name,
+            &binding.scope,
+            ClaudePluginRemoveAction::Disable,
+        )?;
+        remove_plugin_from_marketplace_file(
+            &binding.target,
+            &marketplace_root,
+            &binding.plugin_id,
+        )?;
+    }
+
+    conn.execute(
+        "UPDATE plugin_bindings
+         SET enabled = ?1, status = 'installed', updated_at = ?2
+         WHERE id = ?3",
+        params![
+            if request.enabled { 1_i64 } else { 0_i64 },
+            now(),
+            request.binding_id
+        ],
+    )?;
+    let updated = find_plugin_binding(&conn, &binding.id)?;
+    let action = if request.enabled {
+        "enable_plugin"
+    } else {
+        "disable_plugin"
+    };
+    let plugin_ref = format!("{}/{}", updated.namespace, updated.plugin_id);
+    insert_audit(
+        &conn,
+        action,
+        Some(&plugin_ref),
+        "success",
+        Some(&updated.target),
+    )?;
+    Ok(updated)
+}
+
+fn uninstall_plugin_inner(
+    request: UninstallPluginRequest,
+    state: &AppState,
+) -> Result<Vec<PluginBinding>> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let binding = find_plugin_binding(&conn, &request.binding_id)?;
+    let marketplace_root = plugin_marketplace_root(
+        state,
+        &binding.target,
+        &binding.scope,
+        binding.project_path.as_deref(),
+    )?;
+    sync_codex_plugin_remove(
+        &binding.target,
+        &binding.plugin_id,
+        &binding.marketplace_name,
+    )?;
+    sync_claude_plugin_remove(
+        &binding.target,
+        &binding.plugin_id,
+        &binding.marketplace_name,
+        &binding.scope,
+        ClaudePluginRemoveAction::Uninstall,
+    )?;
+    remove_plugin_from_marketplace_file(&binding.target, &marketplace_root, &binding.plugin_id)?;
+
+    let plugin_dir = marketplace_root
+        .join("plugins")
+        .join(format!("{}.{}", binding.namespace, binding.plugin_id));
+    if plugin_dir.exists() {
+        fs::remove_dir_all(&plugin_dir)
+            .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove plugin materialized dir failed")?;
+    }
+
+    if request.delete_cached_package {
+        let package_path: Option<String> = conn
+            .query_row(
+                "SELECT package_path FROM plugin_packages WHERE id = ?1",
+                params![binding.package_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(package_path) = package_path {
+            let path = PathBuf::from(&package_path);
+            if path.exists() {
+                fs::remove_dir_all(&path).context(
+                    "PLUGIN_MARKETPLACE_WRITE_FAILED: remove cached plugin package failed",
+                )?;
+            }
+            conn.execute(
+                "DELETE FROM plugin_packages WHERE id = ?1",
+                params![binding.package_id],
+            )?;
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM plugin_bindings WHERE id = ?1",
+        params![request.binding_id],
+    )?;
+    let plugin_ref = format!("{}/{}", binding.namespace, binding.plugin_id);
+    insert_audit(
+        &conn,
+        "uninstall_plugin",
+        Some(&plugin_ref),
+        "success",
+        Some(&binding.target),
+    )?;
+    list_plugin_bindings_inner(&conn)
+}
+
+fn find_plugin_binding(conn: &rusqlite::Connection, binding_id: &str) -> Result<PluginBinding> {
+    list_plugin_bindings_inner(conn)?
+        .into_iter()
+        .find(|binding| binding.id == binding_id)
+        .ok_or_else(|| anyhow!("未找到 plugin 绑定记录"))
+}
+
+fn market_plugin_from_binding(binding: &PluginBinding) -> MarketPlugin {
+    MarketPlugin {
+        source_id: binding.source_id.clone(),
+        namespace: binding.namespace.clone(),
+        id: binding.plugin_id.clone(),
+        name: binding.plugin_name.clone(),
+        summary: String::new(),
+        latest_version: binding.version.clone(),
+        manifest_path: String::new(),
+        categories: Vec::new(),
+        tags: Vec::new(),
+        targets: vec![binding.target.clone()],
+        scopes: vec![binding.scope.clone()],
+        components: Vec::new(),
+        risk_level: "unknown".to_string(),
+        cached_versions: vec![binding.version.clone()],
+        installed_bindings: Vec::new(),
+        updated_at: Some(binding.updated_at.clone()),
+    }
+}
+
+fn scan_local_plugins_inner(state: &AppState) -> Result<Vec<LocalPlugin>> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    conn.execute("DELETE FROM local_plugins", [])?;
+    let scanned_at = now();
+    let mut seen_paths = HashSet::new();
+
+    for binding in list_plugin_bindings_inner(&conn)? {
+        insert_local_plugin_from_binding(state, &conn, &binding, &scanned_at, &mut seen_paths)?;
+    }
+
+    for (target, scope, project_path, root) in plugin_scan_roots(state, &conn)? {
+        scan_plugin_marketplace_root(
+            &conn,
+            &mut seen_paths,
+            &target,
+            &scope,
+            project_path.as_deref(),
+            &root,
+            &scanned_at,
+        )?;
+    }
+
+    crate::db::list_local_plugins_inner(&conn)
+}
+
+fn plugin_scan_roots(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, Option<String>, PathBuf)>> {
+    let mut roots = Vec::new();
+    for target in ["codex", "claude"] {
+        roots.push((
+            target.to_string(),
+            "user".to_string(),
+            None,
+            plugin_marketplace_root(state, target, "user", None)?,
+        ));
+    }
+
+    if let Some(home) = home_dir_path() {
+        roots.push((
+            "claude".to_string(),
+            "user".to_string(),
+            None,
+            home.join(".claude-plugin"),
+        ));
+    }
+
+    for project in list_projects_inner(conn)? {
+        roots.push((
+            "codex".to_string(),
+            "project".to_string(),
+            Some(project.path.clone()),
+            plugin_marketplace_root(state, "codex", "project", Some(&project.path))?,
+        ));
+        roots.push((
+            "claude".to_string(),
+            "project".to_string(),
+            Some(project.path.clone()),
+            plugin_marketplace_root(state, "claude", "project", Some(&project.path))?,
+        ));
+    }
+
+    Ok(roots)
+}
+
+fn insert_local_plugin_from_binding(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    binding: &PluginBinding,
+    scanned_at: &str,
+    seen_paths: &mut HashSet<String>,
+) -> Result<()> {
+    let (_, component_inventory_json) =
+        plugin_package_path_and_inventory(conn, &binding.package_id).unwrap_or_else(|| {
+            (
+                binding.platform_ref.clone(),
+                serde_json::json!({ "schema": "skillhub.plugin-component-inventory.v1" })
+                    .to_string(),
+            )
+        });
+    let path = plugin_marketplace_root(
+        state,
+        &binding.target,
+        &binding.scope,
+        binding.project_path.as_deref(),
+    )?
+    .join("plugins")
+    .join(format!("{}.{}", binding.namespace, binding.plugin_id));
+    let path = canonical_display_path(&path);
+    seen_paths.insert(canonical_display_path(Path::new(&path)));
+    let exists = Path::new(&path).exists();
+    conn.execute(
+        "INSERT INTO local_plugins
+         (id, target, scope, project_path, path, marketplace_name, plugin_id, version,
+          enabled, status, component_inventory_json, managed_by_skillhub, scanned_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)",
+        params![
+            new_id(),
+            binding.target,
+            binding.scope,
+            binding.project_path,
+            path,
+            binding.marketplace_name,
+            binding.plugin_id,
+            binding.version,
+            if binding.enabled { 1_i64 } else { 0_i64 },
+            if exists {
+                binding.status.as_str()
+            } else {
+                "missing"
+            },
+            component_inventory_json,
+            scanned_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn plugin_package_path_and_inventory(
+    conn: &rusqlite::Connection,
+    package_id: &str,
+) -> Option<(String, String)> {
+    conn.query_row(
+        "SELECT package_path, component_inventory_json FROM plugin_packages WHERE id = ?1",
+        params![package_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .ok()
+}
+
+fn scan_plugin_marketplace_root(
+    conn: &rusqlite::Connection,
+    seen_paths: &mut HashSet<String>,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    root: &Path,
+    scanned_at: &str,
+) -> Result<()> {
+    let marketplace_path = plugin_marketplace_path(target, root);
+    if let Some(doc) = read_json_file(&marketplace_path) {
+        let marketplace_name = doc
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("external")
+            .to_string();
+        if let Some(plugins) = doc.get("plugins").and_then(|value| value.as_array()) {
+            for entry in plugins {
+                let Some(path) = entry
+                    .get("source")
+                    .and_then(|source| source.get("path"))
+                    .and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                let plugin_path = resolve_plugin_source_path(target, root, path);
+                insert_local_plugin_from_path(
+                    conn,
+                    seen_paths,
+                    target,
+                    scope,
+                    project_path,
+                    &plugin_path,
+                    Some(&marketplace_name),
+                    entry.get("name").and_then(|value| value.as_str()),
+                    entry.get("version").and_then(|value| value.as_str()),
+                    scanned_at,
+                    true,
+                )?;
+            }
+        }
+    }
+
+    let plugins_root = root.join("plugins");
+    if plugins_root.is_dir() {
+        for entry in fs::read_dir(plugins_root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                insert_local_plugin_from_path(
+                    conn,
+                    seen_paths,
+                    target,
+                    scope,
+                    project_path,
+                    &path,
+                    None,
+                    None,
+                    None,
+                    scanned_at,
+                    true,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn insert_local_plugin_from_path(
+    conn: &rusqlite::Connection,
+    seen_paths: &mut HashSet<String>,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    path: &Path,
+    marketplace_name: Option<&str>,
+    entry_plugin_id: Option<&str>,
+    entry_version: Option<&str>,
+    scanned_at: &str,
+    enabled: bool,
+) -> Result<()> {
+    let display_path = canonical_display_path(path);
+    if !seen_paths.insert(display_path.clone()) {
+        return Ok(());
+    }
+
+    let profile = read_local_plugin_profile(target, path);
+    let status = if path.exists() {
+        if profile.is_some() {
+            "unmanaged"
+        } else {
+            "invalid"
+        }
+    } else {
+        "missing"
+    };
+    let plugin_id = profile
+        .as_ref()
+        .and_then(|profile| profile.plugin_id.clone())
+        .or_else(|| entry_plugin_id.map(ToString::to_string));
+    let version = profile
+        .as_ref()
+        .and_then(|profile| profile.version.clone())
+        .or_else(|| entry_version.map(ToString::to_string));
+    let component_inventory_json = profile
+        .as_ref()
+        .map(|profile| profile.component_inventory_json.clone())
+        .unwrap_or_else(|| "{}".to_string());
+
+    conn.execute(
+        "INSERT INTO local_plugins
+         (id, target, scope, project_path, path, marketplace_name, plugin_id, version,
+          enabled, status, component_inventory_json, managed_by_skillhub, scanned_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
+        params![
+            new_id(),
+            target,
+            scope,
+            project_path,
+            display_path,
+            marketplace_name,
+            plugin_id,
+            version,
+            if enabled { 1_i64 } else { 0_i64 },
+            status,
+            component_inventory_json,
+            scanned_at
+        ],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct LocalPluginProfile {
+    plugin_id: Option<String>,
+    version: Option<String>,
+    component_inventory_json: String,
+}
+
+fn read_local_plugin_profile(target: &str, path: &Path) -> Option<LocalPluginProfile> {
+    let manifest_path = match target {
+        "codex" => path.join(".codex-plugin").join("plugin.json"),
+        "claude" => path.join(".claude-plugin").join("plugin.json"),
+        _ => return None,
+    };
+    let manifest = read_json_file(&manifest_path)?;
+    let plugin_id = manifest
+        .get("name")
+        .or_else(|| manifest.get("id"))
+        .or_else(|| manifest.get("pluginId"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let version = manifest
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    Some(LocalPluginProfile {
+        plugin_id,
+        version,
+        component_inventory_json: local_plugin_component_inventory_json(target, path, &manifest),
+    })
+}
+
+fn local_plugin_component_inventory_json(
+    target: &str,
+    path: &Path,
+    manifest: &serde_json::Value,
+) -> String {
+    let target_inventory = serde_json::json!({
+        "manifest": manifest,
+        "skills": child_dir_names(path.join("skills")),
+        "commands": child_file_names(path.join("commands")),
+        "agents": child_file_names(path.join("agents")),
+        "hooks": child_file_names(path.join("hooks")),
+        "mcpServers": path.join(".mcp.json").exists(),
+        "lspServers": path.join(".lsp.json").exists(),
+        "monitors": child_file_names(path.join("monitors")),
+        "bin": child_file_names(path.join("bin")),
+        "assets": child_file_names(path.join("assets")),
+        "settings": path.join("settings.json").exists(),
+        "apps": path.join(".app.json").exists()
+    });
+    let mut targets = serde_json::Map::new();
+    targets.insert(target.to_string(), target_inventory);
+    let inventory = serde_json::json!({
+        "schema": "skillhub.plugin-component-inventory.v1",
+        "targets": targets
+    });
+    serde_json::to_string(&inventory).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn child_dir_names(path: PathBuf) -> Vec<String> {
+    child_names(path, true)
+}
+
+fn child_file_names(path: PathBuf) -> Vec<String> {
+    child_names(path, false)
+}
+
+fn child_names(path: PathBuf, dirs: bool) -> Vec<String> {
+    let mut items = fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() != dirs {
+                return None;
+            }
+            entry.file_name().to_str().map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    items.sort();
+    items
+}
+
+fn plugin_marketplace_path(target: &str, root: &Path) -> PathBuf {
+    match target {
+        "codex" if !is_codex_marketplace_dir(root) => root
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json"),
+        "claude" if root.file_name().and_then(|name| name.to_str()) != Some(".claude-plugin") => {
+            root.join(".claude-plugin").join("marketplace.json")
+        }
+        _ => root.join("marketplace.json"),
+    }
+}
+
+fn is_codex_marketplace_dir(root: &Path) -> bool {
+    root.file_name().and_then(|name| name.to_str()) == Some("plugins")
+        && root
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            == Some(".agents")
+}
+
+fn resolve_plugin_source_path(target: &str, root: &Path, source_path: &str) -> PathBuf {
+    let raw = PathBuf::from(source_path);
+    if raw.is_absolute() {
+        return raw;
+    }
+    if target == "claude" {
+        if root.file_name().and_then(|name| name.to_str()) == Some(".claude-plugin") {
+            return root.parent().unwrap_or(root).join(raw);
+        }
+        return root.join(raw);
+    }
+    root.join(raw)
+}
+
+fn home_dir_path() -> Option<PathBuf> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+fn path_hash(value: &str) -> String {
+    sha256_hex(value.as_bytes())[..16].to_string()
+}
+
 fn scan_skill_root(
     conn: &rusqlite::Connection,
     seen_paths: &mut HashSet<String>,
@@ -4532,7 +8713,9 @@ struct CachedLocalSkillIndex {
 impl CachedLocalSkillIndex {
     fn contains(&self, display_path: &str, profile: &LocalSkillProfile) -> bool {
         self.source_paths.contains(display_path)
-            || self.fingerprints.contains(&local_skill_fingerprint(profile))
+            || self
+                .fingerprints
+                .contains(&local_skill_fingerprint(profile))
     }
 }
 
@@ -4964,6 +9147,119 @@ async fn preview_skill_inner(
     })
 }
 
+async fn preview_plugin_inner(
+    request: PluginPreviewRequest,
+    state: &AppState,
+) -> Result<SkillPreview> {
+    let should_refresh_market_metadata =
+        request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
+    if should_refresh_market_metadata {
+        let _metadata_sync_error = refresh_catalog_best_effort(state).await;
+    }
+    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
+
+    let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let binding = find_plugin_binding(&conn, binding_id)?;
+        let package_path: String = conn
+            .query_row(
+                "SELECT package_path FROM plugin_packages WHERE id = ?1",
+                params![binding.package_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: plugin cache package not found")
+            })?;
+        (
+            binding.plugin_name,
+            format!("{} / {}", binding.target, binding.scope),
+            PathBuf::from(package_path),
+        )
+    } else if let Some(path) = request.path.as_deref() {
+        let root_path = PathBuf::from(path);
+        (
+            display_skill_name_from_path(&root_path),
+            "local plugin".to_string(),
+            root_path,
+        )
+    } else {
+        let namespace = request
+            .namespace
+            .as_deref()
+            .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing namespace"))?;
+        let plugin_id = request
+            .plugin_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing plugin id"))?;
+        let target = request.target.as_deref().unwrap_or("codex");
+        validate_plugin_target(target)?;
+        let requested_source_id = request.source_id.clone();
+        let requested_version = request.version.clone();
+
+        let (source_id, plugin, source) = {
+            let conn = state.conn.lock().expect("db mutex poisoned");
+            let source_id = requested_source_id.or_else(|| {
+                default_source_for_plugin(&conn, namespace, plugin_id)
+                    .ok()
+                    .flatten()
+            });
+            let plugin = find_market_plugin(&conn, source_id.as_deref(), namespace, plugin_id)?;
+            if !plugin.targets.iter().any(|item| item == target) {
+                return Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}"));
+            }
+            let source = source_id.as_deref().and_then(|id| {
+                list_sources_inner(&conn)
+                    .ok()?
+                    .into_iter()
+                    .find(|item| item.id == id)
+            });
+            (source_id, plugin, source)
+        };
+        let version = requested_version.unwrap_or_else(|| plugin.latest_version.clone());
+        let version_info = match source.as_ref() {
+            Some(source) => {
+                Some(fetch_plugin_manifest_version(source, &plugin.manifest_path, &version).await?)
+            }
+            _ => None,
+        };
+        let package_path = prepare_plugin_package(
+            state,
+            source.as_ref(),
+            &plugin,
+            &version,
+            target,
+            version_info.as_ref(),
+        )
+        .await?;
+        (
+            plugin.name,
+            format!(
+                "{} / {}",
+                source_id.unwrap_or_else(|| "local cache".to_string()),
+                target
+            ),
+            package_path,
+        )
+    };
+
+    if !root_path.exists() || !root_path.is_dir() {
+        return Err(anyhow!(
+            "PLUGIN_PACKAGE_BUILD_FAILED: preview directory missing"
+        ));
+    }
+
+    let (file_list, files) = collect_preview_files(&root_path, selected_path.as_deref())?;
+
+    Ok(SkillPreview {
+        title,
+        root_path: canonical_display_path(&root_path),
+        origin,
+        files,
+        file_list,
+    })
+}
+
 fn collect_preview_files(
     root: &Path,
     selected_path: Option<&str>,
@@ -5011,7 +9307,12 @@ fn collect_preview_candidates(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') || name == "node_modules" || name == "target" {
+        let allow_hidden_plugin_manifest_dir =
+            path.is_dir() && (name == ".codex-plugin" || name == ".claude-plugin");
+        if (name.starts_with('.') && !allow_hidden_plugin_manifest_dir)
+            || name == "node_modules"
+            || name == "target"
+        {
             continue;
         }
 
@@ -5193,6 +9494,39 @@ fn find_market_skill(
         .ok_or_else(|| anyhow!("未找到 skill: {namespace}/{skill_id}"))
 }
 
+fn default_source_for_plugin(
+    conn: &rusqlite::Connection,
+    namespace: &str,
+    plugin_id: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT source_id FROM plugin_catalog_cache WHERE namespace = ?1 AND plugin_id = ?2 LIMIT 1",
+        params![namespace, plugin_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn find_market_plugin(
+    conn: &rusqlite::Connection,
+    source_id: Option<&str>,
+    namespace: &str,
+    plugin_id: &str,
+) -> Result<MarketPlugin> {
+    let plugins = list_market_plugins_inner(conn)?;
+    plugins
+        .into_iter()
+        .find(|plugin| {
+            plugin.namespace == namespace
+                && plugin.id == plugin_id
+                && source_id
+                    .map(|id| plugin.source_id.as_deref() == Some(id))
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: plugin not found {namespace}/{plugin_id}"))
+}
+
 fn find_cached_package_preview(
     conn: &rusqlite::Connection,
     source_id: Option<&str>,
@@ -5275,6 +9609,77 @@ fn ensure_package_record(
     Ok(id)
 }
 
+fn ensure_plugin_package_record(
+    conn: &rusqlite::Connection,
+    source_id: Option<&str>,
+    plugin: &MarketPlugin,
+    version: &str,
+    target: &str,
+    package_path: &Path,
+    sha256: Option<&str>,
+    component_inventory_json: &str,
+) -> Result<String> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM plugin_packages
+             WHERE COALESCE(source_id, '') = COALESCE(?1, '')
+               AND namespace = ?2
+               AND plugin_id = ?3
+               AND version = ?4
+               AND target = ?5",
+            params![source_id, plugin.namespace, plugin.id, version, target],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE plugin_packages
+             SET plugin_name = ?1,
+                 package_path = ?2,
+                 sha256 = ?3,
+                 component_inventory_json = ?4,
+                 risk_level = ?5,
+                 cached_at = ?6
+             WHERE id = ?7",
+            params![
+                plugin.name,
+                canonical_display_path(package_path),
+                sha256,
+                component_inventory_json,
+                plugin.risk_level,
+                now(),
+                id
+            ],
+        )?;
+        return Ok(id);
+    }
+
+    let id = new_id();
+    fs::create_dir_all(package_path)?;
+    conn.execute(
+        "INSERT INTO plugin_packages
+         (id, source_id, namespace, plugin_id, plugin_name, version, target, package_path,
+          sha256, component_inventory_json, risk_level, cached_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            source_id,
+            plugin.namespace,
+            plugin.id,
+            plugin.name,
+            version,
+            target,
+            canonical_display_path(package_path),
+            sha256,
+            component_inventory_json,
+            plugin.risk_level,
+            now()
+        ],
+    )?;
+    Ok(id)
+}
+
 fn ensure_safe_package_cache_path(state: &AppState, package_path: &Path) -> Result<()> {
     let package_root = state
         .app_dir
@@ -5287,6 +9692,25 @@ fn ensure_safe_package_cache_path(state: &AppState, package_path: &Path) -> Resu
         Ok(())
     } else {
         Err(anyhow!("拒绝删除非包缓存目录"))
+    }
+}
+
+fn ensure_safe_plugin_package_cache_path(state: &AppState, package_path: &Path) -> Result<()> {
+    let package_root = state
+        .app_dir
+        .join("plugin-packages")
+        .canonicalize()
+        .context("PLUGIN_PACKAGE_BUILD_FAILED: read plugin package cache root failed")?;
+    let target = package_path
+        .canonicalize()
+        .context("PLUGIN_PACKAGE_BUILD_FAILED: read plugin package cache path failed")?;
+
+    if target.starts_with(&package_root) && target != package_root {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "PLUGIN_PACKAGE_BUILD_FAILED: refused unsafe plugin cache path"
+        ))
     }
 }
 
@@ -5724,6 +10148,7 @@ author: "Skill Hub"
         let meta = PublishMeta {
             namespace: "community".to_string(),
             skill_id: "demo".to_string(),
+            version: None,
             name: "Demo".to_string(),
             summary: "Demo skill".to_string(),
             tags: vec![],
@@ -5749,6 +10174,7 @@ author: "Skill Hub"
         let meta = PublishMeta {
             namespace: "community".to_string(),
             skill_id: "demo".to_string(),
+            version: None,
             name: "Demo".to_string(),
             summary: "Demo skill".to_string(),
             tags: vec![],
@@ -5885,6 +10311,832 @@ author: "Skill Hub"
     }
 
     #[test]
+    fn parses_plugin_draft_multi_level_category_path() {
+        let nested = parse_gitlab_source_path("backend/java/commit-workflow");
+        assert_eq!(
+            nested.category_path,
+            vec!["backend".to_string(), "java".to_string()]
+        );
+        assert_eq!(nested.category_code().as_deref(), Some("backend/java"));
+        assert_eq!(nested.draft_slug.as_deref(), Some("commit-workflow"));
+    }
+
+    #[test]
+    fn plugin_publish_generates_target_packages_from_common_source() {
+        let files = sample_plugin_files(vec![
+            (
+                "README.md",
+                br#"---
+name: Commit Workflow
+description: Team commit and PR workflow plugin.
+version: 1.0.0
+author: skill-hub
+---
+# Commit Workflow
+"#
+                .to_vec(),
+            ),
+            ("CHANGELOG.md", b"## 1.0.0\n".to_vec()),
+            ("skills/review/SKILL.md", b"# Review\n".to_vec()),
+            ("agents/reviewer.md", b"agent".to_vec()),
+        ]);
+
+        let prepared =
+            prepare_plugin_publish(&files, None).expect("common plugin source should publish");
+        let codex_package = prepared.packages.get("codex").expect("codex package");
+        let claude_package = prepared.packages.get("claude").expect("claude package");
+
+        let mut codex_archive =
+            ZipArchive::new(Cursor::new(codex_package.bytes.clone())).expect("codex zip opens");
+        assert!(codex_archive.by_name(".codex-plugin/plugin.json").is_ok());
+        assert!(codex_archive.by_name("skills/review/SKILL.md").is_ok());
+        assert!(codex_archive
+            .by_name("codex/.codex-plugin/plugin.json")
+            .is_err());
+        assert!(codex_archive
+            .by_name("claude/.claude-plugin/plugin.json")
+            .is_err());
+
+        let mut claude_archive =
+            ZipArchive::new(Cursor::new(claude_package.bytes.clone())).expect("claude zip opens");
+        assert!(claude_archive.by_name(".claude-plugin/plugin.json").is_ok());
+        assert!(claude_archive.by_name("skills/review/SKILL.md").is_ok());
+        assert!(claude_archive.by_name("agents/reviewer.md").is_ok());
+        assert!(claude_archive
+            .by_name("codex/.codex-plugin/plugin.json")
+            .is_err());
+        assert!(claude_archive
+            .by_name("claude/.claude-plugin/plugin.json")
+            .is_err());
+        assert_eq!(prepared.risk_level, "medium");
+    }
+
+    #[test]
+    fn plugin_publish_rejects_readme_without_required_frontmatter() {
+        let files = vec![
+            ("README.md".to_string(), b"# Commit Workflow\n".to_vec()),
+            (
+                "skills/review/SKILL.md".to_string(),
+                b"# Review\n".to_vec(),
+            ),
+        ];
+        let saved = PublishMeta {
+            namespace: "internal".to_string(),
+            skill_id: "commit-workflow".to_string(),
+            version: Some("1.0.0".to_string()),
+            name: "Commit Workflow".to_string(),
+            summary: "Team commit and PR workflow plugin.".to_string(),
+            tags: vec!["git".to_string()],
+            targets: vec!["codex".to_string(), "claude".to_string()],
+            levels: vec!["user".to_string(), "project".to_string()],
+            publish_scope: "public".to_string(),
+            publish_category_slug: Some("backend".to_string()),
+            publish_project_slug: None,
+            changelog: String::new(),
+            updated_at: None,
+            updated_by: None,
+        };
+
+        let err = prepare_plugin_publish(&files, Some(saved))
+            .expect_err("README front matter should be required");
+
+        assert!(err.to_string().contains("README.md 缺少 name"));
+    }
+
+    #[test]
+    fn plugin_publish_can_use_readme_frontmatter_without_pluginhub() {
+        let files = vec![
+            (
+                "README.md".to_string(),
+                br#"---
+name: webapp-testing
+description: Toolkit for interacting with and testing local web applications using Playwright.
+metadata:
+  version: 1.0.0
+  author: skill-hub
+  tags: [web, testing]
+---
+# Webapp Testing
+"#
+                .to_vec(),
+            ),
+            (
+                "skills/review/SKILL.md".to_string(),
+                b"# Review\n".to_vec(),
+            ),
+        ];
+        let saved = PublishMeta {
+            namespace: "internal".to_string(),
+            skill_id: "webapp-testing".to_string(),
+            version: Some("1.0.0".to_string()),
+            name: String::new(),
+            summary: String::new(),
+            tags: Vec::new(),
+            targets: vec!["codex".to_string()],
+            levels: vec!["user".to_string(), "project".to_string()],
+            publish_scope: "public".to_string(),
+            publish_category_slug: Some("testing".to_string()),
+            publish_project_slug: None,
+            changelog: String::new(),
+            updated_at: None,
+            updated_by: None,
+        };
+
+        let prepared = prepare_plugin_publish(&files, Some(saved))
+            .expect("README front matter should fill plugin source metadata");
+
+        assert_eq!(prepared.meta.id, "webapp-testing");
+        assert_eq!(prepared.meta.name, "webapp-testing");
+        assert_eq!(
+            prepared.meta.summary,
+            "Toolkit for interacting with and testing local web applications using Playwright."
+        );
+        assert_eq!(prepared.meta.version, "1.0.0");
+        assert_eq!(prepared.meta.tags, vec!["web", "testing"]);
+        assert!(prepared.packages.contains_key("codex"));
+    }
+
+    #[test]
+    fn plugin_publish_meta_overrides_source_publish_target() {
+        let source = PluginSourceMeta {
+            schema: "skillhub.plugin-source.v1".to_string(),
+            namespace: "internal".to_string(),
+            id: "commit-workflow".to_string(),
+            name: "Commit Workflow".to_string(),
+            version: "1.0.0".to_string(),
+            summary: "From pluginhub".to_string(),
+            author: None,
+            categories: vec!["backend".to_string()],
+            tags: vec!["git".to_string()],
+            targets: vec!["codex".to_string(), "claude".to_string()],
+            scopes: vec!["user".to_string(), "project".to_string()],
+            components: vec!["skills".to_string()],
+            risk_level: Some("low".to_string()),
+            publish_scope: Some("public".to_string()),
+            publish_project_slug: None,
+            platforms: serde_json::json!({}),
+        };
+        let saved = PublishMeta {
+            namespace: "ignored".to_string(),
+            skill_id: "ignored".to_string(),
+            version: Some("1.1.0".to_string()),
+            name: "Managed Commit Workflow".to_string(),
+            summary: "Managed summary".to_string(),
+            tags: vec!["managed".to_string()],
+            targets: vec!["claude".to_string()],
+            levels: vec!["project".to_string()],
+            publish_scope: "project".to_string(),
+            publish_category_slug: None,
+            publish_project_slug: Some("alpha".to_string()),
+            changelog: "Managed changelog".to_string(),
+            updated_at: None,
+            updated_by: None,
+        };
+
+        let merged = apply_plugin_publish_meta(source, Some(saved));
+
+        assert_eq!(merged.name, "Managed Commit Workflow");
+        assert_eq!(merged.summary, "Managed summary");
+        assert_eq!(merged.tags, vec!["managed"]);
+        assert_eq!(merged.targets, vec!["claude"]);
+        assert_eq!(merged.scopes, vec!["project"]);
+        assert_eq!(merged.publish_scope.as_deref(), Some("project"));
+        assert_eq!(merged.publish_project_slug.as_deref(), Some("alpha"));
+        assert_eq!(plugin_publish_categories(&merged), vec!["project:alpha"]);
+    }
+
+    #[test]
+    fn plugin_publish_rejects_platform_generated_directories_in_source() {
+        let files = sample_plugin_files(vec![(
+            "codex/.codex-plugin/plugin.json",
+            br#"{"name":"Commit Workflow"}"#.to_vec(),
+        )]);
+        let err =
+            prepare_plugin_publish(&files, None).expect_err("platform directories should fail");
+        assert!(err.to_string().contains("PLUGIN_SOURCE_INVALID"));
+    }
+
+    #[test]
+    fn plugin_package_filters_target_specific_common_files() {
+        let files = sample_plugin_files(vec![
+            ("skills/review/SKILL.md", b"# Review\n".to_vec()),
+            ("agents/reviewer.md", b"agent".to_vec()),
+            (".app.json", br#"{"apps":[]}"#.to_vec()),
+        ]);
+        let prepared = prepare_plugin_publish(&files, None).expect("plugin publish should prepare");
+        let codex_package = prepared.packages.get("codex").expect("codex package");
+        let mut archive =
+            ZipArchive::new(Cursor::new(codex_package.bytes.clone())).expect("zip opens");
+        assert!(archive.by_name(".codex-plugin/plugin.json").is_ok());
+        assert!(archive.by_name("skills/review/SKILL.md").is_ok());
+        assert!(archive.by_name(".app.json").is_ok());
+        assert!(archive.by_name("agents/reviewer.md").is_err());
+        assert_eq!(prepared.risk_level, "medium");
+    }
+
+    #[test]
+    fn plugin_package_rejects_path_traversal() {
+        let files = sample_plugin_files(vec![
+            ("skills/review/SKILL.md", b"# Review\n".to_vec()),
+            ("../escape.txt", b"bad".to_vec()),
+        ]);
+        let err = prepare_plugin_publish(&files, None).expect_err("unsafe path should fail");
+        assert!(err.to_string().contains("PLUGIN_PACKAGE_BUILD_FAILED"));
+    }
+
+    #[test]
+    fn plugin_zip_extraction_preserves_native_json_manifest() {
+        let files = sample_plugin_files(vec![
+            ("skills/demo/SKILL.md", b"# Demo\n".to_vec()),
+            (".mcp.json", br#"{"servers":{}}"#.to_vec()),
+        ]);
+        let meta = read_plugin_source_meta(&files).expect("meta should parse");
+        let bytes =
+            build_plugin_package_zip(&files, &meta, "codex").expect("plugin zip should build");
+        let root = std::env::temp_dir().join(format!("skillhub-plugin-test-{}", new_id()));
+        fs::create_dir_all(&root).expect("create temp dir");
+        extract_zip_preserving_json_safely(&bytes, &root).expect("extract plugin zip");
+        assert!(root.join(".codex-plugin").join("plugin.json").is_file());
+        assert!(root.join(".mcp.json").is_file());
+        fs::remove_dir_all(root).expect("remove temp dir");
+    }
+
+    #[test]
+    fn plugin_preview_file_list_includes_native_manifest_directory() {
+        let root = std::env::temp_dir().join(format!("skillhub-plugin-preview-{}", new_id()));
+        fs::create_dir_all(root.join(".codex-plugin")).expect("create manifest dir");
+        fs::write(
+            root.join(".codex-plugin").join("plugin.json"),
+            br#"{"name":"demo"}"#,
+        )
+        .expect("write manifest");
+        fs::create_dir_all(root.join("skills").join("demo")).expect("create skill dir");
+        fs::write(
+            root.join("skills").join("demo").join("SKILL.md"),
+            b"# Demo\n",
+        )
+        .expect("write skill");
+
+        let entries = collect_preview_file_list(&root).expect("collect preview files");
+
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == ".codex-plugin/plugin.json"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "skills/demo/SKILL.md"));
+        fs::remove_dir_all(root).expect("remove temp dir");
+    }
+
+    #[test]
+    fn plugin_marketplace_files_point_to_materialized_plugin_dir() {
+        let root = std::env::temp_dir().join(format!("skillhub-plugin-market-{}", new_id()));
+        let plugin = MarketPlugin {
+            namespace: "internal".to_string(),
+            id: "commit-workflow".to_string(),
+            name: "Commit Workflow".to_string(),
+            summary: "Team workflow plugin.".to_string(),
+            latest_version: "1.0.0".to_string(),
+            categories: vec!["backend".to_string()],
+            tags: vec![],
+            targets: vec!["codex".to_string()],
+            scopes: vec!["user".to_string()],
+            components: vec!["skills".to_string()],
+            risk_level: "low".to_string(),
+            manifest_path: "plugins/internal/commit-workflow/manifest.json".to_string(),
+            updated_at: None,
+            source_id: Some("compiled-source".to_string()),
+            installed_bindings: vec![],
+            cached_versions: vec![],
+        };
+        let codex_path = write_plugin_marketplace_file(
+            "codex",
+            &root,
+            "internal.commit-workflow",
+            &plugin,
+            "1.0.0",
+            "skillhub",
+        )
+        .expect("write codex marketplace");
+        assert_eq!(
+            canonical_display_path(&codex_path),
+            canonical_display_path(
+                &root
+                    .join(".agents")
+                    .join("plugins")
+                    .join("marketplace.json")
+            )
+        );
+        let codex_doc: serde_json::Value =
+            serde_json::from_slice(&fs::read(codex_path).expect("read marketplace")).expect("json");
+        assert_eq!(
+            codex_doc["plugins"][0]["source"]["path"],
+            "./plugins/internal.commit-workflow"
+        );
+        assert_eq!(codex_doc["plugins"][0]["source"]["source"], "local");
+        assert_eq!(
+            codex_doc["plugins"][0]["policy"]["installation"],
+            "AVAILABLE"
+        );
+
+        let claude_path = write_plugin_marketplace_file(
+            "claude",
+            &root,
+            "internal.commit-workflow",
+            &plugin,
+            "1.0.0",
+            "skillhub",
+        )
+        .expect("write claude marketplace");
+        let claude_doc: serde_json::Value =
+            serde_json::from_slice(&fs::read(claude_path).expect("read marketplace"))
+                .expect("json");
+        assert_eq!(
+            claude_doc["plugins"][0]["source"]["path"],
+            "./plugins/internal.commit-workflow"
+        );
+        fs::remove_dir_all(root).expect("remove temp dir");
+    }
+
+    #[test]
+    fn plugin_marketplace_upsert_preserves_other_entries() {
+        let existing = serde_json::json!({
+            "name": "old",
+            "plugins": [
+                { "name": "alpha", "source": { "path": "./plugins/alpha" } },
+                { "name": "commit-workflow", "source": { "path": "./plugins/old" } }
+            ]
+        });
+        let next = upsert_plugin_marketplace_entry(
+            existing,
+            "skillhub",
+            Some(serde_json::json!(1)),
+            serde_json::json!({
+                "name": "commit-workflow",
+                "source": { "path": "./plugins/internal.commit-workflow" }
+            }),
+        );
+        let plugins = next["plugins"].as_array().expect("plugins array");
+        assert_eq!(plugins.len(), 2);
+        assert_eq!(plugins[0]["name"], "alpha");
+        assert_eq!(
+            plugins[1]["source"]["path"],
+            "./plugins/internal.commit-workflow"
+        );
+    }
+
+    #[test]
+    fn plugin_marketplace_remove_preserves_other_entries() {
+        let existing = serde_json::json!({
+            "name": "skillhub",
+            "plugins": [
+                { "name": "alpha", "source": { "path": "./plugins/alpha" } },
+                { "name": "commit-workflow", "source": { "path": "./plugins/internal.commit-workflow" } }
+            ]
+        });
+        let next = remove_plugin_marketplace_entry(existing, "commit-workflow");
+        let plugins = next["plugins"].as_array().expect("plugins array");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0]["name"], "alpha");
+    }
+
+    #[test]
+    fn plugin_draft_content_prefix_prefers_flat_plugin_root() {
+        let root = "draft/gitlab/plugins/backend/java/commit-workflow/";
+        let objects = vec![
+            "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/skills/review/SKILL.md".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/pluginhub.json".to_string(),
+        ];
+        let resolved =
+            resolve_plugin_draft_content_prefix(root, &objects).expect("flat root should resolve");
+        assert_eq!(resolved.prefix, root);
+        assert_eq!(
+            resolved.pluginhub_path,
+            "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json"
+        );
+
+        let files = collect_plugin_draft_preview_file_list(&resolved.prefix, &objects);
+        let paths = files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "pluginhub.json".to_string(),
+                "skills/review/SKILL.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_draft_content_prefix_falls_back_to_legacy_source_root() {
+        let root = "draft/gitlab/plugins/backend/java/commit-workflow/";
+        let objects = vec![
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/pluginhub.json".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/skills/review/SKILL.md"
+                .to_string(),
+        ];
+        let resolved = resolve_plugin_draft_content_prefix(root, &objects)
+            .expect("legacy source root should resolve");
+        assert_eq!(
+            resolved.prefix,
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/"
+        );
+        assert_eq!(
+            resolved.pluginhub_path,
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/pluginhub.json"
+        );
+    }
+
+    #[test]
+    fn plugin_draft_preview_file_list_uses_plugin_content_prefix() {
+        let prefix = "draft/gitlab/plugins/backend/java/commit-workflow/";
+        let files = collect_plugin_draft_preview_file_list(
+            prefix,
+            &[
+                "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json".to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/skills/review/SKILL.md"
+                    .to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/agents/reviewer.md".to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/validation.json".to_string(),
+            ],
+        );
+        let paths = files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "agents/reviewer.md".to_string(),
+                "pluginhub.json".to_string(),
+                "skills/review/SKILL.md".to_string(),
+                "validation.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_draft_source_paths_are_discovered_from_pluginhub_without_draft_json() {
+        let objects = vec![
+            "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/README.md".to_string(),
+            "draft/gitlab/plugins/productivity/release-helper/pluginhub.json".to_string(),
+        ];
+        let paths = collect_plugin_draft_source_paths(&objects);
+        assert_eq!(
+            paths,
+            vec![
+                "backend/java/commit-workflow".to_string(),
+                "productivity/release-helper".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_draft_source_paths_include_directories_without_pluginhub() {
+        let objects = vec![
+            "draft/gitlab/plugins/productivity/automation/release-notes-helper/README.md"
+                .to_string(),
+            "draft/gitlab/plugins/productivity/automation/release-notes-helper/CHANGELOG.md"
+                .to_string(),
+            "draft/gitlab/plugins/productivity/automation/release-notes-helper/skills/write/SKILL.md"
+                .to_string(),
+            "draft/gitlab/plugins/productivity/automation/release-notes-helper/validation.json"
+                .to_string(),
+        ];
+        let paths = collect_plugin_draft_source_paths(&objects);
+        assert_eq!(
+            paths,
+            vec!["productivity/automation/release-notes-helper".to_string()]
+        );
+    }
+
+    #[test]
+    fn plugin_publish_can_synthesize_source_meta_from_readme_and_saved_publish_meta() {
+        let files = vec![
+            (
+                "README.md".to_string(),
+                br#"---
+name: Release Notes Helper
+description: Generate release notes from commits and PRs.
+metadata:
+  version: 0.2.0
+  author: skill-hub
+  tags: [release, automation]
+---
+# Release Notes Helper
+"#
+                .to_vec(),
+            ),
+            (
+                "skills/write/SKILL.md".to_string(),
+                b"# Write Release Notes\n".to_vec(),
+            ),
+            ("agents/reviewer.md".to_string(), b"agent".to_vec()),
+        ];
+        let saved = PublishMeta {
+            namespace: "productivity".to_string(),
+            skill_id: "release-notes-helper".to_string(),
+            version: Some("0.2.0".to_string()),
+            name: "Release Notes Helper".to_string(),
+            summary: "Generate release notes from commits and PRs.".to_string(),
+            tags: vec!["release".to_string(), "automation".to_string()],
+            targets: vec!["codex".to_string(), "claude".to_string()],
+            levels: vec!["user".to_string(), "project".to_string()],
+            publish_scope: "public".to_string(),
+            publish_category_slug: Some("productivity".to_string()),
+            publish_project_slug: None,
+            changelog: "Initial plugin publish.".to_string(),
+            updated_at: None,
+            updated_by: None,
+        };
+
+        let prepared =
+            prepare_plugin_publish(&files, Some(saved)).expect("saved meta should publish plugin");
+
+        assert_eq!(prepared.meta.namespace, "productivity");
+        assert_eq!(prepared.meta.id, "release-notes-helper");
+        assert_eq!(prepared.meta.version, "0.2.0");
+        assert_eq!(prepared.meta.targets, vec!["codex", "claude"]);
+        assert_eq!(prepared.meta.scopes, vec!["user", "project"]);
+        assert_eq!(prepared.meta.components, vec!["skills", "agents"]);
+        assert!(prepared.packages.contains_key("codex"));
+        assert!(prepared.packages.contains_key("claude"));
+    }
+
+    #[test]
+    fn default_plugin_publish_meta_does_not_take_market_scope_from_pluginhub() {
+        let source = PluginSourceMeta {
+            schema: "skillhub.plugin-source.v1".to_string(),
+            namespace: "internal".to_string(),
+            id: "commit-workflow".to_string(),
+            name: "Commit Workflow".to_string(),
+            version: "1.0.0".to_string(),
+            summary: "Workflow helper".to_string(),
+            author: None,
+            categories: vec!["backend".to_string()],
+            tags: vec!["git".to_string()],
+            targets: vec!["codex".to_string()],
+            scopes: vec!["user".to_string(), "project".to_string()],
+            components: vec!["skills".to_string()],
+            risk_level: Some("low".to_string()),
+            publish_scope: Some("project".to_string()),
+            publish_project_slug: Some("alpha".to_string()),
+            platforms: serde_json::Value::Null,
+        };
+        let meta = default_plugin_publish_meta(&source);
+        assert_eq!(meta.publish_scope, "public");
+        assert_eq!(meta.publish_category_slug, None);
+        assert_eq!(meta.publish_project_slug, None);
+        assert_eq!(meta.targets, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn claude_plugin_marketplace_path_resolves_from_marketplace_dir() {
+        let root = PathBuf::from("/tmp/project");
+        let resolved =
+            resolve_plugin_source_path("claude", &root, "./plugins/internal.commit-workflow");
+        assert_eq!(
+            canonical_display_path(&resolved),
+            "/tmp/project/./plugins/internal.commit-workflow"
+        );
+    }
+
+    #[test]
+    fn claude_plugin_sync_commands_use_scope_and_marketplace_path() {
+        let marketplace_root = PathBuf::from("/tmp/project");
+        assert_eq!(
+            build_claude_plugin_install_commands(
+                "claude",
+                "commit-workflow",
+                "skillhub",
+                "project",
+                &marketplace_root
+            ),
+            Some(vec![
+                vec![
+                    "plugin".to_string(),
+                    "marketplace".to_string(),
+                    "add".to_string(),
+                    "/tmp/project/.claude-plugin/marketplace.json".to_string(),
+                    "--scope".to_string(),
+                    "project".to_string(),
+                ],
+                vec![
+                    "plugin".to_string(),
+                    "install".to_string(),
+                    "commit-workflow@skillhub".to_string(),
+                    "--scope".to_string(),
+                    "project".to_string(),
+                ],
+                vec![
+                    "plugin".to_string(),
+                    "enable".to_string(),
+                    "commit-workflow@skillhub".to_string(),
+                    "--scope".to_string(),
+                    "project".to_string(),
+                ],
+            ])
+        );
+        assert_eq!(
+            build_claude_plugin_install_commands(
+                "codex",
+                "commit-workflow",
+                "skillhub",
+                "project",
+                &marketplace_root
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_plugin_remove_command_uses_disable_or_uninstall() {
+        assert_eq!(
+            build_claude_plugin_remove_command(
+                "claude",
+                "commit-workflow",
+                "skillhub",
+                "user",
+                ClaudePluginRemoveAction::Disable
+            ),
+            Some(vec![
+                "plugin".to_string(),
+                "disable".to_string(),
+                "commit-workflow@skillhub".to_string(),
+                "--scope".to_string(),
+                "user".to_string(),
+            ])
+        );
+        assert_eq!(
+            build_claude_plugin_remove_command(
+                "claude",
+                "commit-workflow",
+                "skillhub",
+                "user",
+                ClaudePluginRemoveAction::Uninstall
+            ),
+            Some(vec![
+                "plugin".to_string(),
+                "uninstall".to_string(),
+                "commit-workflow@skillhub".to_string(),
+                "--scope".to_string(),
+                "user".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn claude_cli_missing_guidance_points_to_install_commands() {
+        let message = plugin_cli_missing_guidance("claude");
+        assert!(message.contains("Claude Code CLI"));
+        assert!(message.contains("irm https://claude.ai/install.ps1 | iex"));
+        assert!(message.contains("winget install Anthropic.ClaudeCode"));
+        assert!(message.contains("npm install -g @anthropic-ai/claude-code"));
+    }
+
+    #[test]
+    fn plugin_scope_conflict_blocks_personal_when_project_enabled() {
+        let bindings = vec![plugin_binding_fixture(
+            "project-binding",
+            "project",
+            Some("/tmp/project-a"),
+            true,
+        )];
+        let err = ensure_plugin_scope_can_enable_from_bindings(
+            &bindings,
+            None,
+            "internal",
+            "commit-workflow",
+            "codex",
+            "user",
+        )
+        .expect_err("personal install should conflict with project binding");
+        assert!(err.to_string().contains("PLUGIN_SCOPE_CONFLICT"));
+    }
+
+    #[test]
+    fn plugin_scope_conflict_blocks_project_when_personal_enabled() {
+        let bindings = vec![plugin_binding_fixture("user-binding", "user", None, true)];
+        let err = ensure_plugin_scope_can_enable_from_bindings(
+            &bindings,
+            None,
+            "internal",
+            "commit-workflow",
+            "codex",
+            "project",
+        )
+        .expect_err("project install should conflict with user binding");
+        assert!(err.to_string().contains("PLUGIN_SCOPE_CONFLICT"));
+    }
+
+    #[test]
+    fn plugin_scope_conflict_ignores_other_targets_disabled_and_excluded_binding() {
+        let mut other_target = plugin_binding_fixture("other-target", "user", None, true);
+        other_target.target = "claude".to_string();
+        let disabled_project =
+            plugin_binding_fixture("disabled-project", "project", Some("/tmp/project-a"), false);
+        let current = plugin_binding_fixture("current", "user", None, true);
+        let bindings = vec![other_target, disabled_project, current];
+
+        ensure_plugin_scope_can_enable_from_bindings(
+            &bindings,
+            Some("current"),
+            "internal",
+            "commit-workflow",
+            "codex",
+            "project",
+        )
+        .expect("excluded current binding and unrelated bindings should not conflict");
+    }
+
+    #[test]
+    fn codex_plugin_marketplace_path_uses_agents_plugins_catalog() {
+        let root = PathBuf::from("/tmp/project");
+        assert_eq!(
+            canonical_display_path(&plugin_marketplace_path("codex", &root)),
+            "/tmp/project/.agents/plugins/marketplace.json"
+        );
+    }
+
+    #[test]
+    fn codex_user_marketplace_uses_personal_name() {
+        assert_eq!(plugin_marketplace_name("codex", "user", None), "personal");
+        assert_eq!(
+            plugin_marketplace_name("codex", "project", Some("/tmp/project")),
+            format!("skillhub-{}", path_hash("/tmp/project"))
+        );
+        assert_eq!(plugin_marketplace_name("claude", "user", None), "skillhub");
+    }
+
+    #[test]
+    fn codex_cli_idempotent_error_detection_is_narrow() {
+        assert!(is_plugin_missing_message(
+            "Error: plugin `demo` is not installed"
+        ));
+        assert!(is_plugin_already_configured_message(
+            "Error: marketplace `skillhub` is already configured"
+        ));
+        assert!(!is_plugin_already_configured_message(
+            "Error: plugin `demo` is already installed"
+        ));
+    }
+
+    fn plugin_binding_fixture(
+        id: &str,
+        scope: &str,
+        project_path: Option<&str>,
+        enabled: bool,
+    ) -> PluginBinding {
+        PluginBinding {
+            id: id.to_string(),
+            package_id: "pkg".to_string(),
+            source_id: Some("source".to_string()),
+            namespace: "internal".to_string(),
+            plugin_id: "commit-workflow".to_string(),
+            plugin_name: "Commit Workflow".to_string(),
+            version: "1.0.0".to_string(),
+            target: "codex".to_string(),
+            scope: scope.to_string(),
+            project_path: project_path.map(ToString::to_string),
+            marketplace_id: Some("market".to_string()),
+            marketplace_name: "personal".to_string(),
+            platform_ref: "commit-workflow@personal".to_string(),
+            enabled,
+            install_mode: "marketplace".to_string(),
+            update_policy: "follow_latest".to_string(),
+            status: "installed".to_string(),
+            created_at: now(),
+            updated_at: now(),
+        }
+    }
+
+    fn sample_plugin_files(extra: Vec<(&str, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+        let mut files = vec![(
+            "pluginhub.json".to_string(),
+            br#"{
+              "schema": "skillhub.plugin-source.v1",
+              "namespace": "internal",
+              "id": "commit-workflow",
+              "name": "Commit Workflow",
+              "version": "1.0.0",
+              "summary": "Team commit and PR workflow plugin.",
+              "categories": ["backend"],
+              "tags": ["git"],
+              "targets": ["codex", "claude"],
+              "scopes": ["user", "project"],
+              "components": ["skills", "agents"],
+              "riskLevel": "medium",
+              "publishScope": "public"
+            }"#
+            .to_vec(),
+        )];
+        files.extend(
+            extra
+                .into_iter()
+                .map(|(path, bytes)| (path.to_string(), bytes)),
+        );
+        files
+    }
+
+    #[test]
     fn normalize_categories_cleans_names_and_duplicate_order() {
         let doc = normalize_categories_doc(CategoriesDoc {
             schema: "skillhub.categories.v1".to_string(),
@@ -5980,6 +11232,7 @@ author: "Skill Hub"
         let meta = PublishMeta {
             namespace: "community".to_string(),
             skill_id: "demo".to_string(),
+            version: None,
             name: "Demo".to_string(),
             summary: "Demo skill".to_string(),
             tags: vec![],
@@ -6132,6 +11385,7 @@ metadata:
             let meta = PublishMeta {
                 namespace: "live".to_string(),
                 skill_id: "minio-live-draft".to_string(),
+                version: Some("0.1.0".to_string()),
                 name: "MinIO Live Draft".to_string(),
                 summary: "Published by live MinIO integration test.".to_string(),
                 tags: vec!["minio".to_string(), "live-test".to_string()],
@@ -6150,6 +11404,7 @@ metadata:
                     admin_key: admin_key.clone(),
                     gitlab_source_path: source_path.clone(),
                     meta,
+                    artifact_kind: None,
                 },
                 &local_macs,
             )
@@ -6241,6 +11496,7 @@ metadata:
             let meta = PublishMeta {
                 namespace: "live".to_string(),
                 skill_id: "minio-live-draft".to_string(),
+                version: Some("0.1.0".to_string()),
                 name: "MinIO Live Draft".to_string(),
                 summary: "Published by live MinIO integration test.".to_string(),
                 tags: vec!["minio".to_string(), "live-test".to_string()],
@@ -6258,6 +11514,7 @@ metadata:
                     admin_key: admin_key.clone(),
                     gitlab_source_path: source_path.clone(),
                     meta,
+                    artifact_kind: None,
                 },
                 &local_macs,
             )

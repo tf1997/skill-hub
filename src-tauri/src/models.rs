@@ -7,9 +7,13 @@ pub struct AppBootstrap {
     pub sources: Vec<Source>,
     pub categories: Vec<Category>,
     pub skills: Vec<MarketSkill>,
+    pub plugins: Vec<MarketPlugin>,
     pub market_projects: Vec<MarketProject>,
     pub bindings: Vec<SkillBinding>,
     pub cached_packages: Vec<CachedSkillPackage>,
+    pub plugin_packages: Vec<CachedPluginPackage>,
+    pub plugin_bindings: Vec<PluginBinding>,
+    pub local_plugins: Vec<LocalPlugin>,
     pub local_skills: Vec<LocalSkill>,
     pub projects: Vec<Project>,
     pub target_roots: Vec<TargetRoot>,
@@ -195,6 +199,173 @@ pub struct MarketSkill {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginCatalogDoc {
+    pub schema: String,
+    #[serde(default, alias = "generated_at")]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub plugins: Vec<MarketPlugin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketPlugin {
+    pub namespace: String,
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    #[serde(alias = "latest_version")]
+    pub latest_version: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default, alias = "risk_level")]
+    pub risk_level: String,
+    #[serde(alias = "manifest_path")]
+    pub manifest_path: String,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: Option<String>,
+    #[serde(default, alias = "source_id")]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub installed_bindings: Vec<PluginBinding>,
+    #[serde(default)]
+    pub cached_versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifest {
+    pub schema: String,
+    pub namespace: String,
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default, alias = "risk_level")]
+    pub risk_level: String,
+    #[serde(alias = "latest_version")]
+    pub latest_version: String,
+    #[serde(default)]
+    pub versions: Vec<PluginVersion>,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginVersion {
+    pub version: String,
+    #[serde(alias = "plugin_path")]
+    pub plugin_path: String,
+    #[serde(default)]
+    pub packages: PluginVersionPackages,
+    #[serde(default, alias = "component_inventory_path")]
+    pub component_inventory_path: Option<String>,
+    #[serde(default, alias = "risk_report_path")]
+    pub risk_report_path: Option<String>,
+    #[serde(default, alias = "changelog_path")]
+    pub changelog_path: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginVersionPackages {
+    pub codex: Option<PluginPackageRef>,
+    pub claude: Option<PluginPackageRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPackageRef {
+    #[serde(alias = "package_path")]
+    pub package_path: String,
+    #[serde(alias = "sha256_path")]
+    pub sha256_path: String,
+    #[serde(default, alias = "signature_path")]
+    pub signature_path: Option<String>,
+    #[serde(default)]
+    pub package: Option<PackageInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPluginPackage {
+    pub source_id: Option<String>,
+    pub namespace: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub version: String,
+    pub target: String,
+    pub package_path: String,
+    pub cached_at: String,
+    pub risk_level: String,
+    pub component_inventory_json: String,
+    pub binding_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginBinding {
+    pub id: String,
+    pub package_id: String,
+    pub source_id: Option<String>,
+    pub namespace: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub version: String,
+    pub target: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+    pub marketplace_id: Option<String>,
+    pub marketplace_name: String,
+    pub platform_ref: String,
+    pub enabled: bool,
+    pub install_mode: String,
+    pub update_policy: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPlugin {
+    pub id: String,
+    pub target: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+    pub path: String,
+    pub marketplace_name: Option<String>,
+    pub plugin_id: Option<String>,
+    pub version: Option<String>,
+    pub enabled: bool,
+    pub status: String,
+    pub component_inventory_json: String,
+    pub managed_by_skillhub: bool,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillManifest {
     pub schema: String,
     pub namespace: String,
@@ -253,6 +424,21 @@ pub struct InstallSkillRequest {
     pub version: Option<String>,
     pub target: String,
     pub level: String,
+    pub project_path: Option<String>,
+    pub install_mode: Option<String>,
+    pub update_policy: Option<String>,
+    pub enable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallPluginRequest {
+    pub source_id: Option<String>,
+    pub namespace: String,
+    pub plugin_id: String,
+    pub version: Option<String>,
+    pub target: String,
+    pub scope: String,
     pub project_path: Option<String>,
     pub install_mode: Option<String>,
     pub update_policy: Option<String>,
@@ -425,6 +611,19 @@ pub struct SkillPreviewRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginPreviewRequest {
+    pub source_id: Option<String>,
+    pub namespace: Option<String>,
+    pub plugin_id: Option<String>,
+    pub version: Option<String>,
+    pub target: Option<String>,
+    pub binding_id: Option<String>,
+    pub path: Option<String>,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AdminDraftPreviewRequest {
     pub admin_key: String,
     pub gitlab_source_path: String,
@@ -462,6 +661,8 @@ pub struct SkillPreviewFileEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCandidate {
+    #[serde(default = "default_update_kind")]
+    pub kind: String,
     pub binding_id: String,
     pub namespace: String,
     pub skill_id: String,
@@ -473,6 +674,10 @@ pub struct UpdateCandidate {
     pub latest_version: String,
     pub update_policy: String,
     pub blocked_reason: Option<String>,
+}
+
+fn default_update_kind() -> String {
+    "skill".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -494,12 +699,81 @@ pub struct AdminDraftSkill {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDraftPlugin {
+    pub gitlab_source_path: String,
+    pub draft_slug: Option<String>,
+    #[serde(default)]
+    pub gitlab_category_path: Vec<String>,
+    #[serde(default)]
+    pub source_available: bool,
+    #[serde(default)]
+    pub readme_metadata_complete: bool,
+    pub namespace: Option<String>,
+    pub plugin_id: Option<String>,
+    pub name: Option<String>,
+    pub summary: Option<String>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub risk_level: Option<String>,
+    pub status: String,
+    pub validation_status: Option<String>,
+    pub publish_meta: Option<PublishMeta>,
+    pub published_version: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSourceMeta {
+    pub schema: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default, alias = "plugin_id")]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default, alias = "risk_level")]
+    pub risk_level: Option<String>,
+    #[serde(default, alias = "publish_scope")]
+    pub publish_scope: Option<String>,
+    #[serde(default, alias = "publish_project_slug")]
+    pub publish_project_slug: Option<String>,
+    #[serde(default)]
+    pub platforms: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishMeta {
     pub namespace: String,
     #[serde(alias = "skill_id")]
     pub skill_id: String,
+    #[serde(default)]
+    pub version: Option<String>,
     pub name: String,
     pub summary: String,
     #[serde(default)]
@@ -528,6 +802,8 @@ pub struct SavePublishMetaRequest {
     pub admin_key: String,
     pub gitlab_source_path: String,
     pub meta: PublishMeta,
+    #[serde(default, alias = "artifact_kind")]
+    pub artifact_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -569,9 +845,46 @@ pub struct ArchiveMarketSkillRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ArchiveMarketPluginRequest {
+    pub admin_key: String,
+    pub namespace: String,
+    pub plugin_id: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PublishDraftRequest {
     pub admin_key: String,
     pub gitlab_source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishPluginDraftRequest {
+    pub admin_key: String,
+    pub gitlab_source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetPluginBindingEnabledRequest {
+    pub binding_id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallPluginRequest {
+    pub binding_id: String,
+    #[serde(default)]
+    pub delete_cached_package: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradePluginBindingRequest {
+    pub binding_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,96 @@
+# Copy this file into a plugin source repository as .gitlab-ci.yml.
+# It syncs plugin source files into the Skill Hub plugin draft prefix:
+# draft/gitlab/plugins/{GITLAB_CATEGORY_PATH}/{DRAFT_SLUG}/
+#
+# Required CI variables:
+# - MINIO_ENDPOINT          example: http://minio.internal:9000
+# - MINIO_ACCESS_KEY        draft-writer access key
+# - MINIO_SECRET_KEY        draft-writer secret key
+# - GITLAB_CATEGORY_PATH    example: backend/java
+# - DRAFT_SLUG              example: commit-workflow
+#
+# Optional CI variables:
+# - PLUGIN_DIR              default: .
+# - SKILL_MARKET_BUCKET     default: skill-market
+
+stages:
+  - validate
+  - sync
+
+variables:
+  PLUGIN_DIR: "."
+  SKILL_MARKET_BUCKET: "skill-market"
+
+validate_plugin_draft:
+  stage: validate
+  image: alpine:3.20
+  script:
+    - |
+      if [ ! -f "$PLUGIN_DIR/README.md" ] && [ ! -f "$PLUGIN_DIR/readme.md" ]; then
+        echo "Plugin draft must contain README.md with front matter metadata."
+        exit 1
+      fi
+      README_FILE="$PLUGIN_DIR/README.md"
+      if [ ! -f "$README_FILE" ]; then
+        README_FILE="$PLUGIN_DIR/readme.md"
+      fi
+      for field in name description version author; do
+        if ! grep -Eq "^$field[[:space:]]*:" "$README_FILE" && ! grep -Eq "^[[:space:]]+$field[[:space:]]*:" "$README_FILE"; then
+          echo "README.md front matter must include $field."
+          exit 1
+        fi
+      done
+      if [ -f "$PLUGIN_DIR/pluginhub.json" ]; then
+        grep -Eq '"schema"[[:space:]]*:[[:space:]]*"skillhub.plugin-source.v1"' "$PLUGIN_DIR/pluginhub.json"
+        if ! grep -Eq '"targets"[[:space:]]*:' "$PLUGIN_DIR/pluginhub.json"; then
+          echo "pluginhub.json declares source metadata and must include targets when present."
+          exit 1
+        fi
+      elif [ ! -f "$PLUGIN_DIR/README.md" ] && [ ! -f "$PLUGIN_DIR/readme.md" ] && [ ! -d "$PLUGIN_DIR/skills" ] && [ ! -d "$PLUGIN_DIR/agents" ] && [ ! -f "$PLUGIN_DIR/.mcp.json" ]; then
+        echo "Plugin draft must contain common plugin source files such as README.md, skills/, agents/, or .mcp.json."
+        exit 1
+      fi
+    - |
+      if [ -d "$PLUGIN_DIR/codex" ] || [ -d "$PLUGIN_DIR/claude" ] || [ -d "$PLUGIN_DIR/.codex-plugin" ] || [ -d "$PLUGIN_DIR/.claude-plugin" ]; then
+        echo "Do not sync generated platform plugin directories. Keep only common plugin source files."
+        exit 1
+      fi
+    - mkdir -p .skillhub-plugin-validation
+    - |
+      cat > .skillhub-plugin-validation/validation.json <<EOF
+      {
+        "schema": "skillhub.plugin-validation.v1",
+        "kind": "plugin",
+        "status": "passed",
+        "commitSha": "${CI_COMMIT_SHA}",
+        "commitRef": "${CI_COMMIT_REF_NAME}",
+        "pipelineId": "${CI_PIPELINE_ID}",
+        "pipelineUrl": "${CI_PIPELINE_URL}",
+        "validatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      }
+      EOF
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - .skillhub-plugin-validation/validation.json
+
+sync_plugin_draft_to_minio:
+  stage: sync
+  image:
+    name: minio/mc:latest
+    entrypoint: [""]
+  needs:
+    - job: validate_plugin_draft
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - test -n "$MINIO_ENDPOINT"
+    - test -n "$MINIO_ACCESS_KEY"
+    - test -n "$MINIO_SECRET_KEY"
+    - test -n "$GITLAB_CATEGORY_PATH"
+    - test -n "$DRAFT_SLUG"
+    - mc alias set skillhub "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+    - DRAFT_ROOT="skillhub/$SKILL_MARKET_BUCKET/draft/gitlab/plugins/$GITLAB_CATEGORY_PATH/$DRAFT_SLUG"
+    - mc mirror --overwrite --remove --exclude ".git/*" --exclude "node_modules/*" --exclude "target/*" --exclude ".skillhub-plugin-validation/*" --exclude "codex/*" --exclude "claude/*" --exclude ".codex-plugin/*" --exclude ".claude-plugin/*" "$PLUGIN_DIR" "$DRAFT_ROOT"
+    - mc cp .skillhub-plugin-validation/validation.json "$DRAFT_ROOT/validation.json"

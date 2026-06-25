@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skill Hub Update Plugin Preview</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --panel: #ffffff;
+      --panel-soft: #f7f9fc;
+      --panel-warm: #fff7ed;
+      --line: #d9e2ee;
+      --line-strong: #b9c8dc;
+      --text: #20283a;
+      --muted: #728097;
+      --subtle: #94a2b8;
+      --blue: #4f7cff;
+      --blue-soft: #e9efff;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #df3f5f;
+      --cyan: #19a7ce;
+      --shadow: 0 18px 42px rgba(33, 49, 78, 0.11);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        linear-gradient(rgba(79, 124, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(79, 124, 255, 0.04) 1px, transparent 1px),
+        var(--bg);
+      background-size: 24px 24px;
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 228px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      padding: 28px 16px;
+      background: rgba(255, 255, 255, 0.78);
+      border-right: 1px solid var(--line);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 8px;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      color: #fff;
+      background: linear-gradient(135deg, #6288ff, #4f7cff);
+      border-radius: 8px;
+      font-weight: 800;
+      box-shadow: 0 10px 24px rgba(79, 124, 255, 0.28);
+    }
+
+    .brand strong,
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav button {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+
+    .nav button.active {
+      color: var(--text);
+      background: var(--blue-soft);
+      border-color: #b9caff;
+      font-weight: 700;
+    }
+
+    .nav-icon {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      color: var(--blue);
+      background: #f4f7ff;
+      border: 1px solid #dce6ff;
+      border-radius: 7px;
+      font-size: 13px;
+    }
+
+    .count,
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .count {
+      color: #fff;
+      background: var(--blue);
+    }
+
+    .badge {
+      color: #59677d;
+      background: #eef2f7;
+      border: 1px solid #dbe4ef;
+    }
+
+    .badge.ok {
+      color: #087f5b;
+      background: #e7f8f2;
+      border-color: #b9eadb;
+    }
+
+    .badge.warn {
+      color: #a15c00;
+      background: #fff2d8;
+      border-color: #ffd58a;
+    }
+
+    .badge.danger {
+      color: #b42342;
+      background: #fff1f3;
+      border-color: #ffc9d2;
+    }
+
+    main {
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+      gap: 14px;
+      min-width: 0;
+      padding: 28px;
+      overflow: hidden;
+    }
+
+    .topbar,
+    .section-toolbar,
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .topbar {
+      align-items: flex-start;
+    }
+
+    .eyebrow {
+      color: var(--subtle);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin-top: 4px;
+      font-size: 30px;
+      line-height: 1.15;
+    }
+
+    .page-copy,
+    .section-copy,
+    .meta,
+    .detail-subtitle {
+      color: var(--muted);
+    }
+
+    .status-pill,
+    .icon-button,
+    .primary-action,
+    .ghost-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 34px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .status-pill {
+      padding: 0 12px;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      box-shadow: 0 8px 18px rgba(33, 49, 78, 0.08);
+    }
+
+    .status-pill::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+    }
+
+    .icon-button {
+      width: 36px;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      font-weight: 800;
+    }
+
+    .primary-action {
+      padding: 0 13px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--cyan), var(--blue));
+      box-shadow: 0 14px 30px rgba(35, 132, 255, 0.18);
+    }
+
+    .primary-action:disabled {
+      cursor: not-allowed;
+      opacity: 0.52;
+      box-shadow: none;
+    }
+
+    .ghost-action {
+      padding: 0 12px;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .summary-band {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+      padding: 12px;
+      background: var(--panel-soft);
+      border: 1px solid #e3eaf4;
+      border-radius: var(--radius);
+    }
+
+    .metric strong {
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .control-band {
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .segmented {
+      display: inline-grid;
+      grid-auto-flow: column;
+      gap: 4px;
+      max-width: 100%;
+      padding: 3px;
+      overflow: auto;
+      background: #f3f6fb;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .segmented button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-width: 112px;
+      min-height: 30px;
+      padding: 0 10px;
+      color: var(--muted);
+      background: transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .segmented button.active {
+      color: #fff;
+      background: var(--blue);
+      box-shadow: 0 4px 10px rgba(79, 124, 255, 0.18);
+    }
+
+    .segmented button.active .badge {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.28);
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 240px;
+      padding: 0 11px;
+      min-height: 38px;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .search input {
+      width: 100%;
+      min-width: 0;
+      color: var(--text);
+      background: transparent;
+      border: 0;
+      outline: 0;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(520px, 1.1fr) minmax(360px, 0.9fr);
+      gap: 14px;
+      min-height: 0;
+    }
+
+    .list-panel,
+    .detail-panel {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .section-toolbar {
+      padding: 16px 16px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-title-line {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    h2 {
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .section-copy {
+      margin-top: 5px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .update-list {
+      display: grid;
+      gap: 10px;
+      min-height: 0;
+      padding: 12px;
+      overflow: auto;
+    }
+
+    .update-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 13px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+
+    .update-card.active {
+      border-color: #adc2ff;
+      box-shadow: inset 3px 0 0 var(--blue);
+    }
+
+    .update-card.blocked {
+      border-color: #ffd58a;
+      background: linear-gradient(90deg, var(--panel-warm), var(--panel));
+    }
+
+    .item-main {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .item-title {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .item-title strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .item-sub {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .version {
+      color: var(--blue);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .item-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .item-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .detail-body {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .detail-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .detail-head h3 {
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .detail-subtitle {
+      margin-top: 5px;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+      padding: 11px;
+      background: var(--panel-soft);
+      border: 1px solid #e3eaf4;
+      border-radius: var(--radius);
+    }
+
+    .field span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .field strong {
+      overflow-wrap: anywhere;
+    }
+
+    .pipeline {
+      display: grid;
+      gap: 8px;
+    }
+
+    .pipeline h3,
+    .notes h3 {
+      font-size: 15px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+      padding: 10px;
+      background: var(--panel-soft);
+      border: 1px solid #e3eaf4;
+      border-radius: var(--radius);
+    }
+
+    .step-index {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      color: #fff;
+      background: var(--blue);
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .step span,
+    .notes li {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .notes {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid #e3eaf4;
+      border-radius: var(--radius);
+    }
+
+    .notes ul {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 260px;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius);
+      background: #f8fbff;
+    }
+
+    @media (max-width: 1100px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        overflow: auto;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      main {
+        padding: 18px;
+      }
+
+      .topbar,
+      .control-row,
+      .section-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .summary-band,
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .search {
+        min-width: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SH</div>
+        <div>
+          <strong>Skill Hub</strong>
+          <span>Skill Switchboard</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <button><span class="nav-icon">M</span><span>市场</span><span class="count">8</span></button>
+        <button><span class="nav-icon">L</span><span>本地</span><span class="count">14</span></button>
+        <button><span class="nav-icon">P</span><span>项目</span><span class="count">2</span></button>
+        <button class="active"><span class="nav-icon">U</span><span>更新</span><span class="count" id="navCount">5</span></button>
+        <button><span class="nav-icon">S</span><span>设置</span><span class="count">2</span></button>
+        <button><span class="nav-icon">A</span><span>管理</span><span class="count">10</span></button>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <div>
+          <div class="eyebrow">UPDATE CONTROL</div>
+          <h1>更新中心</h1>
+          <p class="page-copy">按对象类型拆分 Skill 和 Plugin 更新，避免市场包、CLI 同步和安装范围挤在一个列表里。</p>
+        </div>
+        <div class="status-pill">市场元数据已同步</div>
+      </div>
+
+      <section class="panel summary-band" aria-label="更新摘要">
+        <div class="metric">
+          <strong id="metricReady">2</strong>
+          <span>可直接升级</span>
+        </div>
+        <div class="metric">
+          <strong id="metricBlocked">1</strong>
+          <span>需要处理</span>
+        </div>
+        <div class="metric">
+          <strong id="metricCli">1</strong>
+          <span>CLI 或范围限制</span>
+        </div>
+        <div class="metric">
+          <strong>刚刚</strong>
+          <span>上次检查时间</span>
+        </div>
+      </section>
+
+      <section class="panel control-band" aria-label="更新筛选">
+        <div class="control-row">
+          <div class="segmented" role="tablist" aria-label="对象类型">
+            <button class="active" data-kind="plugin" role="tab" aria-selected="true">Plugin <span class="badge" id="pluginCount">3</span></button>
+            <button data-kind="skill" role="tab" aria-selected="false">Skill <span class="badge" id="skillCount">2</span></button>
+          </div>
+
+          <div class="control-row">
+            <label class="search">
+              <span>搜索</span>
+              <input id="searchInput" placeholder="名称、平台、项目或版本" />
+            </label>
+            <button class="ghost-action" type="button">检查更新</button>
+            <button class="primary-action" type="button" id="upgradeAll">升级可用项</button>
+          </div>
+        </div>
+
+        <div class="segmented" role="tablist" aria-label="更新状态">
+          <button class="active" data-status="ready" role="tab" aria-selected="true">待更新 <span class="badge" id="readyCount">2</span></button>
+          <button data-status="blocked" role="tab" aria-selected="false">需处理 <span class="badge" id="blockedCount">1</span></button>
+          <button data-status="ignored" role="tab" aria-selected="false">已忽略 <span class="badge" id="ignoredCount">0</span></button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="panel list-panel">
+          <div class="section-toolbar">
+            <div>
+              <div class="section-title-line">
+                <h2 id="listTitle">Plugin 待更新</h2>
+                <span class="badge ok" id="listBadge">2 项</span>
+              </div>
+              <p class="section-copy" id="listCopy">展示插件包版本差异，升级时自动物化 Codex 和 Claude 所需目录并执行 CLI 同步。</p>
+            </div>
+            <button class="icon-button" type="button" aria-label="刷新">R</button>
+          </div>
+
+          <div class="update-list" id="updateList"></div>
+        </div>
+
+        <aside class="panel detail-panel" aria-label="更新详情">
+          <div class="section-toolbar">
+            <div>
+              <div class="section-title-line">
+                <h2>更新详情</h2>
+                <span class="badge" id="detailKind">Plugin</span>
+              </div>
+              <p class="section-copy">点击左侧更新项查看自动安装动作和阻塞原因。</p>
+            </div>
+          </div>
+          <div class="detail-body" id="detailBody"></div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const updates = [
+      {
+        kind: "plugin",
+        status: "ready",
+        name: "Commit Workflow",
+        id: "personal/commit-workflow",
+        target: "Codex / Claude",
+        scope: "项目级 / backend/java",
+        current: "1.0.0",
+        latest: "1.1.0",
+        policy: "follow_latest",
+        risk: "medium",
+        reason: "",
+        notes: [
+          "发布包只保存通用插件源，Codex 和 Claude 目录在升级时动态生成。",
+          "升级完成后自动刷新本地 Plugin 生效矩阵。",
+          "若 Codex 或 Claude CLI 缺失，升级会停在指引状态，不写入半成品目录。"
+        ]
+      },
+      {
+        kind: "plugin",
+        status: "ready",
+        name: "Release Helper",
+        id: "official/release-helper",
+        target: "Codex",
+        scope: "个人级",
+        current: "0.3.2",
+        latest: "0.4.0",
+        policy: "pin_minor",
+        risk: "low",
+        reason: "",
+        notes: [
+          "仅 Codex 平台启用，升级后执行 codex plugin install。",
+          "个人级已启用时，项目级同名插件继续保持互斥限制。"
+        ]
+      },
+      {
+        kind: "plugin",
+        status: "blocked",
+        name: "Frontend Reviewer",
+        id: "official/frontend-reviewer",
+        target: "Claude",
+        scope: "项目级 / web/app",
+        current: "0.8.0",
+        latest: "0.9.0",
+        policy: "follow_latest",
+        risk: "low",
+        reason: "Claude CLI 未安装",
+        notes: [
+          "需要先安装 Claude Code CLI，之后可重新执行一键升级。",
+          "页面应展示安装指引，并允许复制官方安装命令。",
+          "不允许跳过 CLI 同步直接标记升级成功。"
+        ]
+      },
+      {
+        kind: "skill",
+        status: "ready",
+        name: "API Contract Writer",
+        id: "api-contract-writer",
+        target: "Codex",
+        scope: "项目级 / services/api",
+        current: "0.6.0",
+        latest: "0.7.0",
+        policy: "follow_latest",
+        risk: "low",
+        reason: "",
+        notes: [
+          "升级 skill 包后重写项目级 SKILL.md。",
+          "保留现有启用状态和项目绑定。"
+        ]
+      },
+      {
+        kind: "skill",
+        status: "blocked",
+        name: "Database Migrator",
+        id: "database-migrator",
+        target: "Claude",
+        scope: "个人级",
+        current: "1.2.0",
+        latest: "1.3.0",
+        policy: "manual",
+        risk: "high",
+        reason: "更新策略为手动确认",
+        notes: [
+          "高风险 skill 需要管理员确认后才能升级。",
+          "升级前建议预览 CHANGELOG。"
+        ]
+      }
+    ];
+
+    const kindCopy = {
+      plugin: "展示插件包版本差异，升级时自动物化 Codex 和 Claude 所需目录并执行 CLI 同步。",
+      skill: "展示 skill 包版本差异，升级时保留原有启用状态、范围和项目绑定。"
+    };
+
+    const statusLabel = {
+      ready: "待更新",
+      blocked: "需处理",
+      ignored: "已忽略"
+    };
+
+    const badgeClass = {
+      ready: "ok",
+      blocked: "warn",
+      ignored: ""
+    };
+
+    let activeKind = "plugin";
+    let activeStatus = "ready";
+    let selectedId = "";
+
+    const list = document.getElementById("updateList");
+    const detail = document.getElementById("detailBody");
+    const search = document.getElementById("searchInput");
+
+    function count(kind, status) {
+      return updates.filter((item) => item.kind === kind && (!status || item.status === status)).length;
+    }
+
+    function filteredItems() {
+      const query = search.value.trim().toLowerCase();
+      return updates.filter((item) => {
+        const matchesKind = item.kind === activeKind;
+        const matchesStatus = item.status === activeStatus;
+        const haystack = [item.name, item.id, item.target, item.scope, item.current, item.latest, item.reason].join(" ").toLowerCase();
+        return matchesKind && matchesStatus && (!query || haystack.includes(query));
+      });
+    }
+
+    function render() {
+      document.getElementById("pluginCount").textContent = count("plugin");
+      document.getElementById("skillCount").textContent = count("skill");
+      document.getElementById("readyCount").textContent = count(activeKind, "ready");
+      document.getElementById("blockedCount").textContent = count(activeKind, "blocked");
+      document.getElementById("ignoredCount").textContent = count(activeKind, "ignored");
+      document.getElementById("metricReady").textContent = count(activeKind, "ready");
+      document.getElementById("metricBlocked").textContent = count(activeKind, "blocked");
+      document.getElementById("metricCli").textContent = activeKind === "plugin" ? count(activeKind, "blocked") : "0";
+      document.getElementById("navCount").textContent = updates.length;
+
+      const items = filteredItems();
+      if (!items.some((item) => item.id === selectedId)) {
+        selectedId = items[0]?.id || "";
+      }
+
+      document.getElementById("listTitle").textContent = `${activeKind === "plugin" ? "Plugin" : "Skill"} ${statusLabel[activeStatus]}`;
+      document.getElementById("listBadge").textContent = `${items.length} 项`;
+      document.getElementById("listBadge").className = `badge ${badgeClass[activeStatus] || ""}`;
+      document.getElementById("listCopy").textContent = kindCopy[activeKind];
+      document.getElementById("detailKind").textContent = activeKind === "plugin" ? "Plugin" : "Skill";
+      document.getElementById("upgradeAll").disabled = count(activeKind, "ready") === 0;
+
+      if (!items.length) {
+        list.innerHTML = `<div class="empty">当前筛选下没有${activeKind === "plugin" ? "插件" : "skill"}更新。</div>`;
+        detail.innerHTML = `<div class="empty">选择左侧更新项后，这里会显示升级动作和校验结果。</div>`;
+        return;
+      }
+
+      list.innerHTML = items.map((item) => `
+        <article class="update-card ${item.status === "blocked" ? "blocked" : ""} ${item.id === selectedId ? "active" : ""}" data-id="${item.id}">
+          <div class="item-main">
+            <div class="item-title">
+              <strong>${item.name}</strong>
+              <span class="badge">${item.kind === "plugin" ? "Plugin" : "Skill"}</span>
+              <span class="badge ${item.risk === "high" ? "danger" : item.risk === "medium" ? "warn" : "ok"}">${item.risk}</span>
+            </div>
+            <div class="item-sub">${item.id}</div>
+            <div class="item-meta">
+              <span class="badge">${item.target}</span>
+              <span class="badge">${item.scope}</span>
+              <span class="version">${item.current} -> ${item.latest}</span>
+            </div>
+          </div>
+          <div class="item-actions">
+            <span class="badge ${item.status === "blocked" ? "warn" : "ok"}">${item.reason || "可升级"}</span>
+            <button class="primary-action" ${item.status === "blocked" ? "disabled" : ""}>升级</button>
+          </div>
+        </article>
+      `).join("");
+
+      list.querySelectorAll(".update-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          selectedId = card.dataset.id;
+          render();
+        });
+      });
+
+      const selected = updates.find((item) => item.id === selectedId) || items[0];
+      renderDetail(selected);
+    }
+
+    function renderDetail(item) {
+      const pluginSteps = [
+        ["下载市场包", "从 MinIO 获取最新通用插件源和 pluginhub.json 元数据。"],
+        ["生成平台目录", "按目标动态生成 Codex .codex-plugin/plugin.json 与 Claude marketplace 目录。"],
+        ["执行 CLI 同步", "Codex 使用 plugin install 或更新缓存，Claude 使用 plugin update 或 marketplace sync。"],
+        ["刷新生效矩阵", "写入绑定版本，重新扫描个人级和项目级目录，保持互斥限制。"]
+      ];
+      const skillSteps = [
+        ["下载 skill 包", "从市场目录获取最新 SKILL.md、README 和相关资源。"],
+        ["覆盖安装目录", "保留原有绑定范围，将新版本写入个人级或项目级 skill 目录。"],
+        ["刷新本地状态", "更新缓存记录、安装版本和更新中心计数。"]
+      ];
+      const steps = item.kind === "plugin" ? pluginSteps : skillSteps;
+      detail.innerHTML = `
+        <div class="detail-head">
+          <div>
+            <h3>${item.name}</h3>
+            <div class="detail-subtitle">${item.id}</div>
+          </div>
+          <span class="badge ${item.status === "blocked" ? "warn" : "ok"}">${item.reason || "可升级"}</span>
+        </div>
+
+        <div class="detail-grid">
+          <div class="field"><span>平台</span><strong>${item.target}</strong></div>
+          <div class="field"><span>范围</span><strong>${item.scope}</strong></div>
+          <div class="field"><span>版本</span><strong>${item.current} -> ${item.latest}</strong></div>
+          <div class="field"><span>更新策略</span><strong>${item.policy}</strong></div>
+        </div>
+
+        <div class="pipeline">
+          <h3>${item.kind === "plugin" ? "Plugin 自动升级动作" : "Skill 自动升级动作"}</h3>
+          ${steps.map((step, index) => `
+            <div class="step">
+              <div class="step-index">${index + 1}</div>
+              <div><strong>${step[0]}</strong><span>${step[1]}</span></div>
+            </div>
+          `).join("")}
+        </div>
+
+        <div class="notes">
+          <h3>页面提示</h3>
+          <ul>
+            ${item.notes.map((note) => `<li>${note}</li>`).join("")}
+          </ul>
+        </div>
+      `;
+    }
+
+    document.querySelectorAll("[data-kind]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeKind = button.dataset.kind;
+        selectedId = "";
+        document.querySelectorAll("[data-kind]").forEach((item) => {
+          item.classList.toggle("active", item.dataset.kind === activeKind);
+          item.setAttribute("aria-selected", String(item.dataset.kind === activeKind));
+        });
+        render();
+      });
+    });
+
+    document.querySelectorAll("[data-status]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeStatus = button.dataset.status;
+        selectedId = "";
+        document.querySelectorAll("[data-status]").forEach((item) => {
+          item.classList.toggle("active", item.dataset.status === activeStatus);
+          item.setAttribute("aria-selected", String(item.dataset.status === activeStatus));
+        });
+        render();
+      });
+    });
+
+    search.addEventListener("input", render);
+    render();
+  </script>
+</body>
+</html>

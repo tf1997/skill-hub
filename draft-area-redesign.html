@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skill Hub - 草稿区设计优化</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      /* 精致的配色方案 - 柔和的蓝灰色调 */
+      --bg-primary: #f8f9fb;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #f0f2f5;
+      --bg-hover: #e8eaed;
+
+      --surface: #ffffff;
+      --surface-elevated: #ffffff;
+
+      --text-primary: #1a1d2e;
+      --text-secondary: #4a5568;
+      --text-muted: #8792a5;
+
+      --border-light: #e2e5ea;
+      --border-medium: #cbd0d9;
+      --border-strong: #a5adb9;
+
+      --accent-primary: #4f7cff;
+      --accent-primary-hover: #3d6ae8;
+      --accent-secondary: #7c9aff;
+
+      --status-draft: #f59e0b;
+      --status-published: #10b981;
+      --status-pending: #6366f1;
+
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 2px 4px -1px rgba(0, 0, 0, 0.05), 0 4px 6px -1px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 10px 15px -3px rgba(0, 0, 0, 0.08);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 40px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 28px;
+      height: calc(100vh - 80px);
+    }
+
+    /* 草稿浏览器面板 */
+    .draft-browser {
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border-light);
+    }
+
+    .panel-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border-light);
+      background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+    }
+
+    .panel-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-title svg {
+      width: 20px;
+      height: 20px;
+      opacity: 0.7;
+    }
+
+    .panel-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .panel-actions {
+      margin-top: 14px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: none;
+      outline: none;
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-primary-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px -2px rgba(79, 124, 255, 0.35);
+    }
+
+    .btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* 草稿列表 */
+    .draft-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .draft-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .draft-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .draft-list::-webkit-scrollbar-thumb {
+      background: var(--border-medium);
+      border-radius: 3px;
+    }
+
+    .draft-list::-webkit-scrollbar-thumb:hover {
+      background: var(--border-strong);
+    }
+
+    /* 分类组 */
+    .category-group {
+      margin-bottom: 24px;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .category-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg-tertiary);
+      border-radius: var(--radius-md);
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .category-header:hover {
+      background: var(--bg-hover);
+    }
+
+    .category-icon {
+      width: 18px;
+      height: 18px;
+      color: var(--accent-primary);
+      flex-shrink: 0;
+    }
+
+    .category-name {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: -0.01em;
+    }
+
+    .category-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      height: 24px;
+      padding: 0 8px;
+      background: var(--accent-primary);
+      color: white;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .category-toggle {
+      width: 16px;
+      height: 16px;
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+    }
+
+    .category-header.collapsed .category-toggle {
+      transform: rotate(-90deg);
+    }
+
+    /* 草稿项 */
+    .draft-items {
+      display: grid;
+      gap: 8px;
+      padding-left: 8px;
+      overflow: hidden;
+      transition: all 0.3s ease;
+    }
+
+    .draft-items.collapsed {
+      max-height: 0;
+      opacity: 0;
+      margin: 0;
+    }
+
+    .draft-item {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1.5px solid var(--border-light);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .draft-item::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--accent-primary);
+      transform: scaleY(0);
+      transition: transform 0.2s ease;
+    }
+
+    .draft-item:hover {
+      border-color: var(--accent-secondary);
+      background: var(--bg-secondary);
+      transform: translateX(4px);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .draft-item:hover::before {
+      transform: scaleY(1);
+    }
+
+    .draft-item.active {
+      border-color: var(--accent-primary);
+      background: linear-gradient(135deg, rgba(79, 124, 255, 0.04) 0%, rgba(79, 124, 255, 0.02) 100%);
+      box-shadow: var(--shadow-md);
+    }
+
+    .draft-item.active::before {
+      transform: scaleY(1);
+    }
+
+    .draft-icon {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-tertiary);
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .draft-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .draft-content {
+      min-width: 0;
+    }
+
+    .draft-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .draft-path {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      letter-spacing: -0.02em;
+    }
+
+    .draft-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .draft-status.draft {
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--status-draft);
+    }
+
+    .draft-status.published {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--status-published);
+    }
+
+    .draft-status.pending {
+      background: rgba(99, 102, 241, 0.1);
+      color: var(--status-pending);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* 编辑器面板 */
+    .editor-panel {
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border-light);
+    }
+
+    .editor-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px;
+    }
+
+    .empty-state {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .empty-icon {
+      width: 80px;
+      height: 80px;
+      margin-bottom: 20px;
+      opacity: 0.3;
+    }
+
+    .empty-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    .empty-text {
+      font-size: 14px;
+      max-width: 320px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 草稿浏览器 -->
+    <div class="draft-browser">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          草稿区
+        </div>
+        <div class="panel-subtitle">
+          MinIO draft/gitlab/skills 下的 SKILL.md
+        </div>
+        <div class="panel-actions">
+          <button class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            刷新
+          </button>
+        </div>
+      </div>
+
+      <div class="draft-list">
+        <!-- community 分类 -->
+        <div class="category-group" style="animation-delay: 0.05s">
+          <div class="category-header">
+            <svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+            </svg>
+            <span class="category-name">community</span>
+            <span class="category-count">1</span>
+            <svg class="category-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 9l-7 7-7-7"/>
+            </svg>
+          </div>
+
+          <div class="draft-items">
+            <div class="draft-item active">
+              <div class="draft-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+              </div>
+              <div class="draft-content">
+                <div class="draft-name">prd-shaper</div>
+                <div class="draft-path">community/prd-shaper</div>
+              </div>
+              <div class="draft-status draft">
+                <span class="status-dot"></span>
+                已下架
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- official 分类 -->
+        <div class="category-group" style="animation-delay: 0.1s">
+          <div class="category-header">
+            <svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+            </svg>
+            <span class="category-name">official</span>
+            <span class="category-count">2</span>
+            <svg class="category-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 9l-7 7-7-7"/>
+            </svg>
+          </div>
+
+          <div class="draft-items">
+            <div class="draft-item">
+              <div class="draft-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+              </div>
+              <div class="draft-content">
+                <div class="draft-name">api-contract-helper</div>
+                <div class="draft-path">official/api-contract...</div>
+              </div>
+              <div class="draft-status published">
+                <span class="status-dot"></span>
+                已发布
+              </div>
+            </div>
+
+            <div class="draft-item">
+              <div class="draft-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+              </div>
+              <div class="draft-content">
+                <div class="draft-name">frontend-reviewer</div>
+                <div class="draft-path">official/frontend-revi...</div>
+              </div>
+              <div class="draft-status pending">
+                <span class="status-dot"></span>
+                待发布
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- product 分类 -->
+        <div class="category-group" style="animation-delay: 0.15s">
+          <div class="category-header">
+            <svg class="category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+            </svg>
+            <span class="category-name">product</span>
+            <span class="category-count">1</span>
+            <svg class="category-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 9l-7 7-7-7"/>
+            </svg>
+          </div>
+
+          <div class="draft-items">
+            <div class="draft-item">
+              <div class="draft-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+              </div>
+              <div class="draft-content">
+                <div class="draft-name">minio-live-draft</div>
+                <div class="draft-path">product/minio-live-draft</div>
+              </div>
+              <div class="draft-status pending">
+                <span class="status-dot"></span>
+                待发布
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑器面板 -->
+    <div class="editor-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          prd-shaper
+        </div>
+        <div class="panel-subtitle">
+          选择草稿后编辑
+        </div>
+      </div>
+
+      <div class="editor-content">
+        <div class="empty-state">
+          <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <div class="empty-title">选择草稿开始编辑</div>
+          <div class="empty-text">
+            从左侧草稿列表中选择一个草稿，在此处编辑发布元数据
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 分类折叠功能
+    document.querySelectorAll('.category-header').forEach(header => {
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        const items = header.nextElementSibling;
+        items.classList.toggle('collapsed');
+      });
+    });
+
+    // 草稿项点击
+    document.querySelectorAll('.draft-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.draft-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

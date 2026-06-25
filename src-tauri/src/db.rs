@@ -13,8 +13,9 @@ use uuid::Uuid;
 use crate::{
     admin_config,
     models::{
-        AppBootstrap, CachedSkillPackage, Category, LocalSkill, MarketProject, MarketSkill,
-        Project, SkillBinding, Source, TargetRoot, UpdateCandidate,
+        AppBootstrap, CachedPluginPackage, CachedSkillPackage, Category, LocalPlugin, LocalSkill,
+        MarketPlugin, MarketProject, MarketSkill, PluginBinding, Project, SkillBinding, Source,
+        TargetRoot, UpdateCandidate,
     },
 };
 
@@ -40,6 +41,9 @@ pub fn init_state(app: &AppHandle) -> Result<AppState> {
 
     fs::create_dir_all(&app_dir)?;
     fs::create_dir_all(app_dir.join("packages"))?;
+    fs::create_dir_all(app_dir.join("plugin-packages"))?;
+    fs::create_dir_all(app_dir.join("plugin-marketplaces"))?;
+    fs::create_dir_all(app_dir.join("plugin-backups"))?;
     fs::create_dir_all(app_dir.join("cache").join("catalog"))?;
     fs::create_dir_all(app_dir.join("cache").join("downloads"))?;
     fs::create_dir_all(app_dir.join("installs"))?;
@@ -139,6 +143,93 @@ fn migrate(conn: &Connection) -> Result<()> {
           status TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_catalog_cache (
+          source_id TEXT NOT NULL,
+          namespace TEXT NOT NULL,
+          plugin_id TEXT NOT NULL,
+          latest_version TEXT NOT NULL,
+          name TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          tags_json TEXT NOT NULL,
+          targets_json TEXT NOT NULL,
+          scopes_json TEXT NOT NULL,
+          components_json TEXT NOT NULL,
+          risk_level TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          raw_manifest TEXT NOT NULL,
+          etag TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (source_id, namespace, plugin_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_packages (
+          id TEXT PRIMARY KEY,
+          source_id TEXT,
+          namespace TEXT NOT NULL,
+          plugin_id TEXT NOT NULL,
+          plugin_name TEXT NOT NULL,
+          version TEXT NOT NULL,
+          target TEXT NOT NULL,
+          package_path TEXT NOT NULL,
+          sha256 TEXT,
+          component_inventory_json TEXT NOT NULL,
+          risk_level TEXT NOT NULL,
+          cached_at TEXT NOT NULL,
+          UNIQUE(source_id, namespace, plugin_id, version, target)
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_marketplaces (
+          id TEXT PRIMARY KEY,
+          target TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          project_path TEXT,
+          marketplace_name TEXT NOT NULL,
+          root_path TEXT NOT NULL,
+          marketplace_path TEXT NOT NULL,
+          status TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(target, scope, project_path, marketplace_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_bindings (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          source_id TEXT,
+          namespace TEXT NOT NULL,
+          plugin_id TEXT NOT NULL,
+          plugin_name TEXT NOT NULL,
+          version TEXT NOT NULL,
+          target TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          project_path TEXT,
+          marketplace_id TEXT,
+          marketplace_name TEXT NOT NULL,
+          platform_ref TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          install_mode TEXT NOT NULL,
+          update_policy TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS local_plugins (
+          id TEXT PRIMARY KEY,
+          target TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          project_path TEXT,
+          path TEXT NOT NULL,
+          marketplace_name TEXT,
+          plugin_id TEXT,
+          version TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL,
+          component_inventory_json TEXT NOT NULL DEFAULT '{}',
+          managed_by_skillhub INTEGER NOT NULL DEFAULT 0,
+          scanned_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS projects (
@@ -263,6 +354,10 @@ pub fn enforce_compiled_source(conn: &Connection) -> Result<()> {
         params![COMPILED_SOURCE_ID],
     )?;
     conn.execute(
+        "DELETE FROM plugin_catalog_cache WHERE source_id <> ?1",
+        params![COMPILED_SOURCE_ID],
+    )?;
+    conn.execute(
         "INSERT INTO sources (id, name, endpoint, bucket, region, enabled, last_sync_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL)
          ON CONFLICT(id) DO UPDATE SET
@@ -344,7 +439,11 @@ pub fn app_bootstrap(
     let market_projects = list_market_projects_cached(&state.app_dir)?;
     let target_roots = list_target_roots_inner(&conn)?;
     let mut skills = list_market_skills_inner(&conn)?;
+    let mut plugins = list_market_plugins_inner(&conn)?;
     let cached_packages = list_cached_packages_inner(&conn)?;
+    let plugin_packages = list_cached_plugin_packages_inner(&conn)?;
+    let plugin_bindings = list_plugin_bindings_inner(&conn)?;
+    let local_plugins = list_local_plugins_inner(&conn)?;
     let local_skills = list_local_skills_inner(&conn)?;
 
     for skill in &mut skills {
@@ -361,15 +460,35 @@ pub fn app_bootstrap(
         )?;
     }
 
+    for plugin in &mut plugins {
+        plugin.installed_bindings = plugin_bindings
+            .iter()
+            .filter(|binding| {
+                binding.namespace == plugin.namespace && binding.plugin_id == plugin.id
+            })
+            .cloned()
+            .collect();
+        plugin.cached_versions = list_cached_plugin_versions_inner(
+            &conn,
+            plugin.source_id.as_deref(),
+            &plugin.namespace,
+            &plugin.id,
+        )?;
+    }
+
     let updates = list_update_candidates_inner(&conn)?;
 
     Ok(AppBootstrap {
         sources,
         categories,
         skills,
+        plugins,
         market_projects,
         bindings,
         cached_packages,
+        plugin_packages,
+        plugin_bindings,
+        local_plugins,
         local_skills,
         projects,
         target_roots,
@@ -460,6 +579,44 @@ pub fn list_market_skills_inner(conn: &Connection) -> Result<Vec<MarketSkill>> {
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+pub fn list_market_plugins_inner(conn: &Connection) -> Result<Vec<MarketPlugin>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_id, namespace, plugin_id, latest_version, name, summary, categories_json,
+                tags_json, targets_json, scopes_json, components_json, risk_level, manifest_path, updated_at
+         FROM plugin_catalog_cache
+         ORDER BY name ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let categories_json: String = row.get(6)?;
+        let tags_json: String = row.get(7)?;
+        let targets_json: String = row.get(8)?;
+        let scopes_json: String = row.get(9)?;
+        let components_json: String = row.get(10)?;
+
+        Ok(MarketPlugin {
+            source_id: Some(row.get(0)?),
+            namespace: row.get(1)?,
+            id: row.get(2)?,
+            latest_version: row.get(3)?,
+            name: row.get(4)?,
+            summary: row.get(5)?,
+            categories: serde_json::from_str(&categories_json).unwrap_or_default(),
+            tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+            targets: serde_json::from_str(&targets_json).unwrap_or_default(),
+            scopes: serde_json::from_str(&scopes_json).unwrap_or_default(),
+            components: serde_json::from_str(&components_json).unwrap_or_default(),
+            risk_level: row.get(11)?,
+            manifest_path: row.get(12)?,
+            updated_at: row.get(13)?,
+            installed_bindings: Vec::new(),
+            cached_versions: Vec::new(),
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 pub fn list_cached_versions_inner(
     conn: &Connection,
     source_id: Option<&str>,
@@ -475,6 +632,24 @@ pub fn list_cached_versions_inner(
     )?;
 
     let rows = stmt.query_map(params![source_id, namespace, skill_id], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn list_cached_plugin_versions_inner(
+    conn: &Connection,
+    source_id: Option<&str>,
+    namespace: &str,
+    plugin_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT version FROM plugin_packages
+         WHERE COALESCE(source_id, '') = COALESCE(?1, '')
+           AND namespace = ?2
+           AND plugin_id = ?3
+         ORDER BY cached_at DESC",
+    )?;
+
+    let rows = stmt.query_map(params![source_id, namespace, plugin_id], |row| row.get(0))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
@@ -533,6 +708,47 @@ pub fn list_cached_packages_inner(conn: &Connection) -> Result<Vec<CachedSkillPa
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+pub fn list_cached_plugin_packages_inner(conn: &Connection) -> Result<Vec<CachedPluginPackage>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+             package.source_id,
+             package.namespace,
+             package.plugin_id,
+             package.plugin_name,
+             package.version,
+             package.target,
+             package.package_path,
+             package.cached_at,
+             package.risk_level,
+             package.component_inventory_json,
+             COUNT(binding.id) AS binding_count
+         FROM plugin_packages package
+         LEFT JOIN plugin_bindings binding
+           ON binding.package_id = package.id
+          AND binding.status = 'installed'
+         GROUP BY package.id
+         ORDER BY package.cached_at DESC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(CachedPluginPackage {
+            source_id: row.get(0)?,
+            namespace: row.get(1)?,
+            plugin_id: row.get(2)?,
+            plugin_name: row.get(3)?,
+            version: row.get(4)?,
+            target: row.get(5)?,
+            package_path: row.get(6)?,
+            cached_at: row.get(7)?,
+            risk_level: row.get(8)?,
+            component_inventory_json: row.get(9)?,
+            binding_count: row.get(10)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 pub fn list_bindings_inner(conn: &Connection) -> Result<Vec<SkillBinding>> {
     let mut stmt = conn.prepare(
         "SELECT id, package_id, source_id, namespace, skill_id, skill_name, version, target, level,
@@ -561,6 +777,42 @@ pub fn list_bindings_inner(conn: &Connection) -> Result<Vec<SkillBinding>> {
             status: row.get(14)?,
             created_at: row.get(15)?,
             updated_at: row.get(16)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn list_plugin_bindings_inner(conn: &Connection) -> Result<Vec<PluginBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, package_id, source_id, namespace, plugin_id, plugin_name, version, target, scope,
+                project_path, marketplace_id, marketplace_name, platform_ref, enabled,
+                install_mode, update_policy, status, created_at, updated_at
+         FROM plugin_bindings
+         ORDER BY updated_at DESC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(PluginBinding {
+            id: row.get(0)?,
+            package_id: row.get(1)?,
+            source_id: row.get(2)?,
+            namespace: row.get(3)?,
+            plugin_id: row.get(4)?,
+            plugin_name: row.get(5)?,
+            version: row.get(6)?,
+            target: row.get(7)?,
+            scope: row.get(8)?,
+            project_path: row.get(9)?,
+            marketplace_id: row.get(10)?,
+            marketplace_name: row.get(11)?,
+            platform_ref: row.get(12)?,
+            enabled: row.get::<_, i64>(13)? == 1,
+            install_mode: row.get(14)?,
+            update_policy: row.get(15)?,
+            status: row.get(16)?,
+            created_at: row.get(17)?,
+            updated_at: row.get(18)?,
         })
     })?;
 
@@ -614,6 +866,34 @@ pub fn default_target_roots() -> Vec<(String, String)> {
     ]
 }
 
+pub fn list_local_plugins_inner(conn: &Connection) -> Result<Vec<LocalPlugin>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, target, scope, project_path, path, marketplace_name, plugin_id, version,
+                enabled, status, component_inventory_json, managed_by_skillhub, scanned_at
+         FROM local_plugins
+         ORDER BY scanned_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LocalPlugin {
+            id: row.get(0)?,
+            target: row.get(1)?,
+            scope: row.get(2)?,
+            project_path: row.get(3)?,
+            path: row.get(4)?,
+            marketplace_name: row.get(5)?,
+            plugin_id: row.get(6)?,
+            version: row.get(7)?,
+            enabled: row.get::<_, i64>(8)? == 1,
+            status: row.get(9)?,
+            component_inventory_json: row.get(10)?,
+            managed_by_skillhub: row.get::<_, i64>(11)? == 1,
+            scanned_at: row.get(12)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 pub fn list_local_skills_inner(conn: &Connection) -> Result<Vec<LocalSkill>> {
     let mut stmt = conn.prepare(
         "SELECT id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
@@ -659,6 +939,8 @@ pub fn list_local_skills_inner(conn: &Connection) -> Result<Vec<LocalSkill>> {
 pub fn list_update_candidates_inner(conn: &Connection) -> Result<Vec<UpdateCandidate>> {
     let bindings = list_bindings_inner(conn)?;
     let market = list_market_skills_inner(conn)?;
+    let plugin_bindings = list_plugin_bindings_inner(conn)?;
+    let plugin_market = list_market_plugins_inner(conn)?;
     let mut updates = Vec::new();
 
     for binding in bindings {
@@ -674,6 +956,7 @@ pub fn list_update_candidates_inner(conn: &Connection) -> Result<Vec<UpdateCandi
         }
 
         updates.push(UpdateCandidate {
+            kind: "skill".to_string(),
             binding_id: binding.id.clone(),
             namespace: binding.namespace.clone(),
             skill_id: binding.skill_id.clone(),
@@ -683,6 +966,38 @@ pub fn list_update_candidates_inner(conn: &Connection) -> Result<Vec<UpdateCandi
             project_path: binding.project_path.clone(),
             current_version: binding.version.clone(),
             latest_version: skill.latest_version.clone(),
+            update_policy: binding.update_policy.clone(),
+            blocked_reason: if binding.update_policy == "pinned" {
+                Some("版本已锁定".to_string())
+            } else {
+                None
+            },
+        });
+    }
+
+    for binding in plugin_bindings {
+        let Some(plugin) = plugin_market
+            .iter()
+            .find(|item| item.namespace == binding.namespace && item.id == binding.plugin_id)
+        else {
+            continue;
+        };
+
+        if binding.version == plugin.latest_version {
+            continue;
+        }
+
+        updates.push(UpdateCandidate {
+            kind: "plugin".to_string(),
+            binding_id: binding.id.clone(),
+            namespace: binding.namespace.clone(),
+            skill_id: binding.plugin_id.clone(),
+            skill_name: binding.plugin_name.clone(),
+            target: binding.target.clone(),
+            level: binding.scope.clone(),
+            project_path: binding.project_path.clone(),
+            current_version: binding.version.clone(),
+            latest_version: plugin.latest_version.clone(),
             update_policy: binding.update_policy.clone(),
             blocked_reason: if binding.update_policy == "pinned" {
                 Some("版本已锁定".to_string())
