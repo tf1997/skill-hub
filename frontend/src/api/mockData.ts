@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/tauri";
 import type {
   AdminAuditLog,
   AdminDraftPlugin,
@@ -34,13 +33,11 @@ import type {
   UpdateCandidate,
   UpdateCheckResult,
   DownloadUpdateResult
-} from "./types";
+} from "../types";
 
-const canUseTauri = typeof window !== "undefined" && typeof (window as Window & { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === "function";
-const useBrowserMock = !canUseTauri;
-const mockMinioEndpoint = "http://192.168.1.4:9000";
-const mockMinioBucket = "skill-market";
-const mockUpdatedAt = "2026-06-12T16:18:08Z";
+export const mockMinioEndpoint = "http://192.168.1.4:9000";
+export const mockMinioBucket = "skill-market";
+export const mockUpdatedAt = "2026-06-12T16:18:08Z";
 
 const mockBindings: SkillBinding[] = [
   {
@@ -80,7 +77,7 @@ const mockBindings: SkillBinding[] = [
   }
 ];
 
-const mockBootstrap: AppBootstrap = {
+export const mockBootstrap: AppBootstrap = {
   sources: [
     {
       id: "compiled-source",
@@ -370,7 +367,7 @@ const mockBootstrap: AppBootstrap = {
   ]
 };
 
-const mockAdminSession: AdminSession = {
+export const mockAdminSession: AdminSession = {
   enabled: true,
   endpoint: mockMinioEndpoint,
   bucket: mockMinioBucket,
@@ -380,7 +377,7 @@ const mockAdminSession: AdminSession = {
   name: "系统管理员"
 };
 
-const mockAdminPluginDrafts: AdminDraftPlugin[] = [
+export const mockAdminPluginDrafts: AdminDraftPlugin[] = [
   {
     gitlabSourcePath: "backend/java/commit-workflow",
     draftSlug: "commit-workflow",
@@ -413,7 +410,7 @@ const mockAdminPluginDrafts: AdminDraftPlugin[] = [
   }
 ];
 
-const mockPreviewFiles = [
+export const mockPreviewFiles = [
   {
     path: "SKILL.md",
     language: "markdown",
@@ -434,7 +431,7 @@ const mockPreviewFiles = [
   }
 ];
 
-const mockPreviewFileList = [
+export const mockPreviewFileList = [
   { path: "README.md", language: "markdown", previewable: true },
   { path: "SKILL.md", language: "markdown", previewable: true },
   { path: "assets/logo.png", language: "text", previewable: false },
@@ -442,7 +439,7 @@ const mockPreviewFileList = [
   { path: "scripts/check.py", language: "python", previewable: true }
 ];
 
-const mockAdminDrafts: AdminDraftSkill[] = [
+export const mockAdminDrafts: AdminDraftSkill[] = [
   {
     gitlabSourcePath: "product/minio-live-draft",
     draftSlug: "minio-live-draft",
@@ -522,7 +519,7 @@ const mockAdminDrafts: AdminDraftSkill[] = [
   }
 ];
 
-const mockAdminAuditLogs: AdminAuditLog[] = [
+export const mockAdminAuditLogs: AdminAuditLog[] = [
   {
     objectPath: "admin/audit/2026/06/14/publishDraft-mock.json",
     action: "publishDraft",
@@ -549,7 +546,7 @@ const mockAdminAuditLogs: AdminAuditLog[] = [
   }
 ];
 
-function upsertMockCachedPackage(packageItem: CachedSkillPackage) {
+export function upsertMockCachedPackage(packageItem: CachedSkillPackage) {
   const index = mockBootstrap.cachedPackages.findIndex(
     (item) =>
       item.sourceId === packageItem.sourceId &&
@@ -564,7 +561,7 @@ function upsertMockCachedPackage(packageItem: CachedSkillPackage) {
   }
 }
 
-function markMockLocalSkillsCached(packageItem: CachedSkillPackage, sourcePath?: string | null) {
+export function markMockLocalSkillsCached(packageItem: CachedSkillPackage, sourcePath?: string | null) {
   const fingerprints = new Set([mockCachedLocalSkillFingerprint(packageItem)].filter(Boolean));
   const paths = new Set([sourcePath, packageItem.sourcePath].map(normalizeMockPath).filter(Boolean));
   mockBootstrap.localSkills = mockBootstrap.localSkills.map((skill) => {
@@ -581,7 +578,7 @@ function markMockLocalSkillsCached(packageItem: CachedSkillPackage, sourcePath?:
   });
 }
 
-function syncMockLocalSkillsWithCache() {
+export function syncMockLocalSkillsWithCache() {
   for (const packageItem of mockBootstrap.cachedPackages) {
     if (packageItem.origin === "local") {
       markMockLocalSkillsCached(packageItem, packageItem.sourcePath);
@@ -590,7 +587,7 @@ function syncMockLocalSkillsWithCache() {
   return mockBootstrap.localSkills;
 }
 
-function mockBootstrapWithSyncedLocalSkills() {
+export function mockBootstrapWithSyncedLocalSkills() {
   syncMockLocalSkillsWithCache();
   return mockBootstrap;
 }
@@ -623,7 +620,7 @@ function mockLocalPathName(path?: string | null) {
   return parts[parts.length - 1] ?? "";
 }
 
-function upsertMockBinding(binding: SkillBinding) {
+export function upsertMockBinding(binding: SkillBinding) {
   const index = mockBootstrap.bindings.findIndex((item) => item.id === binding.id);
   if (index >= 0) {
     mockBootstrap.bindings[index] = binding;
@@ -631,338 +628,3 @@ function upsertMockBinding(binding: SkillBinding) {
     mockBootstrap.bindings.unshift(binding);
   }
 }
-
-const browserMockApi = {
-  bootstrap: async () => mockBootstrapWithSyncedLocalSkills(),
-  listMarketSkills: async () => mockBootstrap.skills,
-  listMarketPlugins: async () => mockBootstrap.plugins,
-  listSources: async () => mockBootstrap.sources,
-  saveSource: async (_request: SaveSourceRequest) => mockBootstrap.sources[0],
-  unlockAdminMode: async (_adminKey: string) => mockAdminSession,
-  listAdminDrafts: async (_adminKey: string) => mockAdminDrafts,
-  listAdminPluginDrafts: async (_adminKey: string) => mockAdminPluginDrafts,
-  listAdminAuditLogs: async (_adminKey: string, _limit = 100) => mockAdminAuditLogs,
-  previewAdminDraft: async (_request: AdminDraftPreviewRequest) => ({
-    title: "Mock Draft",
-    rootPath: "draft/gitlab/skills/mock",
-    origin: "browser mock",
-    files: mockPreviewFiles,
-    fileList: mockPreviewFileList
-  }),
-  previewAdminPluginDraft: async (_request: AdminDraftPreviewRequest) => ({
-    title: "Mock Plugin Draft",
-    rootPath: "draft/gitlab/plugins/mock/source",
-    origin: "browser mock",
-    files: mockPreviewFiles,
-    fileList: mockPreviewFileList
-  }),
-  savePublishMeta: async (_adminKey: string, _gitlabSourcePath: string, meta: PublishMeta, _artifactKind: "skill" | "plugin" = "skill") => meta,
-  saveMarketProjectRemote: async (_adminKey: string, project: MarketProject) => {
-    const next = mockBootstrap.marketProjects.filter((item) => item.slug !== project.slug);
-    return [project, ...next].sort((a, b) => a.order - b.order || a.slug.localeCompare(b.slug, "zh-Hans-CN"));
-  },
-  deleteMarketProjectRemote: async (_adminKey: string, _slug: string) => mockBootstrap,
-  saveMarketCategoryRemote: async (_adminKey: string, category: Category) => {
-    const next = mockBootstrap.categories.filter((item) => item.id !== category.id);
-    return [category, ...next].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, "zh-Hans-CN"));
-  },
-  deleteMarketCategoryRemote: async (_adminKey: string, _categoryId: string) => mockBootstrap,
-  archiveMarketSkill: async (_adminKey: string, _namespace: string, _skillId: string, _reason?: string) => mockBootstrap,
-  archiveMarketPlugin: async (_adminKey: string, _namespace: string, _pluginId: string, _reason?: string) => mockBootstrap,
-  publishDraft: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
-  publishPluginDraft: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
-  quickRepublishArchivedSkill: async (_adminKey: string, _gitlabSourcePath: string) => mockBootstrap,
-  listTargetRoots: async () => mockBootstrap.targetRoots,
-  saveTargetRoot: async (target: string, personalPath: string) => ({ target, personalPath, updatedAt: new Date().toISOString() }),
-  refreshCatalog: async () => mockBootstrapWithSyncedLocalSkills(),
-  installSkill: async (_request: InstallSkillRequest) =>
-    ({
-      id: "mock-binding",
-      packageId: "mock-package",
-      namespace: "live",
-      skillId: "minio-live-draft",
-      skillName: "MinIO Live Draft",
-      version: "0.1.0",
-      target: "codex",
-      level: "personal",
-      installPath: "C:/Users/ctf19/.codex/skills/minio-live-draft",
-      enabled: true,
-      installMode: "copy",
-      updatePolicy: "follow_latest",
-      status: "enabled",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }) as SkillBinding,
-  importLocalSkillToCache: async (_request: ImportLocalSkillRequest) => {
-    const packageItem = mockBootstrap.cachedPackages[2];
-    upsertMockCachedPackage(packageItem);
-    markMockLocalSkillsCached(packageItem, _request.path);
-    return packageItem;
-  },
-  installCachedSkill: async (_request: InstallCachedSkillRequest) => {
-    const targetRoot =
-      _request.level === "project"
-        ? `${_request.projectPath}/${_request.target === "codex" ? ".codex" : ".claude"}/skills`
-        : _request.target === "codex"
-          ? "C:/Users/ctf19/.codex/skills"
-          : "C:/Users/ctf19/.claude/skills";
-    const binding = {
-      id: `mock-local-binding-${_request.target}-${_request.level}`,
-      packageId: "mock-local-package",
-      sourceId: _request.sourceId,
-      namespace: _request.namespace,
-      skillId: _request.skillId,
-      skillName: "Daily Note Helper",
-      version: _request.version,
-      target: _request.target,
-      level: _request.level,
-      projectPath: _request.projectPath,
-      installPath: `${targetRoot}/${_request.skillId}`,
-      enabled: true,
-      installMode: "copy",
-      updatePolicy: "pinned",
-      status: "installed",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    } as SkillBinding;
-    upsertMockBinding(binding);
-    return binding;
-  },
-  installPlugin: async (_request: InstallPluginRequest) => {
-    const binding = {
-      id: `plugin-binding-${Date.now()}`,
-      packageId: "plugin-package-mock",
-      sourceId: "compiled-source",
-      namespace: "internal",
-      pluginId: "commit-workflow",
-      pluginName: "Commit Workflow",
-      version: "1.0.0",
-      target: _request.target,
-      scope: _request.scope,
-      projectPath: _request.projectPath ?? null,
-      marketplaceId: "marketplace-mock",
-      marketplaceName: "skillhub",
-      platformRef: "commit-workflow@skillhub",
-      enabled: _request.enable,
-      installMode: _request.installMode ?? "marketplace",
-      updatePolicy: _request.updatePolicy ?? "follow_latest",
-      status: _request.enable ? "installed" : "cached",
-      createdAt: mockUpdatedAt,
-      updatedAt: mockUpdatedAt
-    };
-    mockBootstrap.pluginBindings.unshift(binding);
-    return binding;
-  },
-  deleteCachedSkill: async (_request: DeleteCachedSkillRequest) => undefined,
-  deleteCachedPlugin: async (request: DeleteCachedPluginRequest) => {
-    mockBootstrap.pluginPackages = mockBootstrap.pluginPackages.filter(
-      (item) =>
-        !(
-          item.sourceId === (request.sourceId ?? null) &&
-          item.namespace === request.namespace &&
-          item.pluginId === request.pluginId &&
-          item.version === request.version &&
-          item.target === request.target
-        )
-    );
-    return undefined;
-  },
-  deleteLocalSkill: async (_request: DeleteLocalSkillRequest) => {
-    mockBootstrap.localSkills = mockBootstrap.localSkills.filter((skill) => skill.id !== _request.id);
-    return syncMockLocalSkillsWithCache();
-  },
-  setLocalSkillEnabled: async (_request: SetLocalSkillEnabledRequest) => {
-    mockBootstrap.localSkills = mockBootstrap.localSkills.map((skill) => {
-      if (skill.id !== _request.id || skill.managedBySkillhub) return skill;
-      const nextPath = _request.enabled
-        ? skill.path.replace(/([\\/])\.skill-hub-disabled([\\/])/, "$1")
-        : skill.path.replace(/([\\/])skills([\\/])([^\\/]+)$/, "$1skills$1.skill-hub-disabled$2$3");
-      return {
-        ...skill,
-        enabled: _request.enabled,
-        status: _request.enabled ? "local" : "disabled",
-        path: nextPath,
-        scannedAt: new Date().toISOString()
-      };
-    });
-    return syncMockLocalSkillsWithCache();
-  },
-  setBindingEnabled: async (_bindingId: string, _enabled: boolean) => browserMockApi.installSkill({} as InstallSkillRequest),
-  uninstallBinding: async (_bindingId: string) => [],
-  upgradeSkillBinding: async (_bindingId: string) => mockBootstrap,
-  upgradePluginBinding: async (_bindingId: string) => mockBootstrap,
-  listProjects: async () => mockBootstrap.projects,
-  saveProject: async (name: string, path: string, id?: string) => ({
-    id: id ?? "mock-project",
-    name,
-    path,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }),
-  unbindProject: async (_projectId: string) => [],
-  scanLocalSkills: async () => syncMockLocalSkillsWithCache(),
-  scanLocalPlugins: async () => mockBootstrap.localPlugins,
-  setPluginBindingEnabled: async (bindingId: string, enabled: boolean) => {
-    mockBootstrap.pluginBindings = mockBootstrap.pluginBindings.map((binding) =>
-      binding.id === bindingId ? { ...binding, enabled } : binding
-    );
-    return mockBootstrap.pluginBindings.find((binding) => binding.id === bindingId) ?? mockBootstrap.pluginBindings[0];
-  },
-  uninstallPlugin: async (bindingId: string) => {
-    mockBootstrap.pluginBindings = mockBootstrap.pluginBindings.filter((binding) => binding.id !== bindingId);
-    return mockBootstrap.pluginBindings;
-  },
-  previewSkill: async (_request: SkillPreviewRequest) => ({
-    title: "MinIO Live Draft",
-    rootPath: "skills/live/minio-live-draft",
-    origin: "browser mock",
-    files: mockPreviewFiles,
-    fileList: mockPreviewFileList
-  }),
-  previewPlugin: async (_request: PluginPreviewRequest) => ({
-    title: "Commit Workflow",
-    rootPath: "plugins/internal/commit-workflow/1.0.0/codex",
-    origin: "browser mock / codex",
-    files: mockPreviewFiles,
-    fileList: mockPreviewFileList
-  }),
-  listUpdateCandidates: async () => mockBootstrap.updates,
-  checkForUpdates: async () =>
-    ({
-      current_version: "0.1.0",
-      latest_version: "0.1.0",
-      available: false,
-      downloadable: false,
-      distribution: "browser",
-      platform: "browser",
-      arch: "browser",
-      package: null,
-      notes: null,
-      message: "当前已是最新版本 0.1.0",
-      manifest_url: `${mockMinioEndpoint}/${mockMinioBucket}/updates/stable/latest.json`
-    }) as UpdateCheckResult,
-  downloadUpdate: async () =>
-    ({
-      version: "0.1.0",
-      target: "installer",
-      path: "",
-      ready_to_restart: false,
-      message: "当前已是最新版本"
-    }) as DownloadUpdateResult,
-  restartAfterUpdate: async () => undefined
-};
-
-const tauriApi = {
-  bootstrap: () => invoke<AppBootstrap>("bootstrap"),
-  listMarketSkills: () => invoke<MarketSkill[]>("list_market_skills"),
-  listMarketPlugins: () => invoke<MarketPlugin[]>("list_market_plugins"),
-  listSources: () => invoke<Source[]>("list_sources"),
-  saveSource: (request: SaveSourceRequest) => invoke<Source>("save_source", { request }),
-  unlockAdminMode: (adminKey: string) =>
-    invoke<AdminSession>("unlock_admin_mode", { request: { adminKey } }),
-  listAdminDrafts: (adminKey: string) =>
-    invoke<AdminDraftSkill[]>("list_admin_drafts", { adminKey }),
-  listAdminPluginDrafts: (adminKey: string) =>
-    invoke<AdminDraftPlugin[]>("list_admin_plugin_drafts", { adminKey }),
-  listAdminAuditLogs: (adminKey: string, limit = 100) =>
-    invoke<AdminAuditLog[]>("list_admin_audit_logs", { request: { adminKey, limit } }),
-  previewAdminDraft: (request: AdminDraftPreviewRequest) =>
-    invoke<SkillPreview>("preview_admin_draft", { request }),
-  previewAdminPluginDraft: (request: AdminDraftPreviewRequest) =>
-    invoke<SkillPreview>("preview_admin_plugin_draft", { request }),
-  savePublishMeta: (adminKey: string, gitlabSourcePath: string, meta: PublishMeta, artifactKind: "skill" | "plugin" = "skill") =>
-    invoke<PublishMeta>("save_publish_meta", {
-      request: { adminKey, gitlabSourcePath, meta, artifactKind }
-    }),
-  saveMarketProjectRemote: (adminKey: string, project: MarketProject) =>
-    invoke<MarketProject[]>("save_market_project_remote", {
-      request: { adminKey, project }
-    }),
-  deleteMarketProjectRemote: (adminKey: string, slug: string) =>
-    invoke<AppBootstrap>("delete_market_project_remote", {
-      request: { adminKey, slug }
-    }),
-  saveMarketCategoryRemote: (adminKey: string, category: { id: string; name: string; order: number }) =>
-    invoke<{ id: string; name: string; order: number }[]>("save_market_category_remote", {
-      request: { adminKey, category }
-    }),
-  deleteMarketCategoryRemote: (adminKey: string, categoryId: string) =>
-    invoke<AppBootstrap>("delete_market_category_remote", {
-      request: { adminKey, categoryId }
-    }),
-  archiveMarketSkill: (adminKey: string, namespace: string, skillId: string, reason?: string) =>
-    invoke<AppBootstrap>("archive_market_skill", {
-      request: { adminKey, namespace, skillId, reason: reason ?? null }
-    }),
-  archiveMarketPlugin: (adminKey: string, namespace: string, pluginId: string, reason?: string) =>
-    invoke<AppBootstrap>("archive_market_plugin", {
-      request: { adminKey, namespace, pluginId, reason: reason ?? null }
-    }),
-  publishDraft: (adminKey: string, gitlabSourcePath: string) =>
-    invoke<AppBootstrap>("publish_draft", { request: { adminKey, gitlabSourcePath } }),
-  publishPluginDraft: (adminKey: string, gitlabSourcePath: string) =>
-    invoke<AppBootstrap>("publish_plugin_draft", { request: { adminKey, gitlabSourcePath } }),
-  quickRepublishArchivedSkill: (adminKey: string, gitlabSourcePath: string) =>
-    invoke<AppBootstrap>("quick_republish_archived_skill", { request: { adminKey, gitlabSourcePath } }),
-  listTargetRoots: () => invoke<TargetRoot[]>("list_target_roots"),
-  saveTargetRoot: (target: string, personalPath: string) =>
-    invoke<TargetRoot>("save_target_root", {
-      request: { target, personalPath }
-    }),
-  refreshCatalog: () => invoke<AppBootstrap>("refresh_catalog"),
-  installSkill: (request: InstallSkillRequest) =>
-    invoke<SkillBinding>("install_skill", { request }),
-  installPlugin: (request: InstallPluginRequest) =>
-    invoke<PluginBinding>("install_plugin", { request }),
-  importLocalSkillToCache: (request: ImportLocalSkillRequest) =>
-    invoke<CachedSkillPackage>("import_local_skill_to_cache", { request }),
-  installCachedSkill: (request: InstallCachedSkillRequest) =>
-    invoke<SkillBinding>("install_cached_skill", { request }),
-  deleteCachedSkill: (request: DeleteCachedSkillRequest) =>
-    invoke<void>("delete_cached_skill", { request }),
-  deleteCachedPlugin: (request: DeleteCachedPluginRequest) =>
-    invoke<void>("delete_cached_plugin", { request }),
-  deleteLocalSkill: (request: DeleteLocalSkillRequest) =>
-    invoke<LocalSkill[]>("delete_local_skill", { request }),
-  setLocalSkillEnabled: (request: SetLocalSkillEnabledRequest) =>
-    invoke<LocalSkill[]>("set_local_skill_enabled", { request }),
-  setBindingEnabled: (bindingId: string, enabled: boolean) =>
-    invoke<SkillBinding>("set_binding_enabled", {
-      request: { bindingId, enabled }
-    }),
-  uninstallBinding: (bindingId: string) =>
-    invoke<SkillBinding[]>("uninstall_binding", { bindingId }),
-  upgradeSkillBinding: (bindingId: string) =>
-    invoke<AppBootstrap>("upgrade_skill_binding", {
-      request: { bindingId }
-    }),
-  upgradePluginBinding: (bindingId: string) =>
-    invoke<AppBootstrap>("upgrade_plugin_binding", {
-      request: { bindingId }
-    }),
-  listProjects: () => invoke<Project[]>("list_projects"),
-  saveProject: (name: string, path: string, id?: string) =>
-    invoke<Project>("save_project", { request: { id, name, path } }),
-  unbindProject: (projectId: string) =>
-    invoke<Project[]>("unbind_project", { projectId }),
-  scanLocalSkills: () => invoke<LocalSkill[]>("scan_local_skills"),
-  scanLocalPlugins: () => invoke<LocalPlugin[]>("scan_local_plugins"),
-  setPluginBindingEnabled: (bindingId: string, enabled: boolean) =>
-    invoke<PluginBinding>("set_plugin_binding_enabled", {
-      request: { bindingId, enabled }
-    }),
-  uninstallPlugin: (bindingId: string, deleteCachedPackage = false) =>
-    invoke<PluginBinding[]>("uninstall_plugin", {
-      request: { bindingId, deleteCachedPackage }
-    }),
-  previewSkill: (request: SkillPreviewRequest) =>
-    invoke<SkillPreview>("preview_skill", { request }),
-  previewPlugin: (request: PluginPreviewRequest) =>
-    invoke<SkillPreview>("preview_plugin", { request }),
-  listUpdateCandidates: () => invoke<UpdateCandidate[]>("list_update_candidates"),
-  checkForUpdates: () => invoke<UpdateCheckResult>("check_for_updates_command"),
-  downloadUpdate: () => invoke<DownloadUpdateResult>("download_update_command"),
-  restartAfterUpdate: () => invoke<void>("restart_after_update_command")
-};
-
-export const api = useBrowserMock ? browserMockApi : tauriApi;

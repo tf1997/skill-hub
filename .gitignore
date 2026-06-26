@@ -6,6 +6,7 @@ fronted/dist/
 fronted/.vite/
 src-tauri/target/
 src-tauri/Cargo.lock
+.worktrees/
 *.log
 myminio
 .claude
