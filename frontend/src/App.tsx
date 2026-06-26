@@ -29,8 +29,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { message, open } from "@tauri-apps/api/dialog";
-import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/api/dialog";
 import { open as openExternal } from "@tauri-apps/api/shell";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
@@ -70,10 +69,8 @@ import { SourceChip } from "./components/common/SourceChip";
 import { StatusPill } from "./components/common/StatusPill";
 import { ThemeSwitch } from "./components/common/ThemeSwitch";
 import { AboutDialog } from "./components/dialogs/AboutDialog";
-import type { AboutPayload } from "./components/dialogs/AboutDialog";
 import { AdminUnlockDialog } from "./components/dialogs/AdminUnlockDialog";
 import { AppUpdateDialog } from "./components/dialogs/AppUpdateDialog";
-import type { AppUpdateDialogState } from "./components/dialogs/AppUpdateDialog";
 import { LocalDeleteDialog } from "./components/dialogs/LocalDeleteDialog";
 import { LocalInstallDialog } from "./components/dialogs/LocalInstallDialog";
 import { PreviewPanel } from "./components/preview/PreviewPanel";
@@ -146,12 +143,16 @@ import {
 } from "./lib/localSkills";
 import type { CachedSkillItem, LocalInstallDialogState, LocalInstallOptions, LocalInstallLevel, LocalInstallTarget } from "./lib/localSkills";
 import { pluginBindingStatusLabel, pluginLocalStatusLabel, pluginRiskLabel, pluginScopeLabel } from "./lib/plugins";
+import { useAdminData } from "./hooks/useAdminData";
+import { useAppUpdates } from "./hooks/useAppUpdates";
+import { useBootstrap } from "./hooks/useBootstrap";
+import { useLocalScan } from "./hooks/useLocalScan";
+import { usePreview } from "./hooks/usePreview";
+import { useTheme } from "./hooks/useTheme";
 import type {
   AdminDraftPreviewRequest,
-  AdminAuditLog,
   AdminDraftPlugin,
   AdminDraftSkill,
-  AdminSession,
   AppBootstrap,
   CachedSkillPackage,
   Category,
@@ -169,65 +170,20 @@ import type {
   SkillBinding,
   TargetRoot,
   UpdateCandidate,
-  UpdateCheckResult,
-  DownloadUpdateResult,
-  SkillPreview,
   SkillPreviewRequest
 } from "./types";
-type PreviewContext =
-  | { kind: "skill"; request: SkillPreviewRequest }
-  | { kind: "plugin"; request: PluginPreviewRequest }
-  | { kind: "adminDraft"; request: AdminDraftPreviewRequest }
-  | { kind: "adminPluginDraft"; request: AdminDraftPreviewRequest };type ContextMenuState = {
+
+type ContextMenuState = {
   open: boolean;
   x: number;
   y: number;
-};const emptyBootstrap: AppBootstrap = {
-  sources: [],
-  categories: [],
-  skills: [],
-  plugins: [],
-  marketProjects: [],
-  bindings: [],
-  cachedPackages: [],
-  pluginPackages: [],
-  pluginBindings: [],
-  localPlugins: [],
-  localSkills: [],
-  projects: [],
-  targetRoots: [],
-  updates: [],
-  metadataSyncError: null
 };
-
-const canUseTauriEvents =
-  typeof window !== "undefined" && typeof (window as Window & { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === "function";
 const ADMIN_ENTRY_CLICK_THRESHOLD = 5;
-const THEME_STORAGE_KEY = "skill-hub-theme";
 
-function initialTheme(): "light" | "dark" {
-  if (typeof document !== "undefined" && document.documentElement.dataset.theme === "dark") {
-    return "dark";
-  }
-  if (typeof window !== "undefined") {
-    let stored: string | null = null;
-    try {
-      stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
-    if (stored === "dark" || stored === "light") {
-      return stored;
-    }
-    if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
-      return "dark";
-    }
-  }
-  return "light";
-}
-function App() {
+function App() {
   const [view, setView] = useState<ViewKey>("market");
-  const [data, setData] = useState<AppBootstrap>(emptyBootstrap);
+  const { data, setData, loading, notice, setNotice, busy, setBusy, error, setError, load, refreshCatalog } = useBootstrap();
+  const { theme, setTheme } = useTheme();
   const [marketArtifactKind, setMarketArtifactKind] = useState<MarketArtifactKind>("skill");
   const [marketMode, setMarketMode] = useState<MarketMode>("public");
   const [selectedMarketProjectSlug, setSelectedMarketProjectSlug] = useState("");
@@ -241,10 +197,21 @@ function initialTheme(): "light" | "dark" {
   const [updatePolicy, setUpdatePolicy] = useState("follow_latest");
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
-  const [theme, setTheme] = useState<"light" | "dark">(() => initialTheme());
+  const {
+    preview,
+    setPreview,
+    setPreviewContext,
+    previewMarketSkill,
+    previewMarketPlugin,
+    previewCachedSkill,
+    previewBinding,
+    previewLocalSkill,
+    previewPluginBinding,
+    previewCachedPlugin,
+    previewLocalPlugin,
+    loadPreviewFile
+  } = usePreview({ installTarget, setBusy, setError, setNotice });
   const [targetRootDrafts, setTargetRootDrafts] = useState<Record<string, string>>({});
-  const [preview, setPreview] = useState<SkillPreview | null>(null);
-  const [previewContext, setPreviewContext] = useState<PreviewContext | null>(null);
   const [localInstallDialog, setLocalInstallDialog] = useState<LocalInstallDialogState | null>(null);
   const [localInstallTarget, setLocalInstallTarget] = useState<LocalInstallTarget>("codex");
   const [localInstallLevel, setLocalInstallLevel] = useState<LocalInstallLevel>("personal");
@@ -253,162 +220,55 @@ function initialTheme(): "light" | "dark" {
   const [adminVisible, setAdminVisible] = useState(false);
   const [adminUnlockOpen, setAdminUnlockOpen] = useState(false);
   const [adminKey, setAdminKey] = useState("");
-  const [adminSession, setAdminSession] = useState<AdminSession | null>(null);
-  const [adminDrafts, setAdminDrafts] = useState<AdminDraftSkill[]>([]);
-  const [adminPluginDrafts, setAdminPluginDrafts] = useState<AdminDraftPlugin[]>([]);
-  const [adminAuditLogs, setAdminAuditLogs] = useState<AdminAuditLog[]>([]);
   const [adminTab, setAdminTab] = useState<AdminTab>("projects");
   const [governanceTab, setGovernanceTab] = useState<GovernanceTab>("project");
   const [governanceDialog, setGovernanceDialog] = useState<GovernanceDialog | null>(null);
   const [governanceDialogError, setGovernanceDialogError] = useState<string | null>(null);
-  const [about, setAbout] = useState<AboutPayload | null>(null);
-  const [appUpdateDialog, setAppUpdateDialog] = useState<AppUpdateDialogState>({
-    open: false,
-    phase: "checking",
-    manual: false
+  const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
+  const [pluginDraftMeta, setPluginDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
+  const {
+    adminSession,
+    setAdminSession,
+    adminDrafts,
+    adminPluginDrafts,
+    adminAuditLogs,
+    setAdminAuditLogs,
+    selectedDraftPath,
+    selectedPluginDraftPath,
+    selectDraft,
+    selectPluginDraft,
+    refreshAdminDrafts,
+    refreshAdminPluginDrafts,
+    refreshAdminAuditLogs
+  } = useAdminData({
+    adminKey,
+    adminTab,
+    setAdminTab,
+    marketProjects: data.marketProjects,
+    setBusy,
+    setError,
+    setNotice,
+    setDraftMeta,
+    setPluginDraftMeta
   });
+  const {
+    about,
+    setAbout,
+    appUpdateDialog,
+    openAppUpdateDialog,
+    downloadAppUpdate,
+    restartAfterAppUpdate,
+    closeAppUpdateDialog
+  } = useAppUpdates();
+  const { scanLocal } = useLocalScan({ setBusy, setError, setData, setNotice });
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     open: false,
     x: 0,
     y: 0
   });
-  const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
-  const [selectedPluginDraftPath, setSelectedPluginDraftPath] = useState<string | null>(null);
-  const [draftMeta, setDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
-  const [pluginDraftMeta, setPluginDraftMeta] = useState<PublishMeta>(emptyPublishMeta());
   const [remoteProjectDraft, setRemoteProjectDraft] = useState<MarketProject>(emptyMarketProject());
   const [marketCategoryDraft, setMarketCategoryDraft] = useState<Category>(emptyMarketCategory());
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("正在载入 Skill Hub...");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const checkingAppUpdateRef = useRef(false);
   const adminEntryClickCountRef = useRef(0);
-  const localScanInFlightRef = useRef(false);
-
-  const openAppUpdateDialog = useCallback((manual = true) => {
-    setAppUpdateDialog({
-      open: true,
-      phase: "checking",
-      manual
-    });
-    void api
-      .checkForUpdates()
-      .then((result) => {
-        setAppUpdateDialog({
-          open: true,
-          phase: result.available ? "available" : "current",
-          result,
-          manual
-        });
-      })
-      .catch((err) => {
-        setAppUpdateDialog({
-          open: true,
-          phase: "error",
-          error: readError(err),
-          manual
-        });
-      });
-  }, []);
-
-  const showAvailableAppUpdate = useCallback((result: UpdateCheckResult, manual = false) => {
-    setAppUpdateDialog({
-      open: true,
-      phase: "available",
-      result,
-      manual
-    });
-  }, []);
-
-  const downloadAppUpdate = useCallback(async () => {
-    setAppUpdateDialog((current) => ({
-      ...current,
-      phase: "downloading",
-      error: null
-    }));
-    try {
-      const downloaded = await api.downloadUpdate();
-      setAppUpdateDialog((current) => ({
-        ...current,
-        phase: "downloaded",
-        downloaded
-      }));
-    } catch (err) {
-      setAppUpdateDialog((current) => ({
-        ...current,
-        phase: "error",
-        error: readError(err)
-      }));
-    }
-  }, []);
-
-  const restartAfterAppUpdate = useCallback(async () => {
-    try {
-      await api.restartAfterUpdate();
-    } catch (err) {
-      setAppUpdateDialog((current) => ({
-        ...current,
-        phase: "error",
-        error: readError(err)
-      }));
-    }
-  }, []);
-
-  const handleBackgroundAppUpdateAvailable = useCallback(
-    async (result: UpdateCheckResult) => {
-      if (!result.available || checkingAppUpdateRef.current) return;
-      checkingAppUpdateRef.current = true;
-      try {
-        showAvailableAppUpdate(result, false);
-      } catch (err) {
-        await message(readError(err), {
-          title: "Skill Hub 更新失败",
-          type: "error",
-          okLabel: "确定"
-        });
-      } finally {
-        checkingAppUpdateRef.current = false;
-      }
-    },
-    [showAvailableAppUpdate]
-  );
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // Storage can be unavailable in constrained WebView environments.
-    }
-  }, [theme]);
-
-  useEffect(() => {
-    if (!canUseTauriEvents) return;
-    let unlistenUpdate: (() => void) | undefined;
-    let unlistenAbout: (() => void) | undefined;
-    let unlistenAppUpdate: (() => void) | undefined;
-    void listen<UpdateCheckResult>("update-available", (event) => {
-      void handleBackgroundAppUpdateAvailable(event.payload);
-    }).then((fn) => {
-      unlistenUpdate = fn;
-    });
-    void listen<AboutPayload>("show-about", (event) => {
-      setAbout(event.payload);
-    }).then((fn) => {
-      unlistenAbout = fn;
-    });
-    void listen("open-app-update", () => {
-      openAppUpdateDialog(true);
-    }).then((fn) => {
-      unlistenAppUpdate = fn;
-    });
-    return () => {
-      unlistenUpdate?.();
-      unlistenAbout?.();
-      unlistenAppUpdate?.();
-    };
-  }, [handleBackgroundAppUpdateAvailable, openAppUpdateDialog]);
 
   useEffect(() => {
     if (!contextMenu.open) return;
@@ -429,19 +289,6 @@ function initialTheme(): "light" | "dark" {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [contextMenu.open]);
-
-  useEffect(() => {
-    async function init() {
-      try {
-        await load();
-      } catch (err) {
-        console.error("Failed to initialize:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    void init();
-  }, []);
 
   const publicCategories = useMemo(
     () => normalizeCategoryList(data.categories),
@@ -618,40 +465,6 @@ function initialTheme(): "light" | "dark" {
     );
   }, [data.targetRoots]);
 
-  async function load() {
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await api.bootstrap();
-      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
-      if (next.metadataSyncError) {
-        setError(`市场元数据同步失败，显示本地缓存：${next.metadataSyncError}`);
-        setNotice("已载入本地缓存");
-      } else {
-        setNotice("市场元数据已从 MinIO 同步");
-      }
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshCatalog() {
-    setBusy(true);
-    setError(null);
-    setNotice("正在从 MinIO 拉取市场元数据...");
-    try {
-      const next = await api.refreshCatalog();
-      setData((current) => ({ ...current, ...next, marketProjects: normalizeProjectList(next.marketProjects) }));
-      setNotice("市场元数据已从 MinIO 同步");
-    } catch (err) {
-      setError(`市场索引刷新失败：${readError(err)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function openView(nextView: ViewKey) {
     if (nextView === "admin") {
       if (!adminSession) {
@@ -797,50 +610,6 @@ function initialTheme(): "light" | "dark" {
     }
   }
 
-  async function previewMarketSkill(skill: MarketSkill) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: SkillPreviewRequest = {
-        sourceId: skill.sourceId,
-        namespace: skill.namespace,
-        skillId: skill.id,
-        version: null
-      };
-      const result = await api.previewSkill(request);
-      setPreview(result);
-      setPreviewContext({ kind: "skill", request });
-      setNotice(`正在预览 ${skill.name}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewMarketPlugin(plugin: MarketPlugin) {
-    setBusy(true);
-    setError(null);
-    try {
-      const target = plugin.targets.includes(installTarget) ? installTarget : plugin.targets[0] ?? "codex";
-      const request: PluginPreviewRequest = {
-        sourceId: plugin.sourceId,
-        namespace: plugin.namespace,
-        pluginId: plugin.id,
-        version: null,
-        target
-      };
-      const result = await api.previewPlugin(request);
-      setPreview(result);
-      setPreviewContext({ kind: "plugin", request });
-      setNotice(`正在预览 ${plugin.name}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function deleteCachedSkill(item: CachedSkillItem) {
     setBusy(true);
     setError(null);
@@ -904,114 +673,6 @@ function initialTheme(): "light" | "dark" {
     const skill = localDeleteDialog;
     setLocalDeleteDialog(null);
     await deleteLocalSkill(skill);
-  }
-
-  async function previewCachedSkill(item: CachedSkillItem) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: SkillPreviewRequest = {
-        sourceId: item.package.sourceId,
-        namespace: item.package.namespace,
-        skillId: item.package.skillId,
-        version: item.package.version
-      };
-      const result = await api.previewSkill(request);
-      setPreview(result);
-      setPreviewContext({ kind: "skill", request });
-      setNotice(`正在预览 ${item.package.skillName} ${item.package.version}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewBinding(binding: SkillBinding) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: SkillPreviewRequest = { bindingId: binding.id };
-      const result = await api.previewSkill(request);
-      setPreview(result);
-      setPreviewContext({ kind: "skill", request });
-      setNotice(`正在预览 ${binding.skillName}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewLocalSkill(skill: LocalSkill) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: SkillPreviewRequest = { path: skill.path };
-      const result = await api.previewSkill(request);
-      setPreview(result);
-      setPreviewContext({ kind: "skill", request });
-      setNotice(`正在预览 ${skill.detectedManifest ?? skill.path}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewPluginBinding(binding: AppBootstrap["pluginBindings"][number]) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: PluginPreviewRequest = { bindingId: binding.id };
-      const result = await api.previewPlugin(request);
-      setPreview(result);
-      setPreviewContext({ kind: "plugin", request });
-      setNotice(`正在预览 ${binding.pluginName}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewCachedPlugin(item: AppBootstrap["pluginPackages"][number]) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: PluginPreviewRequest = {
-        sourceId: item.sourceId,
-        namespace: item.namespace,
-        pluginId: item.pluginId,
-        version: item.version,
-        target: item.target,
-        path: item.packagePath
-      };
-      const result = await api.previewPlugin(request);
-      setPreview(result);
-      setPreviewContext({ kind: "plugin", request });
-      setNotice(`正在预览 ${item.pluginName} ${item.version}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function previewLocalPlugin(plugin: AppBootstrap["localPlugins"][number]) {
-    setBusy(true);
-    setError(null);
-    try {
-      const request: PluginPreviewRequest = { path: plugin.path, target: plugin.target };
-      const result = await api.previewPlugin(request);
-      setPreview(result);
-      setPreviewContext({ kind: "plugin", request });
-      setNotice(`正在预览 ${localPluginDisplayName(plugin)}`);
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function importLocalSkill(skill: LocalSkill, installAfterImport = false, options?: LocalInstallOptions) {
@@ -1294,25 +955,6 @@ function initialTheme(): "light" | "dark" {
     }
   }
 
-  async function scanLocal(options: { silent?: boolean } = {}) {
-    if (localScanInFlightRef.current) return;
-    localScanInFlightRef.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      const [skills, plugins] = await Promise.all([api.scanLocalSkills(), api.scanLocalPlugins()]);
-      setData((current) => ({ ...current, localSkills: skills, localPlugins: plugins }));
-      if (!options.silent) {
-        setNotice("本地 skill / plugin 已扫描");
-      }
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      localScanInFlightRef.current = false;
-      setBusy(false);
-    }
-  }
-
   async function unlockAdmin() {
     setBusy(true);
     setError(null);
@@ -1338,106 +980,6 @@ function initialTheme(): "light" | "dark" {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function refreshAdminDrafts() {
-    if (!adminKey.trim()) {
-      setError("请先输入管理员密钥");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const drafts = await api.listAdminDrafts(adminKey);
-      setAdminDrafts(drafts);
-      if (!selectedDraftPath && drafts.length > 0) {
-        selectDraft(drafts[0]);
-      }
-      setNotice("草稿区已刷新");
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshAdminPluginDrafts() {
-    if (!adminKey.trim()) {
-      setError("Please enter admin key first");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const drafts = await api.listAdminPluginDrafts(adminKey);
-      setAdminPluginDrafts(drafts);
-      if (!selectedPluginDraftPath && drafts.length > 0) {
-        selectPluginDraft(drafts[0]);
-      }
-      setNotice("Plugin 草稿区已刷新");
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshAdminAuditLogs(showBusy = true) {
-    if (adminSession && adminSession.role !== "system") {
-      setAdminAuditLogs([]);
-      return;
-    }
-    if (!adminKey.trim()) {
-      setError("请先输入管理员密钥");
-      return;
-    }
-    if (showBusy) {
-      setBusy(true);
-    }
-    setError(null);
-    try {
-      const logs = await api.listAdminAuditLogs(adminKey, 100);
-      setAdminAuditLogs(logs);
-      if (showBusy) {
-        setNotice("审计记录已刷新");
-      }
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      if (showBusy) {
-        setBusy(false);
-      }
-    }
-  }
-
-  function selectDraft(draft: AdminDraftSkill) {
-    setSelectedDraftPath(draft.gitlabSourcePath);
-    const nextMeta = draft.publishMeta ?? defaultMetaFromDraft(draft);
-    if (adminSession?.role === "project" && nextMeta.publishScope !== "project") {
-      setDraftMeta({
-        ...nextMeta,
-        publishScope: "project",
-        publishCategorySlug: null,
-        publishProjectSlug: data.marketProjects[0]?.slug ?? null
-      });
-      return;
-    }
-    setDraftMeta(nextMeta);
-  }
-
-  function selectPluginDraft(draft: AdminDraftPlugin) {
-    setSelectedPluginDraftPath(draft.gitlabSourcePath);
-    const nextMeta = draft.publishMeta ?? defaultMetaFromPluginDraft(draft);
-    if (adminSession?.role === "project" && nextMeta.publishScope !== "project") {
-      setPluginDraftMeta({
-        ...nextMeta,
-        publishScope: "project",
-        publishCategorySlug: null,
-        publishProjectSlug: data.marketProjects[0]?.slug ?? null
-      });
-      return;
-    }
-    setPluginDraftMeta(nextMeta);
   }
 
   async function saveDraftMeta() {
@@ -1546,41 +1088,6 @@ function initialTheme(): "light" | "dark" {
       return;
     }
     await previewPluginDraft(draft);
-  }
-
-  async function loadPreviewFile(filePath: string) {
-    if (!previewContext) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      if (previewContext.kind === "adminDraft") {
-        const request = { ...previewContext.request, filePath };
-        const result = await api.previewAdminDraft(request);
-        setPreview(result);
-        setPreviewContext({ kind: "adminDraft", request });
-      } else if (previewContext.kind === "adminPluginDraft") {
-        const request = { ...previewContext.request, filePath };
-        const result = await api.previewAdminPluginDraft(request);
-        setPreview(result);
-        setPreviewContext({ kind: "adminPluginDraft", request });
-      } else if (previewContext.kind === "plugin") {
-        const request = { ...previewContext.request, filePath };
-        const result = await api.previewPlugin(request);
-        setPreview(result);
-        setPreviewContext({ kind: "plugin", request });
-      } else {
-        const request = { ...previewContext.request, filePath };
-        const result = await api.previewSkill(request);
-        setPreview(result);
-        setPreviewContext({ kind: "skill", request });
-      }
-    } catch (err) {
-      setError(readError(err));
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function publishSelectedDraft() {
@@ -2148,13 +1655,7 @@ function initialTheme(): "light" | "dark" {
             onCheck={() => openAppUpdateDialog(true)}
             onDownload={() => void downloadAppUpdate()}
             onRestart={() => void restartAfterAppUpdate()}
-            onClose={() => {
-              setAppUpdateDialog((current) => ({
-                ...current,
-                open: false
-              }));
-              checkingAppUpdateRef.current = false;
-            }}
+            onClose={closeAppUpdateDialog}
           />
         ) : null}
       </main>
@@ -2164,4 +1665,5 @@ function initialTheme(): "light" | "dark" {
     </div>
   );
 }
-export default App;
+
+export default App;
