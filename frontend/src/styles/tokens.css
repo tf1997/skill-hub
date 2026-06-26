@@ -1,0 +1,134 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  color: #1a1d2e;
+  background: #f8f9fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+.app-shell {
+  /* 背景层次 */
+  --bg: #f8f9fb;
+  --bg-primary: #f8f9fb;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f5;
+  --bg-hover: #e8eaed;
+
+  /* 表面和面板 */
+  --surface: #ffffff;
+  --sidebar: rgba(255, 255, 255, 0.95);
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-1: #ffffff;
+  --panel-2: #fafbfc;
+  --surface-elevated: #ffffff;
+  --surface-muted: #f5f7fb;
+  --panel-header: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.95));
+  --accent-soft: rgba(79, 124, 255, 0.09);
+  --accent-line: rgba(79, 124, 255, 0.28);
+  --control-bg: #f6f8fb;
+  --control-hover: #eef3fb;
+  --nav-active: #edf3ff;
+
+  /* 边框层次 */
+  --line: #e2e5ea;
+  --line-strong: #cbd0d9;
+  --border-light: #e2e5ea;
+  --border-medium: #cbd0d9;
+  --border-strong: #a5adb9;
+
+  /* 文本层次 */
+  --text: #1a1d2e;
+  --text-primary: #1a1d2e;
+  --text-secondary: #4a5568;
+  --muted: #8792a5;
+  --subtle: #a0aab8;
+
+  /* 强调色（蓝色系） */
+  --accent-primary: #4f7cff;
+  --accent-primary-hover: #3d6ae8;
+  --accent-secondary: #7c9aff;
+  --blue: #4f7cff;
+  --cyan: #4f7cff;
+
+  /* 状态色 */
+  --status-draft: #f59e0b;
+  --status-published: #10b981;
+  --status-pending: #6366f1;
+  --green: #10b981;
+  --amber: #f59e0b;
+  --red: #ef4444;
+
+  /* 阴影系统 */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 4px -1px rgba(0, 0, 0, 0.05), 0 4px 6px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 10px 15px -3px rgba(0, 0, 0, 0.08);
+  --shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.05), 0 4px 6px -1px rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 10px 26px rgba(15, 23, 42, 0.055);
+  --shadow-hover: 0 8px 18px rgba(79, 124, 255, 0.12);
+
+  /* 圆角系统 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+.app-shell[data-theme="dark"] {
+  /* 背景层次 */
+  --bg: #0a0e14;
+  --bg-primary: #0a0e14;
+  --bg-secondary: #12161f;
+  --bg-tertiary: #1a1f2b;
+  --bg-hover: #232937;
+
+  /* 表面和面板 */
+  --surface: #12161f;
+  --sidebar: rgba(18, 22, 31, 0.95);
+  --panel: rgba(18, 22, 31, 0.92);
+  --panel-1: #12161f;
+  --panel-2: #1a1f2b;
+  --surface-elevated: #121822;
+  --surface-muted: #18202c;
+  --panel-header: linear-gradient(180deg, rgba(21, 29, 42, 0.98), rgba(17, 23, 34, 0.95));
+  --accent-soft: rgba(93, 138, 255, 0.14);
+  --accent-line: rgba(93, 138, 255, 0.34);
+  --control-bg: #171f2b;
+  --control-hover: #202a39;
+  --nav-active: rgba(93, 138, 255, 0.16);
+
+  /* 边框层次 */
+  --line: rgba(146, 169, 203, 0.12);
+  --line-strong: rgba(146, 169, 203, 0.24);
+  --border-light: rgba(146, 169, 203, 0.12);
+  --border-medium: rgba(146, 169, 203, 0.18);
+  --border-strong: rgba(146, 169, 203, 0.32);
+
+  /* 文本层次 */
+  --text: #e8f0f8;
+  --text-primary: #e8f0f8;
+  --text-secondary: #b0c0d8;
+  --muted: #7a8ba8;
+  --subtle: #5a6a82;
+
+  /* 强调色（蓝色系，深色模式下更亮） */
+  --accent-primary: #5d8aff;
+  --accent-primary-hover: #7c9aff;
+  --accent-secondary: #8fa9ff;
+  --blue: #5d8aff;
+  --cyan: #5d8aff;
+
+  /* 状态色（深色模式下更鲜艳） */
+  --status-draft: #fbbf24;
+  --status-published: #34d399;
+  --status-pending: #818cf8;
+  --green: #34d399;
+  --amber: #fbbf24;
+  --red: #f87171;
+
+  /* 阴影系统（深色模式下更重） */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.2), 0 1px 3px 0 rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 2px 4px -1px rgba(0, 0, 0, 0.3), 0 4px 6px -1px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 4px 6px -2px rgba(0, 0, 0, 0.35), 0 10px 15px -3px rgba(0, 0, 0, 0.45);
+  --shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.3), 0 4px 6px -1px rgba(0, 0, 0, 0.35);
+  --shadow-panel: 0 14px 30px rgba(0, 0, 0, 0.28);
+  --shadow-hover: 0 12px 24px rgba(0, 0, 0, 0.28);
+}

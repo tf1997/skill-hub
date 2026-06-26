@@ -1,0 +1,186 @@
+.market-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(360px, 0.92fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.list-pane,
+.detail-pane,
+.settings-form,
+.project-form,
+.data-table,
+.local-scan,
+.target-root-list {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.settings-form,
+.target-root-list,
+.local-scan {
+  padding: 14px;
+}
+
+.market-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.market-scope-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  background: var(--control-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  width: 100%;
+}
+
+.market-scope-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.market-scope-tabs button:hover {
+  color: var(--text);
+  background: var(--control-hover);
+}
+
+.market-scope-tabs button.active {
+  color: var(--accent-primary);
+  background: var(--surface-elevated);
+  border-color: var(--accent-line);
+  box-shadow: var(--shadow-sm);
+}
+
+.market-scope-tabs span,
+.market-scope-tabs small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-scope-tabs small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.market-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.market-artifact-switch {
+  flex: 0 0 auto;
+}
+
+.market-list-body {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.market-filter-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(245, 248, 252, 0.8), rgba(255, 255, 255, 0));
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.market-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.market-filter-chip:hover {
+  color: var(--text);
+  background: rgba(76, 120, 255, 0.08);
+  border-color: rgba(76, 120, 255, 0.16);
+}
+
+.market-filter-chip.active {
+  color: var(--accent-primary);
+  background: var(--nav-active);
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px rgba(76, 120, 255, 0.08);
+}
+
+.market-filter-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-search {
+  min-width: 220px;
+}
+
+.category-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-button.active {
+  color: var(--text);
+  background: var(--nav-active);
+  border-color: var(--accent-line);
+  font-weight: 600;
+}
