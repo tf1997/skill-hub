@@ -17,7 +17,7 @@ use crate::{
     models::{CachedSkillPackage, LocalPlugin, LocalSkill, MarketSkill, PluginBinding},
 };
 
-use super::object_store;
+use super::{admin, object_store};
 
 pub(crate) const LOCAL_NAMESPACE: &str = "local";
 pub(crate) const LOCAL_DEFAULT_VERSION: &str = "0.0.0-local";
@@ -771,7 +771,7 @@ fn local_skill_profile_from_path(path: &Path) -> Result<Option<LocalSkillProfile
 pub(crate) fn read_local_skill_profile(path: &Path) -> Result<LocalSkillProfile> {
     let skill_md = path.join("SKILL.md");
     let content = fs::read_to_string(&skill_md).context("读取本地 SKILL.md 失败")?;
-    let metadata = commands::parse_skill_frontmatter(&content);
+    let metadata = admin::parse_skill_frontmatter(&content);
     let dir_name = skill_name_from_dir(path).unwrap_or_else(|| "local-skill".to_string());
     let title = parse_skill_markdown_title(&content);
     let name = metadata
