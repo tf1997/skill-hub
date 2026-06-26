@@ -11,7 +11,7 @@ use reqwest::{header, Url};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tauri::State;
-use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
+use zip::ZipArchive;
 
 use crate::{
     admin_config,
@@ -44,6 +44,7 @@ use crate::{
         UpgradePluginBindingRequest,
     },
     process_util::external_command,
+    services::{package, validation},
 };
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
@@ -798,7 +799,7 @@ async fn preview_admin_draft_inner(
 ) -> Result<SkillPreview> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_prefix = format!("{}{}/", DRAFT_GITLAB_PREFIX, source_path);
     let skill_md_path = format!("{draft_prefix}SKILL.md");
@@ -876,7 +877,7 @@ async fn preview_admin_plugin_draft_inner(
 ) -> Result<SkillPreview> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let objects = client.list_objects(&draft_root).await?;
@@ -990,9 +991,9 @@ async fn save_publish_meta_inner(
     }
 
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let mut meta = normalize_publish_meta_for_source(request.meta, &source_path);
-    validate_publish_meta(&meta)?;
+    validation::validate_publish_meta(&meta)?;
     ensure_can_manage_publish_target(&authorization, &meta)?;
     validate_publish_target(&client, &meta).await?;
     meta.updated_at = Some(now());
@@ -1023,7 +1024,7 @@ async fn save_plugin_publish_meta_inner(
     authorization: &admin_config::AdminAuthorization,
 ) -> Result<PublishMeta> {
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let draft_objects = client.list_objects(&draft_root).await?;
     let default_meta = match resolve_plugin_draft_content_prefix(&draft_root, &draft_objects) {
@@ -1035,7 +1036,7 @@ async fn save_plugin_publish_meta_inner(
         None => None,
     };
     let mut meta = normalize_plugin_publish_meta(request.meta, default_meta.as_ref());
-    validate_publish_meta(&meta)?;
+    validation::validate_publish_meta(&meta)?;
     ensure_can_manage_publish_target(authorization, &meta)?;
     validate_publish_target(&client, &meta).await?;
     meta.updated_at = Some(now());
@@ -1068,7 +1069,7 @@ async fn save_market_project_remote_inner(
 ) -> Result<Vec<MarketProject>> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let project_slug = request.project.slug.trim().to_string();
-    validate_object_segment("project slug", &project_slug)?;
+    validation::validate_object_segment("project slug", &project_slug)?;
     ensure_can_manage_project(&authorization, &project_slug)?;
 
     let client = AdminObjectClient::new();
@@ -1119,7 +1120,7 @@ async fn delete_market_project_remote_inner(
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let slug = request.slug.trim().to_string();
-    validate_object_segment("project slug", &slug)?;
+    validation::validate_object_segment("project slug", &slug)?;
     ensure_can_manage_project(&authorization, &slug)?;
 
     let client = AdminObjectClient::new();
@@ -1169,7 +1170,7 @@ async fn save_market_category_remote_inner(
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_system_admin(&authorization)?;
     let category_id = request.category.id.trim().to_string();
-    validate_object_segment("category slug", &category_id)?;
+    validation::validate_object_segment("category slug", &category_id)?;
 
     let client = AdminObjectClient::new();
     let mut categories = load_remote_categories(&client).await?;
@@ -1207,7 +1208,7 @@ async fn delete_market_category_remote_inner(
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_system_admin(&authorization)?;
     let category_id = request.category_id.trim().to_string();
-    validate_object_segment("category slug", &category_id)?;
+    validation::validate_object_segment("category slug", &category_id)?;
     let client = AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
     if catalog.skills.iter().any(|skill| {
@@ -1246,7 +1247,7 @@ async fn delete_market_category_remote_inner(
 async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let skill_md_path = format!("{}{}/SKILL.md", DRAFT_GITLAB_PREFIX, source_path);
     let skill_md = client
         .get_text(&skill_md_path)
@@ -1294,7 +1295,7 @@ async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]
     if !state_archived && published_version == Some(version.as_str()) {
         return Err(anyhow!("该草稿当前版本已发布，禁止重复发布"));
     }
-    validate_publish_meta(&meta)?;
+    validation::validate_publish_meta(&meta)?;
     ensure_can_manage_publish_target(&authorization, &meta)?;
     validate_publish_target(&client, &meta).await?;
     let validation_path = format!("{}{}/validation.json", DRAFT_GITLAB_PREFIX, source_path);
@@ -1317,7 +1318,7 @@ async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]
 
     let files = read_draft_files(&client, &draft_prefix, &draft_objects).await?;
     let source_fingerprint = draft_source_fingerprint(&files);
-    let package_bytes = build_package_zip(&files)?;
+    let package_bytes = package::build_package_zip(&files)?;
     let package_hash = sha256_hex(&package_bytes);
     let package_size = package_bytes.len() as i64;
     let skill_json = build_skill_json(&meta, &version, &author, &package_hash, package_size);
@@ -1498,7 +1499,7 @@ async fn publish_plugin_draft_inner(
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let draft_objects = client.list_objects(&draft_root).await?;
     let source_prefix = resolve_plugin_draft_content_prefix(&draft_root, &draft_objects)
@@ -1765,7 +1766,7 @@ async fn quick_republish_archived_skill_inner(
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = AdminObjectClient::new();
-    let source_path = normalize_relative_object_path(&request.gitlab_source_path)?;
+    let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
 
     // 1. 读取保存的元数据（而不是 SKILL.md）
     // 尝试从 gitlab 路径和 archived 路径读取
@@ -1791,7 +1792,7 @@ async fn quick_republish_archived_skill_inner(
     };
 
     // 2. 验证元数据完整性
-    validate_publish_meta(&meta)?;
+    validation::validate_publish_meta(&meta)?;
     ensure_can_manage_publish_target(&authorization, &meta)?;
 
     // 3. 检查状态：必须是已下架状态
@@ -1974,8 +1975,8 @@ async fn archive_market_skill_inner(
     local_macs: &[String],
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    validate_object_segment("namespace", &request.namespace)?;
-    validate_object_segment("skill id", &request.skill_id)?;
+    validation::validate_object_segment("namespace", &request.namespace)?;
+    validation::validate_object_segment("skill id", &request.skill_id)?;
 
     let client = AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
@@ -2058,8 +2059,8 @@ async fn archive_market_plugin_inner(
     local_macs: &[String],
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    validate_object_segment("namespace", &request.namespace)?;
-    validate_object_segment("plugin id", &request.plugin_id)?;
+    validation::validate_object_segment("namespace", &request.namespace)?;
+    validation::validate_object_segment("plugin id", &request.plugin_id)?;
 
     let client = AdminObjectClient::new();
     let mut catalog = load_remote_plugin_catalog(&client).await?;
@@ -2150,7 +2151,7 @@ pub async fn save_target_root(
     state: State<'_, AppState>,
 ) -> CommandResult<TargetRoot> {
     map_result((|| {
-        validate_target(&request.target)?;
+        validation::validate_target(&request.target)?;
         let path = request.personal_path.trim();
         if path.is_empty() {
             return Err(anyhow!("personal skill root is required"));
@@ -2251,8 +2252,8 @@ async fn install_skill_inner(
     request: InstallSkillRequest,
     state: &AppState,
 ) -> Result<SkillBinding> {
-    validate_target(&request.target)?;
-    validate_level(&request.level)?;
+    validation::validate_target(&request.target)?;
+    validation::validate_level(&request.level)?;
     let _metadata_sync_error = refresh_catalog_best_effort(state).await;
 
     if request.level == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
@@ -2375,7 +2376,7 @@ async fn install_skill_inner(
 
     if request.enable {
         fs::create_dir_all(&install_path).context("创建安装目录失败")?;
-        copy_package_to_install(&package_path, &install_path)?;
+        package::copy_package_to_install(&package_path, &install_path)?;
     }
 
     let now = now();
@@ -2424,9 +2425,9 @@ async fn install_plugin_inner(
     request: InstallPluginRequest,
     state: &AppState,
 ) -> Result<PluginBinding> {
-    validate_plugin_target(&request.target)?;
-    validate_plugin_scope(&request.scope)?;
-    validate_plugin_target_scope(&request.target, &request.scope)?;
+    validation::validate_plugin_target(&request.target)?;
+    validation::validate_plugin_scope(&request.scope)?;
+    validation::validate_plugin_target_scope(&request.target, &request.scope)?;
     let _metadata_sync_error = refresh_catalog_best_effort(state).await;
 
     if request.scope == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
@@ -2701,7 +2702,7 @@ fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState
 
     let path = PathBuf::from(&package_path);
     if path.exists() {
-        ensure_safe_package_cache_path(state, &path)?;
+        package::ensure_safe_package_cache_path(state, &path)?;
         fs::remove_dir_all(&path).context("删除本地包缓存失败")?;
     }
 
@@ -2758,7 +2759,7 @@ fn delete_cached_plugin_inner(request: DeleteCachedPluginRequest, state: &AppSta
 
     let path = PathBuf::from(&package_path);
     if path.exists() {
-        ensure_safe_plugin_package_cache_path(state, &path)?;
+        package::ensure_safe_plugin_package_cache_path(state, &path)?;
         fs::remove_dir_all(&path)
             .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove cached plugin package failed")?;
     }
@@ -3050,14 +3051,14 @@ fn import_local_skill_to_cache_inner(
 
     if package_dir.exists() {
         if request.overwrite.unwrap_or(true) {
-            ensure_safe_package_cache_path(state, &package_dir)?;
+            package::ensure_safe_package_cache_path(state, &package_dir)?;
             fs::remove_dir_all(&package_dir).context("清理旧本地缓存失败")?;
         } else {
             return Err(anyhow!("本地缓存已存在"));
         }
     }
     fs::create_dir_all(&package_dir).context("创建本地缓存目录失败")?;
-    copy_dir_recursive_including_json(&source_path, &package_dir)?;
+    package::copy_dir_recursive_including_json(&source_path, &package_dir)?;
 
     let conn = state.conn.lock().expect("db mutex poisoned");
     let package_id = ensure_package_record(
@@ -3116,8 +3117,8 @@ fn install_cached_skill_inner(
     request: InstallCachedSkillRequest,
     state: &AppState,
 ) -> Result<SkillBinding> {
-    validate_target(&request.target)?;
-    validate_level(&request.level)?;
+    validation::validate_target(&request.target)?;
+    validation::validate_level(&request.level)?;
     if request.source_id.as_deref() != Some(LOCAL_SOURCE_ID) || request.namespace != LOCAL_NAMESPACE
     {
         return Err(anyhow!("install_cached_skill 仅用于自建本地缓存"));
@@ -3214,7 +3215,7 @@ fn install_cached_skill_inner(
 
     if request.enable {
         fs::create_dir_all(&install_path).context("创建安装目录失败")?;
-        copy_package_to_install_including_json(&package_path, &install_path)?;
+        package::copy_package_to_install_including_json(&package_path, &install_path)?;
     }
 
     let now = now();
@@ -3328,7 +3329,7 @@ async fn prepare_package(
         .join(version);
 
     if package_dir.join("SKILL.md").exists() {
-        remove_json_files_recursive(&package_dir)?;
+        package::remove_json_files_recursive(&package_dir)?;
         return Ok(package_dir);
     }
 
@@ -3354,7 +3355,7 @@ async fn prepare_package(
         .map(|package| package.sha256.as_str())
         .filter(|value| !value.trim().is_empty())
     {
-        verify_sha256(&bytes, expected)?;
+        package::verify_sha256(&bytes, expected)?;
     } else {
         let hash_url = object_url(source, &version_info.sha256_path)?;
         let expected = reqwest::Client::new()
@@ -3367,12 +3368,12 @@ async fn prepare_package(
             .text()
             .await
             .context("读取 sha256 失败")?;
-        verify_sha256(&bytes, expected.trim())?;
+        package::verify_sha256(&bytes, expected.trim())?;
     }
 
     fs::create_dir_all(&package_dir)?;
-    remove_json_files_recursive(&package_dir)?;
-    extract_zip_safely(&bytes, &package_dir)?;
+    package::remove_json_files_recursive(&package_dir)?;
+    package::extract_zip_safely(&bytes, &package_dir)?;
     Ok(package_dir)
 }
 
@@ -3423,7 +3424,7 @@ async fn prepare_plugin_package(
         .map(|package| package.sha256.as_str())
         .filter(|value| !value.trim().is_empty())
     {
-        verify_sha256(&bytes, expected)?;
+        package::verify_sha256(&bytes, expected)?;
     } else {
         let hash_url = object_url(source, &package_ref.sha256_path)?;
         let expected = reqwest::Client::new()
@@ -3436,16 +3437,16 @@ async fn prepare_plugin_package(
             .text()
             .await
             .context("PLUGIN_PACKAGE_CHECKSUM_MISMATCH: read sha256 failed")?;
-        verify_sha256(&bytes, expected.trim())?;
+        package::verify_sha256(&bytes, expected.trim())?;
     }
 
     if package_dir.exists() {
-        ensure_safe_plugin_package_cache_path(state, &package_dir)?;
+        package::ensure_safe_plugin_package_cache_path(state, &package_dir)?;
         fs::remove_dir_all(&package_dir)
             .context("PLUGIN_PACKAGE_BUILD_FAILED: clean old package failed")?;
     }
     fs::create_dir_all(&package_dir)?;
-    extract_zip_preserving_json_safely(&bytes, &package_dir)?;
+    package::extract_zip_preserving_json_safely(&bytes, &package_dir)?;
     if !package_dir.join(manifest_file).is_file() {
         return Err(anyhow!(
             "PLUGIN_MANIFEST_INVALID: package missing {manifest_file}"
@@ -3500,97 +3501,6 @@ async fn plugin_component_inventory_json(
     serde_json::to_string(&value).map_err(Into::into)
 }
 
-fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
-    if actual.eq_ignore_ascii_case(expected.trim()) {
-        Ok(())
-    } else {
-        Err(anyhow!("SHA-256 校验失败"))
-    }
-}
-
-fn extract_zip_safely(bytes: &[u8], destination: &Path) -> Result<()> {
-    let reader = Cursor::new(bytes);
-    let mut archive = ZipArchive::new(reader).context("打开 zip 包失败")?;
-
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index)?;
-        let Some(enclosed_name) = file.enclosed_name().map(|path| path.to_owned()) else {
-            return Err(anyhow!("zip 包包含不安全路径"));
-        };
-
-        let out_path = destination.join(enclosed_name);
-        if !file.is_dir() && is_json_file(&out_path) {
-            continue;
-        }
-
-        if file.is_dir() {
-            fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut outfile = fs::File::create(&out_path)?;
-            std::io::copy(&mut file, &mut outfile)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn extract_zip_preserving_json_safely(bytes: &[u8], destination: &Path) -> Result<()> {
-    let reader = Cursor::new(bytes);
-    let mut archive =
-        ZipArchive::new(reader).context("PLUGIN_PACKAGE_BUILD_FAILED: open zip failed")?;
-
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index)?;
-        let Some(enclosed_name) = file.enclosed_name().map(|path| path.to_owned()) else {
-            return Err(anyhow!(
-                "PLUGIN_PACKAGE_BUILD_FAILED: zip contains unsafe path"
-            ));
-        };
-
-        let out_path = destination.join(enclosed_name);
-        if file.is_dir() {
-            fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut outfile = fs::File::create(&out_path)?;
-            std::io::copy(&mut file, &mut outfile)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn remove_json_files_recursive(root: &Path) -> Result<()> {
-    if !root.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            remove_json_files_recursive(&path)?;
-        } else if is_json_file(&path) {
-            fs::remove_file(&path).with_context(|| {
-                format!(
-                    "清理本地包缓存 JSON 文件失败: {}",
-                    canonical_display_path(&path)
-                )
-            })?;
-        }
-    }
-
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn set_binding_enabled(
     request: SetBindingEnabledRequest,
@@ -3628,7 +3538,7 @@ pub async fn set_binding_enabled(
             if !cache_path.exists() {
                 return Err(anyhow!("缓存包目录不存在: {}", package_path));
             }
-            copy_package_to_install(&cache_path, &install_path)?;
+            package::copy_package_to_install(&cache_path, &install_path)?;
         } else {
             // 禁用：删除安装目录的文件
             if is_sqlite_managed_install_path(&binding, &install_path) {
@@ -3751,7 +3661,7 @@ async fn upgrade_skill_binding_inner(
     if binding.enabled {
         let install_path = PathBuf::from(&binding.install_path);
         fs::create_dir_all(&install_path).context("创建安装目录失败")?;
-        copy_package_to_install(&package_path, &install_path)?;
+        package::copy_package_to_install(&package_path, &install_path)?;
     }
 
     // 8. 更新数据库记录
@@ -3839,7 +3749,7 @@ async fn upgrade_plugin_binding_inner(
     };
 
     if binding.enabled {
-        validate_plugin_target_scope(&binding.target, &binding.scope)?;
+        validation::validate_plugin_target_scope(&binding.target, &binding.scope)?;
         let marketplace = materialize_plugin_marketplace(
             state,
             &plugin,
@@ -4403,7 +4313,9 @@ fn normalize_categories_doc(mut doc: CategoriesDoc) -> CategoriesDoc {
     let mut by_id = BTreeMap::new();
     for mut category in doc.items {
         category.id = category.id.trim().to_string();
-        if !is_valid_object_segment_value(&category.id) || category.id.starts_with("project:") {
+        if !validation::is_valid_object_segment_value(&category.id)
+            || category.id.starts_with("project:")
+        {
             continue;
         }
         category.name = category.name.trim().to_string();
@@ -4736,7 +4648,7 @@ fn plugin_source_meta_from_readme(
             meta.skill_id = skill_id;
         }
     }
-    validate_publish_meta(&meta)?;
+    validation::validate_publish_meta(&meta)?;
     let mut source = PluginSourceMeta {
         schema: "skillhub.plugin-source.v1".to_string(),
         namespace: meta.namespace,
@@ -5020,7 +4932,7 @@ fn plugin_draft_status(
         return "metadata_incomplete".to_string();
     }
     if match meta {
-        Some(value) => !is_publish_meta_ready_for_status(value),
+        Some(value) => !validation::is_publish_meta_ready_for_status(value),
         None => true,
     } {
         return "metadata_incomplete".to_string();
@@ -5048,7 +4960,7 @@ fn draft_status(
         return "校验失败".to_string();
     }
     if match meta {
-        Some(value) => !is_publish_meta_ready_for_status(value),
+        Some(value) => !validation::is_publish_meta_ready_for_status(value),
         None => true,
     } {
         return "元数据待补充".to_string();
@@ -5061,13 +4973,6 @@ fn draft_status(
         }
         _ => "待发布".to_string(),
     }
-}
-
-fn is_publish_meta_ready_for_status(meta: &PublishMeta) -> bool {
-    !meta.namespace.trim().is_empty()
-        && !meta.skill_id.trim().is_empty()
-        && !meta.name.trim().is_empty()
-        && !meta.summary.trim().is_empty()
 }
 
 fn validation_status_from_json(value: &serde_json::Value) -> Option<String> {
@@ -5101,40 +5006,6 @@ fn normalize_publish_meta(mut meta: PublishMeta) -> PublishMeta {
         meta.levels = vec!["personal".to_string(), "project".to_string()];
     }
     meta
-}
-
-fn is_publish_meta_complete(meta: &PublishMeta) -> bool {
-    is_publish_meta_ready_for_status(meta)
-        && ((meta.publish_scope == "project"
-            && meta
-                .publish_project_slug
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty()))
-            || (meta.publish_scope != "project"
-                && meta
-                    .publish_category_slug
-                    .as_deref()
-                    .is_some_and(|value| !value.trim().is_empty())))
-}
-
-fn validate_publish_meta(meta: &PublishMeta) -> Result<()> {
-    if !is_publish_meta_complete(meta) {
-        return Err(anyhow!("发布元数据不完整"));
-    }
-    validate_object_segment("namespace", &meta.namespace)?;
-    validate_object_segment("skill id", &meta.skill_id)?;
-    if meta.publish_scope == "project" {
-        validate_object_segment(
-            "project slug",
-            meta.publish_project_slug.as_deref().unwrap_or(""),
-        )?;
-    } else {
-        validate_object_segment(
-            "category slug",
-            meta.publish_category_slug.as_deref().unwrap_or(""),
-        )?;
-    }
-    Ok(())
 }
 
 async fn validate_publish_target(client: &AdminObjectClient, meta: &PublishMeta) -> Result<()> {
@@ -5416,42 +5287,11 @@ fn should_republish_existing_version(
     }
 }
 
-fn validate_object_segment(name: &str, value: &str) -> Result<()> {
-    if is_valid_object_segment_value(value) {
-        Ok(())
-    } else {
-        Err(anyhow!("{name} 只能包含字母、数字、点、下划线和短横线"))
-    }
-}
-
-fn is_valid_object_segment_value(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty()
-        && !trimmed.contains("..")
-        && !trimmed.contains('/')
-        && !trimmed.contains('\\')
-        && trimmed
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-}
-
-fn normalize_relative_object_path(value: &str) -> Result<String> {
-    let path = value.trim().trim_matches('/');
-    if path.is_empty()
-        || path.contains("..")
-        || path.contains('\\')
-        || path.split('/').any(|part| part.trim().is_empty())
-    {
-        return Err(anyhow!("对象路径不合法"));
-    }
-    Ok(path.to_string())
-}
-
 fn admin_object_path(source_path: &str, leaf: &str) -> Result<String> {
     Ok(format!(
         "{}{}/{}",
         DRAFT_ADMIN_PREFIX,
-        normalize_relative_object_path(source_path)?,
+        validation::normalize_relative_object_path(source_path)?,
         leaf
     ))
 }
@@ -5460,7 +5300,7 @@ fn plugin_admin_object_path(source_path: &str, leaf: &str) -> Result<String> {
     Ok(format!(
         "{}{}/{}",
         PLUGIN_ADMIN_PREFIX,
-        normalize_relative_object_path(source_path)?,
+        validation::normalize_relative_object_path(source_path)?,
         leaf
     ))
 }
@@ -5686,7 +5526,7 @@ fn normalize_market_projects(projects: Vec<MarketProject>) -> Vec<MarketProject>
     let mut by_slug = BTreeMap::new();
     for mut project in projects {
         project.slug = project.slug.trim().to_string();
-        if !is_valid_object_segment_value(&project.slug) {
+        if !validation::is_valid_object_segment_value(&project.slug) {
             continue;
         }
         project.name = project.name.trim().to_string();
@@ -6277,27 +6117,6 @@ fn preview_candidate_paths(
     candidates
 }
 
-fn build_package_zip(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
-    let cursor = Cursor::new(Vec::new());
-    let mut writer = ZipWriter::new(cursor);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for (relative, bytes) in files {
-        if relative.ends_with('/') || is_package_control_file(relative) {
-            continue;
-        }
-        writer.start_file(relative.replace('\\', "/"), options)?;
-        std::io::Write::write_all(&mut writer, bytes)?;
-    }
-    Ok(writer.finish()?.into_inner())
-}
-
-fn is_package_control_file(relative: &str) -> bool {
-    matches!(
-        relative.replace('\\', "/").to_ascii_lowercase().as_str(),
-        "skill.json" | "publish-meta.v1.json" | "state.v1.json" | "validation.json"
-    )
-}
-
 #[derive(Debug, Clone)]
 struct PreparedPluginPublish {
     meta: PluginSourceMeta,
@@ -6331,7 +6150,7 @@ fn prepare_plugin_publish(
 
     let mut packages = BTreeMap::new();
     for target in &meta.targets {
-        let bytes = build_plugin_package_zip(files, &meta, target)?;
+        let bytes = package::build_plugin_package_zip(files, &meta, target)?;
         let sha256 = sha256_hex(&bytes);
         packages.insert(
             target.clone(),
@@ -6364,7 +6183,7 @@ fn read_plugin_readme_metadata(files: &[(String, Vec<u8>)]) -> Result<DraftSkill
     let bytes = files
         .iter()
         .find(|(path, _)| {
-            normalize_zip_relative_path(path)
+            package::normalize_zip_relative_path(path)
                 .as_deref()
                 .is_some_and(|path| path.eq_ignore_ascii_case("README.md"))
         })
@@ -6393,17 +6212,14 @@ fn read_plugin_readme_metadata(files: &[(String, Vec<u8>)]) -> Result<DraftSkill
     Ok(metadata)
 }
 
-fn read_plugin_source_meta(files: &[(String, Vec<u8>)]) -> Result<PluginSourceMeta> {
-    read_optional_plugin_source_meta(files)?
-        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: pluginhub.json 缺失"))
-}
-
 fn read_optional_plugin_source_meta(
     files: &[(String, Vec<u8>)],
 ) -> Result<Option<PluginSourceMeta>> {
     let Some(bytes) = files
         .iter()
-        .find(|(path, _)| normalize_zip_relative_path(path).as_deref() == Some("pluginhub.json"))
+        .find(|(path, _)| {
+            package::normalize_zip_relative_path(path).as_deref() == Some("pluginhub.json")
+        })
         .map(|(_, bytes)| bytes)
     else {
         return Ok(None);
@@ -6430,50 +6246,27 @@ fn validate_plugin_source_meta(meta: &PluginSourceMeta) -> Result<()> {
             return Err(anyhow!("PLUGIN_SOURCE_INVALID: {name} 不能为空"));
         }
     }
-    validate_object_segment("namespace", &meta.namespace)?;
-    validate_object_segment("plugin id", &meta.id)?;
-    validate_object_segment("version", &meta.version)?;
+    validation::validate_object_segment("namespace", &meta.namespace)?;
+    validation::validate_object_segment("plugin id", &meta.id)?;
+    validation::validate_object_segment("version", &meta.version)?;
     if meta.targets.is_empty() {
         return Err(anyhow!("PLUGIN_SOURCE_INVALID: targets 至少包含一个平台"));
     }
     for target in &meta.targets {
-        validate_plugin_target(target)?;
+        validation::validate_plugin_target(target)?;
     }
     if meta.scopes.is_empty() {
         return Err(anyhow!("PLUGIN_SOURCE_INVALID: scopes 至少包含一个作用域"));
     }
     for scope in &meta.scopes {
-        validate_plugin_scope(scope)?;
-    }
-    Ok(())
-}
-
-fn validate_plugin_target(target: &str) -> Result<()> {
-    match target {
-        "codex" | "claude" => Ok(()),
-        _ => Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
-    }
-}
-
-fn validate_plugin_scope(scope: &str) -> Result<()> {
-    match scope {
-        "user" | "project" | "local" => Ok(()),
-        _ => Err(anyhow!("PLUGIN_SOURCE_INVALID: 不支持的 scope {scope}")),
-    }
-}
-
-fn validate_plugin_target_scope(target: &str, scope: &str) -> Result<()> {
-    if target == "codex" && scope == "project" {
-        return Err(anyhow!(
-            "PLUGIN_SCOPE_UNSUPPORTED: Codex plugin only supports user scope"
-        ));
+        validation::validate_plugin_scope(scope)?;
     }
     Ok(())
 }
 
 fn validate_plugin_source_files(files: &[(String, Vec<u8>)]) -> Result<()> {
     for (path, _) in files {
-        let Some(path) = normalize_zip_relative_path(path) else {
+        let Some(path) = package::normalize_zip_relative_path(path) else {
             return Err(anyhow!(
                 "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {path}"
             ));
@@ -6498,149 +6291,6 @@ fn is_plugin_platform_generated_path(path: &str) -> bool {
         || normalized.starts_with("claude/")
 }
 
-fn build_plugin_package_zip(
-    files: &[(String, Vec<u8>)],
-    meta: &PluginSourceMeta,
-    target: &str,
-) -> Result<Vec<u8>> {
-    validate_plugin_target(target)?;
-    let cursor = Cursor::new(Vec::new());
-    let mut writer = ZipWriter::new(cursor);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    let manifest_path = plugin_native_manifest_path(target)?;
-    let manifest = serde_json::to_vec_pretty(&build_native_plugin_manifest(meta, target, files)?)?;
-    writer.start_file(manifest_path, options)?;
-    std::io::Write::write_all(&mut writer, &manifest)?;
-    let mut written = 1_usize;
-
-    for (relative, bytes) in files {
-        let Some(relative) = normalize_zip_relative_path(relative) else {
-            return Err(anyhow!(
-                "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {relative}"
-            ));
-        };
-        if !should_include_common_plugin_file(&relative, target) {
-            continue;
-        }
-        writer.start_file(relative, options)?;
-        std::io::Write::write_all(&mut writer, bytes)?;
-        written += 1;
-    }
-
-    if written == 0 {
-        return Err(anyhow!(
-            "PLUGIN_PACKAGE_BUILD_FAILED: plugin 草稿根目录下没有可打包文件"
-        ));
-    }
-
-    Ok(writer.finish()?.into_inner())
-}
-
-fn plugin_native_manifest_path(target: &str) -> Result<&'static str> {
-    match target {
-        "codex" => Ok(".codex-plugin/plugin.json"),
-        "claude" => Ok(".claude-plugin/plugin.json"),
-        _ => Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
-    }
-}
-
-fn build_native_plugin_manifest(
-    meta: &PluginSourceMeta,
-    target: &str,
-    files: &[(String, Vec<u8>)],
-) -> Result<serde_json::Value> {
-    validate_plugin_target(target)?;
-    let paths = common_plugin_paths(files);
-    let mut manifest = serde_json::Map::new();
-    manifest.insert(
-        "name".to_string(),
-        serde_json::Value::String(meta.id.clone()),
-    );
-    manifest.insert(
-        "version".to_string(),
-        serde_json::Value::String(meta.version.clone()),
-    );
-    manifest.insert(
-        "description".to_string(),
-        serde_json::Value::String(meta.summary.clone()),
-    );
-    manifest.insert(
-        "displayName".to_string(),
-        serde_json::Value::String(meta.name.clone()),
-    );
-    manifest.insert(
-        "skillHub".to_string(),
-        serde_json::json!({
-            "schema": "skillhub.generated-platform-plugin.v1",
-            "namespace": meta.namespace,
-            "id": meta.id,
-            "target": target
-        }),
-    );
-    if !direct_child_dirs(&paths, "skills/").is_empty() {
-        manifest.insert(
-            "skills".to_string(),
-            serde_json::Value::String("./skills".to_string()),
-        );
-    }
-    if paths.iter().any(|path| path == ".mcp.json") {
-        manifest.insert(
-            "mcpServers".to_string(),
-            serde_json::Value::String("./.mcp.json".to_string()),
-        );
-    }
-    if target == "codex" && paths.iter().any(|path| path == ".app.json") {
-        manifest.insert(
-            "apps".to_string(),
-            serde_json::Value::String("./.app.json".to_string()),
-        );
-    }
-    Ok(serde_json::Value::Object(manifest))
-}
-
-fn should_include_common_plugin_file(path: &str, target: &str) -> bool {
-    if path == "pluginhub.json" {
-        return false;
-    }
-    if matches!(
-        path,
-        "README.md" | "CHANGELOG.md" | "LICENSE" | "LICENSE.md" | ".mcp.json"
-    ) {
-        return true;
-    }
-    if path.starts_with("skills/") || path.starts_with("hooks/") || path.starts_with("assets/") {
-        return true;
-    }
-    match target {
-        "codex" => path == ".app.json",
-        "claude" => {
-            path == ".lsp.json"
-                || path == "settings.json"
-                || path.starts_with("agents/")
-                || path.starts_with("monitors/")
-                || path.starts_with("bin/")
-        }
-        _ => false,
-    }
-}
-
-fn normalize_zip_relative_path(path: &str) -> Option<String> {
-    let normalized = path.replace('\\', "/");
-    let trimmed = normalized.trim().trim_matches('/');
-    if trimmed.is_empty()
-        || trimmed.starts_with('/')
-        || trimmed.contains('\0')
-        || trimmed
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 fn build_plugin_component_inventory(
     files: &[(String, Vec<u8>)],
     targets: &[String],
@@ -6661,9 +6311,9 @@ fn build_plugin_component_inventory(
 }
 
 fn codex_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value {
-    let paths = common_plugin_paths(files);
+    let paths = package::common_plugin_paths(files);
     serde_json::json!({
-        "skills": direct_child_dirs(&paths, "skills/"),
+        "skills": package::direct_child_dirs(&paths, "skills/"),
         "hooks": direct_child_files(&paths, "hooks/"),
         "mcpServers": file_present(&paths, ".mcp.json"),
         "apps": file_present(&paths, ".app.json"),
@@ -6672,9 +6322,9 @@ fn codex_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value {
 }
 
 fn claude_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value {
-    let paths = common_plugin_paths(files);
+    let paths = package::common_plugin_paths(files);
     serde_json::json!({
-        "skills": direct_child_dirs(&paths, "skills/"),
+        "skills": package::direct_child_dirs(&paths, "skills/"),
         "agents": direct_child_files(&paths, "agents/"),
         "hooks": direct_child_files(&paths, "hooks/"),
         "mcpServers": file_present(&paths, ".mcp.json"),
@@ -6685,18 +6335,8 @@ fn claude_component_inventory(files: &[(String, Vec<u8>)]) -> serde_json::Value 
     })
 }
 
-fn common_plugin_paths(files: &[(String, Vec<u8>)]) -> Vec<String> {
-    let mut paths = files
-        .iter()
-        .filter_map(|(path, _)| normalize_zip_relative_path(path))
-        .filter(|path| !path.is_empty())
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
-}
-
 fn infer_plugin_components(files: &[(String, Vec<u8>)]) -> Vec<String> {
-    let paths = common_plugin_paths(files);
+    let paths = package::common_plugin_paths(files);
     let mut components = Vec::new();
     for (component, present) in [
         (
@@ -6727,20 +6367,6 @@ fn infer_plugin_components(files: &[(String, Vec<u8>)]) -> Vec<String> {
         }
     }
     components
-}
-
-fn direct_child_dirs(paths: &[String], prefix: &str) -> Vec<String> {
-    let mut items = paths
-        .iter()
-        .filter_map(|path| path.strip_prefix(prefix))
-        .filter_map(|rest| rest.split('/').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    items.sort();
-    items.dedup();
-    items
 }
 
 fn direct_child_files(paths: &[String], prefix: &str) -> Vec<String> {
@@ -6897,7 +6523,9 @@ fn plugin_changelog(files: &[(String, Vec<u8>)]) -> String {
     for path in ["CHANGELOG.md", "changelog.md"] {
         if let Some(bytes) = files
             .iter()
-            .find(|(relative, _)| normalize_zip_relative_path(relative).as_deref() == Some(path))
+            .find(|(relative, _)| {
+                package::normalize_zip_relative_path(relative).as_deref() == Some(path)
+            })
             .map(|(_, bytes)| bytes)
         {
             if let Ok(text) = String::from_utf8(bytes.clone()) {
@@ -7349,20 +6977,6 @@ fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
-fn validate_target(target: &str) -> Result<()> {
-    match target {
-        "codex" | "claude" => Ok(()),
-        _ => Err(anyhow!("不支持的目标平台: {target}")),
-    }
-}
-
-fn validate_level(level: &str) -> Result<()> {
-    match level {
-        "personal" | "project" => Ok(()),
-        _ => Err(anyhow!("不支持的作用域: {level}")),
-    }
-}
-
 fn ensure_scope_can_enable(
     conn: &rusqlite::Connection,
     exclude_binding_id: Option<&str>,
@@ -7553,7 +7167,7 @@ fn materialize_plugin_marketplace(
             .context("PLUGIN_MARKETPLACE_WRITE_FAILED: clean plugin marketplace dir failed")?;
     }
     fs::create_dir_all(&plugin_dir)?;
-    copy_dir_recursive_including_json(package_dir, &plugin_dir)?;
+    package::copy_dir_recursive_including_json(package_dir, &plugin_dir)?;
 
     let marketplace_path =
         write_plugin_marketplace_file(target, &root, &plugin_dir_name, plugin, version, &name)?;
@@ -7653,7 +7267,7 @@ fn migrate_claude_project_marketplace_root(
                 if let Some(parent) = destination_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                copy_dir_recursive_including_json(&source_path, &destination_path)?;
+                package::copy_dir_recursive_including_json(&source_path, &destination_path)?;
             }
             if destination_path.exists() {
                 fs::remove_dir_all(&source_path).context(
@@ -7686,7 +7300,7 @@ fn claude_marketplace_plugin_source_paths(doc: &serde_json::Value) -> Vec<PathBu
 fn normalize_claude_marketplace_plugin_source(source: &str) -> Option<String> {
     let normalized = source.replace('\\', "/");
     let relative = normalized.strip_prefix("./").unwrap_or(&normalized);
-    let relative = normalize_zip_relative_path(relative)?;
+    let relative = package::normalize_zip_relative_path(relative)?;
     relative.starts_with("plugins/").then_some(relative)
 }
 
@@ -8327,7 +7941,7 @@ fn set_plugin_binding_enabled_inner(
     )?;
 
     if request.enabled {
-        validate_plugin_target_scope(&binding.target, &binding.scope)?;
+        validation::validate_plugin_target_scope(&binding.target, &binding.scope)?;
         ensure_plugin_scope_can_enable(
             &conn,
             Some(&binding.id),
@@ -8350,7 +7964,7 @@ fn set_plugin_binding_enabled_inner(
                 .context("PLUGIN_MARKETPLACE_WRITE_FAILED: clean plugin marketplace dir failed")?;
         }
         fs::create_dir_all(&plugin_dir)?;
-        copy_dir_recursive_including_json(&package_dir, &plugin_dir)?;
+        package::copy_dir_recursive_including_json(&package_dir, &plugin_dir)?;
         let plugin = market_plugin_from_binding(&binding);
         rewrite_plugin_marketplace_entry(
             &binding.target,
@@ -9575,7 +9189,7 @@ async fn preview_plugin_inner(
             .as_deref()
             .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing plugin id"))?;
         let target = request.target.as_deref().unwrap_or("codex");
-        validate_plugin_target(target)?;
+        validation::validate_plugin_target(target)?;
         let requested_source_id = request.source_id.clone();
         let requested_version = request.version.clone();
 
@@ -10062,40 +9676,6 @@ fn ensure_plugin_package_record(
     Ok(id)
 }
 
-fn ensure_safe_package_cache_path(state: &AppState, package_path: &Path) -> Result<()> {
-    let package_root = state
-        .app_dir
-        .join("packages")
-        .canonicalize()
-        .context("读取包缓存根目录失败")?;
-    let target = package_path.canonicalize().context("读取包缓存目录失败")?;
-
-    if target.starts_with(&package_root) && target != package_root {
-        Ok(())
-    } else {
-        Err(anyhow!("拒绝删除非包缓存目录"))
-    }
-}
-
-fn ensure_safe_plugin_package_cache_path(state: &AppState, package_path: &Path) -> Result<()> {
-    let package_root = state
-        .app_dir
-        .join("plugin-packages")
-        .canonicalize()
-        .context("PLUGIN_PACKAGE_BUILD_FAILED: read plugin package cache root failed")?;
-    let target = package_path
-        .canonicalize()
-        .context("PLUGIN_PACKAGE_BUILD_FAILED: read plugin package cache path failed")?;
-
-    if target.starts_with(&package_root) && target != package_root {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "PLUGIN_PACKAGE_BUILD_FAILED: refused unsafe plugin cache path"
-        ))
-    }
-}
-
 fn build_install_path(
     state: &AppState,
     target: &str,
@@ -10119,61 +9699,6 @@ fn build_install_path(
     Ok(root.join(skill_id))
 }
 
-fn copy_package_to_install(package_path: &Path, install_path: &Path) -> Result<()> {
-    if install_path.exists() {
-        fs::remove_dir_all(install_path).context("清理旧安装目录失败")?;
-    }
-    fs::create_dir_all(install_path)?;
-    copy_dir_recursive(package_path, install_path)
-}
-
-fn copy_package_to_install_including_json(package_path: &Path, install_path: &Path) -> Result<()> {
-    if install_path.exists() {
-        fs::remove_dir_all(install_path).context("清理旧安装目录失败")?;
-    }
-    fs::create_dir_all(install_path)?;
-    copy_dir_recursive_including_json(package_path, install_path)
-}
-
-fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-
-        if source_path.is_dir() {
-            fs::create_dir_all(&destination_path)?;
-            copy_dir_recursive(&source_path, &destination_path)?;
-        } else if is_json_file(&source_path) {
-            continue;
-        } else {
-            fs::copy(&source_path, &destination_path)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn copy_dir_recursive_including_json(source: &Path, destination: &Path) -> Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-
-        if source_path.is_dir() {
-            fs::create_dir_all(&destination_path)?;
-            copy_dir_recursive_including_json(&source_path, &destination_path)?;
-        } else {
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&source_path, &destination_path)?;
-        }
-    }
-
-    Ok(())
-}
-
 fn ensure_install_path_not_bound_to_other_skill(
     conn: &rusqlite::Connection,
     install_path: &Path,
@@ -10195,12 +9720,6 @@ fn ensure_install_path_not_bound_to_other_skill(
     } else {
         Ok(())
     }
-}
-
-fn is_json_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
 }
 
 fn resolve_project_skill_root(target: &str, project_path: &Path) -> PathBuf {
@@ -10565,7 +10084,7 @@ author: "Skill Hub"
             updated_by: None,
         };
 
-        assert!(validate_publish_meta(&meta).is_ok());
+        assert!(validation::validate_publish_meta(&meta).is_ok());
         assert_eq!(
             publish_categories(&meta),
             vec!["project:project-a".to_string()]
@@ -10649,14 +10168,6 @@ author: "Skill Hub"
     }
 
     #[test]
-    fn rejects_unsafe_object_segments() {
-        assert!(validate_object_segment("namespace", "team_alpha-1").is_ok());
-        assert!(validate_object_segment("namespace", "../team").is_err());
-        assert!(normalize_relative_object_path("cat/demo").is_ok());
-        assert!(normalize_relative_object_path("cat/../demo").is_err());
-    }
-
-    #[test]
     fn parses_gitlab_draft_category_paths_from_skill_location() {
         let single = parse_gitlab_source_path("product/prd-shaper");
         assert_eq!(single.category_path, vec!["product".to_string()]);
@@ -10693,24 +10204,6 @@ author: "Skill Hub"
             extract_xml_values(xml, "NextContinuationToken"),
             vec!["abc&123".to_string()]
         );
-    }
-
-    #[test]
-    fn package_zip_filters_control_json_but_keeps_subdirectory_files() {
-        let bytes = build_package_zip(&[
-            ("SKILL.md".to_string(), b"hello".to_vec()),
-            ("skill.json".to_string(), b"{}".to_vec()),
-            ("validation.json".to_string(), b"{}".to_vec()),
-            ("references/schema.json".to_string(), b"{}".to_vec()),
-            ("scripts/main.py".to_string(), b"print('ok')".to_vec()),
-        ])
-        .expect("zip should build");
-        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("zip should open");
-        assert!(archive.by_name("SKILL.md").is_ok());
-        assert!(archive.by_name("skill.json").is_err());
-        assert!(archive.by_name("validation.json").is_err());
-        assert!(archive.by_name("references/schema.json").is_ok());
-        assert!(archive.by_name("scripts/main.py").is_ok());
     }
 
     #[test]
@@ -10939,23 +10432,6 @@ metadata:
         ]);
         let err = prepare_plugin_publish(&files, None).expect_err("unsafe path should fail");
         assert!(err.to_string().contains("PLUGIN_PACKAGE_BUILD_FAILED"));
-    }
-
-    #[test]
-    fn plugin_zip_extraction_preserves_native_json_manifest() {
-        let files = sample_plugin_files(vec![
-            ("skills/demo/SKILL.md", b"# Demo\n".to_vec()),
-            (".mcp.json", br#"{"servers":{}}"#.to_vec()),
-        ]);
-        let meta = read_plugin_source_meta(&files).expect("meta should parse");
-        let bytes =
-            build_plugin_package_zip(&files, &meta, "codex").expect("plugin zip should build");
-        let root = std::env::temp_dir().join(format!("skillhub-plugin-test-{}", new_id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        extract_zip_preserving_json_safely(&bytes, &root).expect("extract plugin zip");
-        assert!(root.join(".codex-plugin").join("plugin.json").is_file());
-        assert!(root.join(".mcp.json").is_file());
-        fs::remove_dir_all(root).expect("remove temp dir");
     }
 
     #[test]
@@ -11607,15 +11083,6 @@ metadata:
     }
 
     #[test]
-    fn plugin_target_scope_rejects_codex_project_plugins() {
-        assert!(validate_plugin_target_scope("codex", "user").is_ok());
-        assert!(validate_plugin_target_scope("claude", "project").is_ok());
-        let err = validate_plugin_target_scope("codex", "project")
-            .expect_err("Codex plugins do not support project-level activation");
-        assert!(err.to_string().contains("PLUGIN_SCOPE_UNSUPPORTED"));
-    }
-
-    #[test]
     fn claude_plugin_remove_command_uses_disable_or_uninstall() {
         assert_eq!(
             build_claude_plugin_remove_command(
@@ -12172,8 +11639,8 @@ author: skill-hub
             updated_by: None,
         };
 
-        assert!(is_publish_meta_ready_for_status(&meta));
-        assert!(!is_publish_meta_complete(&meta));
+        assert!(validation::is_publish_meta_ready_for_status(&meta));
+        assert!(!validation::is_publish_meta_complete(&meta));
         assert_eq!(
             draft_status(Some("1.0.0"), None, None, Some(&meta), None),
             "待发布"
