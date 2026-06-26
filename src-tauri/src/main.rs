@@ -116,6 +116,7 @@ fn main() {
             commands::install_skill,
             commands::install_plugin,
             commands::delete_cached_skill,
+            commands::delete_cached_plugin,
             commands::delete_local_skill,
             commands::set_local_skill_enabled,
             commands::import_local_skill_to_cache,

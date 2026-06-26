@@ -10,6 +10,7 @@ import type {
   PluginBinding,
   PluginPreviewRequest,
   CachedSkillPackage,
+  DeleteCachedPluginRequest,
   DeleteCachedSkillRequest,
   DeleteLocalSkillRequest,
   SetLocalSkillEnabledRequest,
@@ -224,7 +225,21 @@ const mockBootstrap: AppBootstrap = {
       sourcePath: "C:/Users/ctf19/.codex/skills/daily-note-helper"
     }
   ],
-  pluginPackages: [],
+  pluginPackages: [
+    {
+      sourceId: "compiled-source",
+      namespace: "internal",
+      pluginId: "commit-workflow",
+      pluginName: "Commit Workflow",
+      version: "1.0.0",
+      target: "codex",
+      packagePath: "C:/Users/ctf19/AppData/Local/SkillHub/plugin-packages/internal/commit-workflow/1.0.0/codex",
+      cachedAt: mockUpdatedAt,
+      riskLevel: "medium",
+      componentInventoryJson: "{}",
+      bindingCount: 0
+    }
+  ],
   pluginBindings: [],
   localPlugins: [],
   localSkills: [
@@ -739,6 +754,19 @@ const browserMockApi = {
     return binding;
   },
   deleteCachedSkill: async (_request: DeleteCachedSkillRequest) => undefined,
+  deleteCachedPlugin: async (request: DeleteCachedPluginRequest) => {
+    mockBootstrap.pluginPackages = mockBootstrap.pluginPackages.filter(
+      (item) =>
+        !(
+          item.sourceId === (request.sourceId ?? null) &&
+          item.namespace === request.namespace &&
+          item.pluginId === request.pluginId &&
+          item.version === request.version &&
+          item.target === request.target
+        )
+    );
+    return undefined;
+  },
   deleteLocalSkill: async (_request: DeleteLocalSkillRequest) => {
     mockBootstrap.localSkills = mockBootstrap.localSkills.filter((skill) => skill.id !== _request.id);
     return syncMockLocalSkillsWithCache();
@@ -892,6 +920,8 @@ const tauriApi = {
     invoke<SkillBinding>("install_cached_skill", { request }),
   deleteCachedSkill: (request: DeleteCachedSkillRequest) =>
     invoke<void>("delete_cached_skill", { request }),
+  deleteCachedPlugin: (request: DeleteCachedPluginRequest) =>
+    invoke<void>("delete_cached_plugin", { request }),
   deleteLocalSkill: (request: DeleteLocalSkillRequest) =>
     invoke<LocalSkill[]>("delete_local_skill", { request }),
   setLocalSkillEnabled: (request: SetLocalSkillEnabledRequest) =>

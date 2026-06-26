@@ -53,6 +53,7 @@ import type {
   Project,
   PublishMeta,
   PluginPreviewRequest,
+  DeleteCachedPluginRequest,
   SkillBinding,
   TargetRoot,
   UpdateCandidate,
@@ -608,6 +609,12 @@ function App() {
     }
   }, [filteredPlugins, selectedPluginKey]);
 
+  useEffect(() => {
+    if (marketArtifactKind === "plugin" && installTarget === "codex" && installLevel === "project") {
+      setInstallLevel("personal");
+    }
+  }, [installLevel, installTarget, marketArtifactKind]);
+
   const bindingsBySkill = useMemo(() => {
     const map = new Map<string, SkillBinding[]>();
     for (const binding of data.bindings) {
@@ -798,6 +805,10 @@ function App() {
 
   async function installSelectedPlugin() {
     if (!selectedPlugin) return;
+    if (installTarget === "codex" && installLevel === "project") {
+      setError("Codex plugin 当前只支持个人级安装，不支持项目级生效");
+      return;
+    }
     if (installLevel === "project" && !installProjectPath) {
       setError("请先在项目菜单绑定项目，并选择一个项目");
       return;
@@ -909,6 +920,26 @@ function App() {
       });
       await load();
       setNotice(`${item.package.skillName} ${item.package.version} 的本地缓存已删除`);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteCachedPlugin(item: AppBootstrap["pluginPackages"][number]) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteCachedPlugin({
+        sourceId: item.sourceId,
+        namespace: item.namespace,
+        pluginId: item.pluginId,
+        version: item.version,
+        target: item.target
+      } as DeleteCachedPluginRequest);
+      await load();
+      setNotice(`${item.pluginName} ${item.version} 的本地缓存已删除`);
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1042,7 +1073,7 @@ function App() {
       const result = await api.previewPlugin(request);
       setPreview(result);
       setPreviewContext({ kind: "plugin", request });
-      setNotice(`正在预览 ${plugin.marketplaceName ?? plugin.pluginId ?? "本地 plugin"}`);
+      setNotice(`正在预览 ${localPluginDisplayName(plugin)}`);
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -1999,6 +2030,9 @@ function App() {
             onInstallTarget={setInstallTarget}
             installLevel={installLevel}
             onInstallLevel={setInstallLevel}
+            onUnsupportedPluginProjectScope={() => {
+              setError("Codex plugin 当前只支持个人级安装，不支持项目级生效");
+            }}
             installProjectPath={installProjectPath}
             onInstallProjectPath={setInstallProjectPath}
             targetRoots={data.targetRoots}
@@ -2020,6 +2054,7 @@ function App() {
             onUninstallPlugin={uninstallPluginBinding}
             onPreviewPluginBinding={previewPluginBinding}
             onPreviewPluginCache={previewCachedPlugin}
+            onDeletePluginCache={deleteCachedPlugin}
             onPreviewLocalPlugin={previewLocalPlugin}
             onToggle={toggleBinding}
             onToggleLocal={toggleLocalSkill}
@@ -2257,6 +2292,7 @@ function MarketView(props: {
   onInstallTarget: (value: string) => void;
   installLevel: LevelChoice;
   onInstallLevel: (value: LevelChoice) => void;
+  onUnsupportedPluginProjectScope: () => void;
   installProjectPath: string;
   onInstallProjectPath: (value: string) => void;
   targetRoots: TargetRoot[];
@@ -2304,6 +2340,7 @@ function MarketView(props: {
           )
         : { label: "安装并启用", disabled: false, tone: "install" as const };
   const filterProjects = normalizeProjectList(props.marketProjects);
+  const codexPluginProjectUnsupported = props.artifactKind === "plugin" && props.installTarget === "codex";
   const changeMarketFilter = (value: string) => {
     if (props.mode === "project") {
       props.onSelectedMarketProjectSlug(value);
@@ -2525,7 +2562,12 @@ function MarketView(props: {
                       <button
                         key={target}
                         className={props.installTarget === target ? "active" : ""}
-                        onClick={() => props.onInstallTarget(target)}
+                        onClick={() => {
+                          props.onInstallTarget(target);
+                          if (target === "codex" && props.installLevel === "project") {
+                            props.onInstallLevel("personal");
+                          }
+                        }}
                         disabled={!props.selectedPlugin?.targets.includes(target)}
                       >
                         {targetLabels[target] ?? target}
@@ -2543,8 +2585,16 @@ function MarketView(props: {
                       个人
                     </button>
                     <button
-                      className={props.installLevel === "project" ? "active" : ""}
-                      onClick={() => props.onInstallLevel("project")}
+                      className={`${props.installLevel === "project" ? "active" : ""}${codexPluginProjectUnsupported ? " restricted" : ""}`}
+                      onClick={() => {
+                        if (codexPluginProjectUnsupported) {
+                          props.onUnsupportedPluginProjectScope();
+                          return;
+                        }
+                        props.onInstallLevel("project");
+                      }}
+                      aria-disabled={codexPluginProjectUnsupported}
+                      title={codexPluginProjectUnsupported ? "Codex plugin 当前只支持个人级安装" : undefined}
                     >
                       项目
                     </button>
@@ -2761,6 +2811,7 @@ function InstalledView(props: {
   onUninstallPlugin: (binding: AppBootstrap["pluginBindings"][number]) => void;
   onPreviewPluginBinding: (binding: AppBootstrap["pluginBindings"][number]) => void;
   onPreviewPluginCache: (item: AppBootstrap["pluginPackages"][number]) => void;
+  onDeletePluginCache: (item: AppBootstrap["pluginPackages"][number]) => void;
   onPreviewLocalPlugin: (plugin: AppBootstrap["localPlugins"][number]) => void;
   localSkills: LocalSkill[];
   onToggle: (binding: SkillBinding) => void;
@@ -3074,6 +3125,15 @@ function InstalledView(props: {
                         <button className="icon-button" onClick={() => props.onPreviewPluginCache(item)} title="预览">
                           <BookOpen size={16} />
                         </button>
+                        {item.bindingCount === 0 ? (
+                          <button
+                            className="icon-button danger"
+                            onClick={() => props.onDeletePluginCache(item)}
+                            title="删除本地缓存"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -3134,7 +3194,7 @@ function InstalledView(props: {
                     <div className="scan-line" key={plugin.id}>
                       <PackageCheck size={16} />
                       <span>
-                        <strong>{plugin.marketplaceName ?? plugin.pluginId ?? "本地 plugin"}</strong>
+                        <strong>{localPluginDisplayName(plugin)}</strong>
                         <small>
                           {targetLabels[plugin.target] ?? plugin.target} / {pluginScopeLabel(plugin.scope, plugin.projectPath)}
                         </small>
@@ -3897,9 +3957,10 @@ function DraftList(props: {
             className="draft-fold-button"
             onClick={toggleAllDraftGroups}
             disabled={categories.length === 0}
+            aria-label={allDraftGroupsCollapsed ? "展开全部分类" : "折叠全部分类"}
+            title={allDraftGroupsCollapsed ? "展开全部分类" : "折叠全部分类"}
           >
             {allDraftGroupsCollapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {allDraftGroupsCollapsed ? "展开" : "折叠"}
           </button>
         </div>
         <div className="draft-status-filter" aria-label="按状态过滤草稿">
@@ -4218,9 +4279,10 @@ function PluginDraftList(props: {
             className="draft-fold-button"
             onClick={toggleAllDraftGroups}
             disabled={categories.length === 0}
+            aria-label={allDraftGroupsCollapsed ? "展开全部分类" : "折叠全部分类"}
+            title={allDraftGroupsCollapsed ? "展开全部分类" : "折叠全部分类"}
           >
             {allDraftGroupsCollapsed ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {allDraftGroupsCollapsed ? "展开" : "折叠"}
           </button>
         </div>
         <div className="draft-status-filter" aria-label="按状态过滤插件草稿">
@@ -4681,7 +4743,6 @@ function AdminView(props: {
                 <div className="section-toolbar">
                   <div>
                     <h2>草稿区</h2>
-                    <p>{publishKind === "skill" ? "GitLab 同步到 MinIO 的 skill 草稿" : "GitLab 同步到 MinIO 的 plugin 草稿"}</p>
                   </div>
                   <div className="draft-kind-controls">
                     <div className="segmented" aria-label="草稿类型">
@@ -6351,6 +6412,15 @@ function canDeleteLocalSkillFromMatrix(skill: LocalSkill) {
   return !skill.managedBySkillhub && skill.origin === "local" && (skill.status === "cached" || skill.status === "disabled");
 }
 
+function localPluginDisplayName(plugin: AppBootstrap["localPlugins"][number]) {
+  return normalizedLabel(plugin.pluginId) ?? normalizedLabel(plugin.marketplaceName) ?? "本地 plugin";
+}
+
+function normalizedLabel(value?: string | null) {
+  const next = value?.trim();
+  return next ? next : null;
+}
+
 function getInstallState(
   skill: MarketSkill,
   bindings: SkillBinding[],
@@ -6402,11 +6472,14 @@ function getPluginInstallState(
   if (!plugin) {
     return { label: "安装并启用", disabled: true, tone: "install" as const };
   }
-  if (conflict) {
-    return { label: "存在范围冲突", disabled: true, tone: "install" as const };
-  }
   if (!plugin.targets.includes(target)) {
     return { label: "当前平台不支持", disabled: true, tone: "install" as const };
+  }
+  if (target === "codex" && level === "project") {
+    return { label: "Codex 仅支持个人级 plugin", disabled: true, tone: "install" as const };
+  }
+  if (conflict) {
+    return { label: "存在范围冲突", disabled: true, tone: "install" as const };
   }
   const scope = level === "project" ? "project" : "user";
   if (!plugin.scopes.includes(scope)) {
@@ -6479,14 +6552,14 @@ function pluginInstallPreview(target: string, level: LevelChoice, projectPath: s
     return "下载到 Skill Hub plugin-packages，本次不写 marketplace。";
   }
   if (level === "project") {
+    if (target === "codex") {
+      return "Codex plugin 不支持项目级生效";
+    }
     if (!projectPath) {
       return "请选择项目。";
     }
-    if (target === "codex") {
-      return `${projectPath}/.agents/plugins/marketplace.json`;
-    }
     if (target === "claude") {
-      return `${projectPath}/.claude-plugin/marketplace.json`;
+      return `${projectPath}/.claude/skillhub-plugin-marketplace/.claude-plugin/marketplace.json`;
     }
   }
   if (target === "codex") {
@@ -6714,6 +6787,9 @@ function scopeConflict(bindings: SkillBinding[], target: string, level: LevelCho
 
 function pluginScopeConflict(bindings: AppBootstrap["pluginBindings"], target: string, level: LevelChoice) {
   if (level === "download") return null;
+  if (target === "codex" && level === "project") {
+    return "Codex plugin 当前只支持个人级安装，不支持项目级生效。";
+  }
   const oppositeScopes = level === "personal" ? ["project"] : ["user", "personal"];
   const conflict = bindings.find(
     (binding) => binding.target === target && oppositeScopes.includes(binding.scope) && binding.enabled

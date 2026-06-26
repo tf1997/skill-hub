@@ -3,7 +3,6 @@ use std::{
     fs,
     io::Cursor,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -29,13 +28,14 @@ use crate::{
         AdminAuditLog, AdminDraftPlugin, AdminDraftPreviewRequest, AdminDraftSkill, AdminSession,
         AdminUnlockRequest, AppBootstrap, ArchiveMarketPluginRequest, ArchiveMarketSkillRequest,
         CachedSkillPackage, CatalogDoc, CategoriesDoc, Category, CommandError,
-        DeleteCachedSkillRequest, DeleteLocalSkillRequest, DeleteMarketCategoryRequest,
-        DeleteMarketProjectRequest, ImportLocalSkillRequest, InstallCachedSkillRequest,
-        InstallPluginRequest, InstallSkillRequest, ListAdminAuditLogsRequest, LocalPlugin,
-        LocalSkill, MarketPlugin, MarketProject, MarketSkill, PackageInfo, PluginBinding,
-        PluginCatalogDoc, PluginManifest, PluginPackageRef, PluginPreviewRequest, PluginSourceMeta,
-        PluginVersion, PluginVersionPackages, Project, ProjectsDoc, PublishDraftRequest,
-        PublishMeta, PublishPluginDraftRequest, QuickRepublishRequest, SaveMarketCategoryRequest,
+        DeleteCachedPluginRequest, DeleteCachedSkillRequest, DeleteLocalSkillRequest,
+        DeleteMarketCategoryRequest, DeleteMarketProjectRequest, ImportLocalSkillRequest,
+        InstallCachedSkillRequest, InstallPluginRequest, InstallSkillRequest,
+        ListAdminAuditLogsRequest, LocalPlugin, LocalSkill, MarketPlugin, MarketProject,
+        MarketSkill, PackageInfo, PluginBinding, PluginCatalogDoc, PluginManifest,
+        PluginPackageRef, PluginPreviewRequest, PluginSourceMeta, PluginVersion,
+        PluginVersionPackages, Project, ProjectsDoc, PublishDraftRequest, PublishMeta,
+        PublishPluginDraftRequest, QuickRepublishRequest, SaveMarketCategoryRequest,
         SaveMarketProjectRequest, SaveProjectRequest, SavePublishMetaRequest, SaveSourceRequest,
         SaveTargetRootRequest, SetBindingEnabledRequest, SetLocalSkillEnabledRequest,
         SetPluginBindingEnabledRequest, SkillBinding, SkillManifest, SkillPreview,
@@ -43,6 +43,7 @@ use crate::{
         TargetRoot, UninstallPluginRequest, UpdateCandidate, UpgradeBindingRequest,
         UpgradePluginBindingRequest,
     },
+    process_util::external_command,
 };
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
@@ -606,13 +607,10 @@ async fn list_admin_plugin_drafts_inner(
             .map(|content| content.prefix.clone())
             .unwrap_or_else(|| draft_root.clone());
         let source_available = has_plugin_source_files(&draft_prefix, &draft_objects);
-        let readme_metadata = read_plugin_readme_metadata_from_objects(
-            &client,
-            &draft_prefix,
-            &draft_objects,
-        )
-        .await
-        .ok();
+        let readme_metadata =
+            read_plugin_readme_metadata_from_objects(&client, &draft_prefix, &draft_objects)
+                .await
+                .ok();
         let readme_metadata_complete = readme_metadata
             .as_ref()
             .is_some_and(is_plugin_readme_metadata_complete);
@@ -717,8 +715,10 @@ async fn list_admin_plugin_drafts_inner(
         } else {
             components
         };
-        let namespace = namespace.or_else(|| publish_meta.as_ref().map(|meta| meta.namespace.clone()));
-        let plugin_id = plugin_id.or_else(|| publish_meta.as_ref().map(|meta| meta.skill_id.clone()));
+        let namespace =
+            namespace.or_else(|| publish_meta.as_ref().map(|meta| meta.namespace.clone()));
+        let plugin_id =
+            plugin_id.or_else(|| publish_meta.as_ref().map(|meta| meta.skill_id.clone()));
         let name = name.or_else(|| publish_meta.as_ref().map(|meta| meta.name.clone()));
         let summary = summary.or_else(|| publish_meta.as_ref().map(|meta| meta.summary.clone()));
 
@@ -848,13 +848,6 @@ async fn preview_admin_draft_inner(
         })
         .unwrap_or_else(|| "publish metadata missing".to_string());
     let mut file_list = collect_draft_preview_file_list(&draft_prefix, &objects);
-    if meta.is_some()
-        && !file_list
-            .iter()
-            .any(|file| file.path == "publish-meta.v1.json")
-    {
-        file_list.push(preview_file_entry("publish-meta.v1.json"));
-    }
     file_list.sort_by(|a, b| a.path.cmp(&b.path));
     let files = collect_draft_preview_files(
         &client,
@@ -897,9 +890,11 @@ async fn preview_admin_plugin_draft_inner(
         .unwrap_or_else(|| draft_root.clone());
 
     let meta = match content_root.as_ref() {
-        Some(content) => client
-            .get_optional_json::<PluginSourceMeta>(&content.pluginhub_path)
-            .await?,
+        Some(content) => {
+            client
+                .get_optional_json::<PluginSourceMeta>(&content.pluginhub_path)
+                .await?
+        }
         None => None,
     };
     let meta_path = plugin_admin_object_path(&source_path, "publish-meta.v1.json")?;
@@ -959,13 +954,6 @@ async fn preview_admin_plugin_draft_inner(
         })
         .unwrap_or_else(|| "publish metadata missing".to_string());
     let mut file_list = collect_plugin_draft_preview_file_list(&draft_prefix, &objects);
-    if publish_meta.is_some()
-        && !file_list
-            .iter()
-            .any(|file| file.path == "publish-meta.v1.json")
-    {
-        file_list.push(preview_file_entry("publish-meta.v1.json"));
-    }
     file_list.sort_by(|a, b| a.path.cmp(&b.path));
     let files = collect_draft_preview_files(
         &client,
@@ -2220,6 +2208,14 @@ pub async fn delete_cached_skill(
 }
 
 #[tauri::command]
+pub async fn delete_cached_plugin(
+    request: DeleteCachedPluginRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    map_result(delete_cached_plugin_inner(request, &state))
+}
+
+#[tauri::command]
 pub async fn delete_local_skill(
     request: DeleteLocalSkillRequest,
     state: State<'_, AppState>,
@@ -2430,6 +2426,7 @@ async fn install_plugin_inner(
 ) -> Result<PluginBinding> {
     validate_plugin_target(&request.target)?;
     validate_plugin_scope(&request.scope)?;
+    validate_plugin_target_scope(&request.target, &request.scope)?;
     let _metadata_sync_error = refresh_catalog_best_effort(state).await;
 
     if request.scope == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
@@ -2579,6 +2576,7 @@ async fn install_plugin_inner(
     )?;
     sync_codex_plugin_install(
         &request.target,
+        &request.scope,
         &plugin.id,
         &marketplace.name,
         &marketplace.root_path,
@@ -2588,6 +2586,7 @@ async fn install_plugin_inner(
         &plugin.id,
         &marketplace.name,
         &request.scope,
+        request.project_path.as_deref(),
         &marketplace.root_path,
     )?;
     let now = now();
@@ -2719,6 +2718,70 @@ fn delete_cached_skill_inner(request: DeleteCachedSkillRequest, state: &AppState
         request.namespace, request.skill_id, request.version
     );
     insert_audit(&conn, "delete_cache", Some(&skill_ref), "success", None)?;
+    Ok(())
+}
+
+fn delete_cached_plugin_inner(request: DeleteCachedPluginRequest, state: &AppState) -> Result<()> {
+    let conn = state.conn.lock().expect("db mutex poisoned");
+    let cached: Option<(String, String, i64)> = conn
+        .query_row(
+            "SELECT id, package_path, (
+                 SELECT COUNT(*)
+                 FROM plugin_bindings binding
+                 WHERE binding.package_id = package.id
+             )
+             FROM plugin_packages package
+             WHERE COALESCE(package.source_id, '') = COALESCE(?1, '')
+               AND package.namespace = ?2
+               AND package.plugin_id = ?3
+               AND package.version = ?4
+               AND package.target = ?5",
+            params![
+                request.source_id.as_deref(),
+                request.namespace,
+                request.plugin_id,
+                request.version,
+                request.target
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    let Some((package_id, package_path, binding_count)) = cached else {
+        return Ok(());
+    };
+    if binding_count > 0 {
+        return Err(anyhow!(
+            "PLUGIN_MARKETPLACE_WRITE_FAILED: cached plugin package has bindings"
+        ));
+    }
+
+    let path = PathBuf::from(&package_path);
+    if path.exists() {
+        ensure_safe_plugin_package_cache_path(state, &path)?;
+        fs::remove_dir_all(&path)
+            .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove cached plugin package failed")?;
+    }
+
+    conn.execute(
+        "DELETE FROM local_package_metadata WHERE package_id = ?1",
+        params![package_id],
+    )?;
+    conn.execute(
+        "DELETE FROM plugin_packages WHERE id = ?1",
+        params![package_id],
+    )?;
+    let plugin_ref = format!(
+        "{}/{}@{}#{}",
+        request.namespace, request.plugin_id, request.version, request.target
+    );
+    insert_audit(
+        &conn,
+        "delete_cache_plugin",
+        Some(&plugin_ref),
+        "success",
+        Some(&request.target),
+    )?;
     Ok(())
 }
 
@@ -3776,6 +3839,7 @@ async fn upgrade_plugin_binding_inner(
     };
 
     if binding.enabled {
+        validate_plugin_target_scope(&binding.target, &binding.scope)?;
         let marketplace = materialize_plugin_marketplace(
             state,
             &plugin,
@@ -3787,6 +3851,7 @@ async fn upgrade_plugin_binding_inner(
         )?;
         sync_codex_plugin_install(
             &binding.target,
+            &binding.scope,
             &plugin.id,
             &marketplace.name,
             &marketplace.root_path,
@@ -3796,6 +3861,7 @@ async fn upgrade_plugin_binding_inner(
             &plugin.id,
             &marketplace.name,
             &binding.scope,
+            binding.project_path.as_deref(),
             &marketplace.root_path,
         )?;
         let conn = state.conn.lock().expect("db mutex poisoned");
@@ -4560,9 +4626,12 @@ fn apply_plugin_publish_meta(
     saved_meta: Option<PublishMeta>,
 ) -> PluginSourceMeta {
     let defaults = default_plugin_publish_meta(&source);
-    let saved_identity = saved_meta
-        .as_ref()
-        .map(|meta| (meta.namespace.trim().to_string(), meta.skill_id.trim().to_string()));
+    let saved_identity = saved_meta.as_ref().map(|meta| {
+        (
+            meta.namespace.trim().to_string(),
+            meta.skill_id.trim().to_string(),
+        )
+    });
     let meta = normalize_plugin_publish_meta(
         saved_meta.unwrap_or_else(|| defaults.clone()),
         Some(&defaults),
@@ -4576,7 +4645,11 @@ fn apply_plugin_publish_meta(
             meta.skill_id = skill_id;
         }
     }
-    if let Some(version) = meta.version.clone().filter(|value| !value.trim().is_empty()) {
+    if let Some(version) = meta
+        .version
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
         source.version = version;
     }
     source.name = meta.name;
@@ -4624,9 +4697,12 @@ fn plugin_source_meta_from_readme(
     let summary = required_plugin_readme_field(metadata.description.as_deref(), "description")?;
     let version = required_plugin_readme_field(metadata.version.as_deref(), "version")?;
     let author = required_plugin_readme_field(metadata.author.as_deref(), "author")?;
-    let saved_identity = saved_meta
-        .as_ref()
-        .map(|meta| (meta.namespace.trim().to_string(), meta.skill_id.trim().to_string()));
+    let saved_identity = saved_meta.as_ref().map(|meta| {
+        (
+            meta.namespace.trim().to_string(),
+            meta.skill_id.trim().to_string(),
+        )
+    });
     let defaults = PublishMeta {
         namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
         skill_id: saved_meta
@@ -4748,7 +4824,6 @@ fn plugin_id_from_readme_name(name: &str) -> String {
         slug
     }
 }
-
 
 fn draft_skill_id_from_source_path(source_path: &str) -> String {
     parse_gitlab_source_path(source_path)
@@ -5859,7 +5934,9 @@ fn infer_plugin_draft_source_path_from_relative(relative: &str) -> Option<String
         return None;
     }
 
-    let marker_index = parts.iter().position(|part| is_plugin_draft_root_marker(part))?;
+    let marker_index = parts
+        .iter()
+        .position(|part| is_plugin_draft_root_marker(part))?;
     if marker_index == 0 {
         return None;
     }
@@ -5921,6 +5998,19 @@ fn resolve_plugin_draft_content_prefix(
     objects: &[String],
 ) -> Option<PluginDraftContentRoot> {
     let flat_pluginhub_path = format!("{draft_root}pluginhub.json");
+    let legacy_prefix = format!("{draft_root}source/");
+    let legacy_pluginhub_path = format!("{legacy_prefix}pluginhub.json");
+    let has_legacy_pluginhub = objects
+        .iter()
+        .any(|object| object == &legacy_pluginhub_path);
+
+    if has_legacy_pluginhub && plugin_draft_root_has_generated_artifacts(draft_root, objects) {
+        return Some(PluginDraftContentRoot {
+            prefix: legacy_prefix,
+            pluginhub_path: legacy_pluginhub_path,
+        });
+    }
+
     if objects.iter().any(|object| object == &flat_pluginhub_path) {
         return Some(PluginDraftContentRoot {
             prefix: draft_root.to_string(),
@@ -5928,12 +6018,7 @@ fn resolve_plugin_draft_content_prefix(
         });
     }
 
-    let legacy_prefix = format!("{draft_root}source/");
-    let legacy_pluginhub_path = format!("{legacy_prefix}pluginhub.json");
-    if objects
-        .iter()
-        .any(|object| object == &legacy_pluginhub_path)
-    {
+    if has_legacy_pluginhub {
         return Some(PluginDraftContentRoot {
             prefix: legacy_prefix,
             pluginhub_path: legacy_pluginhub_path,
@@ -5941,6 +6026,16 @@ fn resolve_plugin_draft_content_prefix(
     }
 
     None
+}
+
+fn plugin_draft_root_has_generated_artifacts(draft_root: &str, objects: &[String]) -> bool {
+    objects.iter().any(|object| {
+        if !object.starts_with(draft_root) || object.ends_with('/') {
+            return false;
+        }
+        let relative = object.trim_start_matches(draft_root);
+        is_plugin_platform_generated_path(relative)
+    })
 }
 
 async fn read_plugin_draft_files(
@@ -6034,7 +6129,10 @@ fn has_plugin_source_files(draft_prefix: &str, objects: &[String]) -> bool {
     })
 }
 
-fn infer_plugin_components_from_object_paths(draft_prefix: &str, objects: &[String]) -> Vec<String> {
+fn infer_plugin_components_from_object_paths(
+    draft_prefix: &str,
+    objects: &[String],
+) -> Vec<String> {
     let files = objects
         .iter()
         .filter_map(|object| {
@@ -6300,7 +6398,9 @@ fn read_plugin_source_meta(files: &[(String, Vec<u8>)]) -> Result<PluginSourceMe
         .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: pluginhub.json 缺失"))
 }
 
-fn read_optional_plugin_source_meta(files: &[(String, Vec<u8>)]) -> Result<Option<PluginSourceMeta>> {
+fn read_optional_plugin_source_meta(
+    files: &[(String, Vec<u8>)],
+) -> Result<Option<PluginSourceMeta>> {
     let Some(bytes) = files
         .iter()
         .find(|(path, _)| normalize_zip_relative_path(path).as_deref() == Some("pluginhub.json"))
@@ -6362,6 +6462,15 @@ fn validate_plugin_scope(scope: &str) -> Result<()> {
     }
 }
 
+fn validate_plugin_target_scope(target: &str, scope: &str) -> Result<()> {
+    if target == "codex" && scope == "project" {
+        return Err(anyhow!(
+            "PLUGIN_SCOPE_UNSUPPORTED: Codex plugin only supports user scope"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_plugin_source_files(files: &[(String, Vec<u8>)]) -> Result<()> {
     for (path, _) in files {
         let Some(path) = normalize_zip_relative_path(path) else {
@@ -6369,19 +6478,24 @@ fn validate_plugin_source_files(files: &[(String, Vec<u8>)]) -> Result<()> {
                 "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {path}"
             ));
         };
-        if path == ".codex-plugin/plugin.json"
-            || path == ".claude-plugin/plugin.json"
-            || path.starts_with(".codex-plugin/")
-            || path.starts_with(".claude-plugin/")
-            || path.starts_with("codex/")
-            || path.starts_with("claude/")
-        {
+        if is_plugin_platform_generated_path(&path) {
             return Err(anyhow!(
                 "PLUGIN_SOURCE_INVALID: 插件草稿只保存通用插件数据，平台目录由发布器动态生成: {path}"
             ));
         }
     }
     Ok(())
+}
+
+fn is_plugin_platform_generated_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    matches!(
+        normalized.as_str(),
+        ".codex-plugin/plugin.json" | ".claude-plugin/plugin.json"
+    ) || normalized.starts_with(".codex-plugin/")
+        || normalized.starts_with(".claude-plugin/")
+        || normalized.starts_with("codex/")
+        || normalized.starts_with("claude/")
 }
 
 fn build_plugin_package_zip(
@@ -6585,14 +6699,26 @@ fn infer_plugin_components(files: &[(String, Vec<u8>)]) -> Vec<String> {
     let paths = common_plugin_paths(files);
     let mut components = Vec::new();
     for (component, present) in [
-        ("skills", paths.iter().any(|path| path.starts_with("skills/"))),
-        ("agents", paths.iter().any(|path| path.starts_with("agents/"))),
+        (
+            "skills",
+            paths.iter().any(|path| path.starts_with("skills/")),
+        ),
+        (
+            "agents",
+            paths.iter().any(|path| path.starts_with("agents/")),
+        ),
         ("hooks", paths.iter().any(|path| path.starts_with("hooks/"))),
-        ("assets", paths.iter().any(|path| path.starts_with("assets/"))),
+        (
+            "assets",
+            paths.iter().any(|path| path.starts_with("assets/")),
+        ),
         ("mcp", paths.iter().any(|path| path == ".mcp.json")),
         ("apps", paths.iter().any(|path| path == ".app.json")),
         ("lsp", paths.iter().any(|path| path == ".lsp.json")),
-        ("monitors", paths.iter().any(|path| path.starts_with("monitors/"))),
+        (
+            "monitors",
+            paths.iter().any(|path| path.starts_with("monitors/")),
+        ),
         ("bin", paths.iter().any(|path| path.starts_with("bin/"))),
         ("settings", paths.iter().any(|path| path == "settings.json")),
     ] {
@@ -7418,7 +7544,7 @@ fn materialize_plugin_marketplace(
     package_dir: &Path,
 ) -> Result<MaterializedPluginMarketplace> {
     let name = plugin_marketplace_name(target, scope, project_path);
-    let root = plugin_marketplace_root(state, target, scope, project_path)?;
+    let root = prepare_plugin_marketplace_root(state, target, scope, project_path)?;
     let plugins_root = root.join("plugins");
     let plugin_dir_name = format!("{}.{}", plugin.namespace, plugin.id);
     let plugin_dir = plugins_root.join(&plugin_dir_name);
@@ -7450,7 +7576,9 @@ fn plugin_marketplace_root(
             .ok_or_else(|| anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: missing projectPath"))?;
         return Ok(match target {
             "codex" => PathBuf::from(project),
-            "claude" => PathBuf::from(project),
+            "claude" => PathBuf::from(project)
+                .join(".claude")
+                .join("skillhub-plugin-marketplace"),
             _ => state
                 .app_dir
                 .join("plugin-marketplaces")
@@ -7469,6 +7597,104 @@ fn plugin_marketplace_root(
         .join("plugin-marketplaces")
         .join(target)
         .join(scope))
+}
+
+fn prepare_plugin_marketplace_root(
+    state: &AppState,
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+) -> Result<PathBuf> {
+    let root = plugin_marketplace_root(state, target, scope, project_path)?;
+    migrate_claude_project_marketplace_root(target, scope, project_path, &root)?;
+    Ok(root)
+}
+
+fn migrate_claude_project_marketplace_root(
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    new_root: &Path,
+) -> Result<()> {
+    if target != "claude" || !is_claude_project_like_scope(scope) {
+        return Ok(());
+    }
+    let Some(project_path) = project_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+
+    let legacy_root = PathBuf::from(project_path);
+    if legacy_root == new_root {
+        return Ok(());
+    }
+
+    let legacy_marketplace_path = plugin_marketplace_path("claude", &legacy_root);
+    let Some(legacy_doc) = read_json_file(&legacy_marketplace_path) else {
+        return Ok(());
+    };
+
+    let new_marketplace_path = plugin_marketplace_path("claude", new_root);
+    if !new_marketplace_path.exists() {
+        if let Some(parent) = new_marketplace_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(
+            &new_marketplace_path,
+            serde_json::to_vec_pretty(&ensure_claude_marketplace_schema(legacy_doc.clone()))?,
+        )
+        .context("PLUGIN_MARKETPLACE_WRITE_FAILED: migrate Claude marketplace failed")?;
+    }
+
+    for relative in claude_marketplace_plugin_source_paths(&legacy_doc) {
+        let source_path = legacy_root.join(&relative);
+        let destination_path = new_root.join(&relative);
+        if source_path.is_dir() {
+            if !destination_path.exists() {
+                if let Some(parent) = destination_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                copy_dir_recursive_including_json(&source_path, &destination_path)?;
+            }
+            if destination_path.exists() {
+                fs::remove_dir_all(&source_path).context(
+                    "PLUGIN_MARKETPLACE_WRITE_FAILED: remove legacy Claude plugin dir failed",
+                )?;
+            }
+        }
+    }
+
+    fs::remove_file(&legacy_marketplace_path)
+        .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove legacy Claude marketplace failed")?;
+    if let Some(parent) = legacy_marketplace_path.parent() {
+        remove_dir_if_empty(parent)?;
+    }
+    remove_dir_if_empty(&legacy_root.join("plugins"))?;
+    Ok(())
+}
+
+fn claude_marketplace_plugin_source_paths(doc: &serde_json::Value) -> Vec<PathBuf> {
+    doc.get("plugins")
+        .and_then(|plugins| plugins.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|plugin| plugin.get("source").and_then(|source| source.as_str()))
+        .filter_map(normalize_claude_marketplace_plugin_source)
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn normalize_claude_marketplace_plugin_source(source: &str) -> Option<String> {
+    let normalized = source.replace('\\', "/");
+    let relative = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let relative = normalize_zip_relative_path(relative)?;
+    relative.starts_with("plugins/").then_some(relative)
+}
+
+fn remove_dir_if_empty(path: &Path) -> Result<()> {
+    if path.is_dir() && fs::read_dir(path)?.next().is_none() {
+        fs::remove_dir(path)?;
+    }
+    Ok(())
 }
 
 fn plugin_marketplace_name(target: &str, scope: &str, project_path: Option<&str>) -> String {
@@ -7543,21 +7769,19 @@ fn write_plugin_marketplace_file(
             let existing = read_json_file(&path).unwrap_or_else(|| {
                 serde_json::json!({
                     "name": marketplace_name,
+                    "owner": plugin_marketplace_owner(),
                     "plugins": []
                 })
             });
             let doc = upsert_plugin_marketplace_entry(
-                existing,
+                ensure_claude_marketplace_schema(existing),
                 marketplace_name,
                 None,
                 serde_json::json!({
                     "name": plugin.id,
                     "description": plugin.summary,
                     "version": version,
-                    "source": {
-                        "type": "path",
-                        "path": format!("./plugins/{plugin_dir_name}")
-                    }
+                    "source": format!("./plugins/{plugin_dir_name}")
                 }),
             );
             fs::write(&path, serde_json::to_vec_pretty(&doc)?)
@@ -7572,6 +7796,19 @@ fn read_json_file(path: &Path) -> Option<serde_json::Value> {
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn ensure_claude_marketplace_schema(mut doc: serde_json::Value) -> serde_json::Value {
+    if !doc.get("owner").is_some_and(|value| value.is_object()) {
+        doc["owner"] = plugin_marketplace_owner();
+    }
+    doc
+}
+
+fn plugin_marketplace_owner() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Skill Hub"
+    })
 }
 
 fn upsert_plugin_marketplace_entry(
@@ -7667,13 +7904,18 @@ fn remove_plugin_from_marketplace_file(target: &str, root: &Path, plugin_id: &st
     Ok(())
 }
 
+fn should_sync_codex_plugin_cli(target: &str, scope: &str) -> bool {
+    target == "codex" && scope != "project"
+}
+
 fn sync_codex_plugin_install(
     target: &str,
+    scope: &str,
     plugin_id: &str,
     marketplace_name: &str,
     marketplace_root: &Path,
 ) -> Result<()> {
-    if target != "codex" {
+    if !should_sync_codex_plugin_cli(target, scope) {
         return Ok(());
     }
     if marketplace_name != "personal" {
@@ -7690,8 +7932,13 @@ fn sync_codex_plugin_install(
     )
 }
 
-fn sync_codex_plugin_remove(target: &str, plugin_id: &str, marketplace_name: &str) -> Result<()> {
-    if target != "codex" {
+fn sync_codex_plugin_remove(
+    target: &str,
+    scope: &str,
+    plugin_id: &str,
+    marketplace_name: &str,
+) -> Result<()> {
+    if !should_sync_codex_plugin_cli(target, scope) {
         return Ok(());
     }
     let selector = format!("{plugin_id}@{marketplace_name}");
@@ -7706,6 +7953,7 @@ fn sync_claude_plugin_install(
     plugin_id: &str,
     marketplace_name: &str,
     scope: &str,
+    project_path: Option<&str>,
     marketplace_root: &Path,
 ) -> Result<()> {
     let Some(commands) = build_claude_plugin_install_commands(
@@ -7718,8 +7966,20 @@ fn sync_claude_plugin_install(
         return Ok(());
     };
 
+    let working_dir = claude_plugin_command_working_dir(scope, project_path);
+    if let Some(args) = build_claude_marketplace_remove_command(target, marketplace_name, scope) {
+        run_claude_plugin_command(
+            &args,
+            ClaudeCommandFailureMode::IgnoreMissing,
+            working_dir.as_deref(),
+        )?;
+    }
     for args in commands {
-        run_claude_plugin_command(&args, ClaudeCommandFailureMode::IgnoreAlreadyConfigured)?;
+        run_claude_plugin_command(
+            &args,
+            ClaudeCommandFailureMode::IgnoreAlreadyConfigured,
+            working_dir.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -7735,6 +7995,7 @@ fn sync_claude_plugin_remove(
     plugin_id: &str,
     marketplace_name: &str,
     scope: &str,
+    project_path: Option<&str>,
     action: ClaudePluginRemoveAction,
 ) -> Result<()> {
     let Some(args) =
@@ -7742,7 +8003,12 @@ fn sync_claude_plugin_remove(
     else {
         return Ok(());
     };
-    run_claude_plugin_command(&args, ClaudeCommandFailureMode::IgnoreMissing)
+    let working_dir = claude_plugin_command_working_dir(scope, project_path);
+    run_claude_plugin_command(
+        &args,
+        ClaudeCommandFailureMode::IgnoreMissing,
+        working_dir.as_deref(),
+    )
 }
 
 fn build_claude_plugin_install_commands(
@@ -7785,6 +8051,24 @@ fn build_claude_plugin_install_commands(
     ])
 }
 
+fn build_claude_marketplace_remove_command(
+    target: &str,
+    marketplace_name: &str,
+    scope: &str,
+) -> Option<Vec<String>> {
+    if target != "claude" || !is_claude_project_like_scope(scope) {
+        return None;
+    }
+    Some(vec![
+        "plugin".to_string(),
+        "marketplace".to_string(),
+        "remove".to_string(),
+        marketplace_name.to_string(),
+        "--scope".to_string(),
+        normalize_claude_plugin_scope(scope),
+    ])
+}
+
 fn build_claude_plugin_remove_command(
     target: &str,
     plugin_id: &str,
@@ -7815,6 +8099,23 @@ fn normalize_claude_plugin_scope(scope: &str) -> String {
     }
 }
 
+fn is_claude_project_like_scope(scope: &str) -> bool {
+    matches!(
+        normalize_claude_plugin_scope(scope).as_str(),
+        "project" | "local"
+    )
+}
+
+fn claude_plugin_command_working_dir(scope: &str, project_path: Option<&str>) -> Option<PathBuf> {
+    if !is_claude_project_like_scope(scope) {
+        return None;
+    }
+    project_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClaudeCommandFailureMode {
     IgnoreMissing,
@@ -7824,20 +8125,33 @@ enum ClaudeCommandFailureMode {
 fn run_claude_plugin_command(
     args: &[String],
     failure_mode: ClaudeCommandFailureMode,
+    working_dir: Option<&Path>,
 ) -> Result<()> {
     let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let candidates = claude_plugin_command_candidates();
     run_plugin_command(
-        &[("claude", Vec::new())],
+        &candidates,
         &borrowed,
         "PLUGIN_CLAUDE_INSTALL_FAILED",
+        working_dir,
         |message| match failure_mode {
             ClaudeCommandFailureMode::IgnoreMissing => is_plugin_missing_message(message),
             ClaudeCommandFailureMode::IgnoreAlreadyConfigured => {
                 is_plugin_already_configured_message(message)
                     || is_plugin_already_installed_message(message)
+                    || is_plugin_already_enabled_message(message)
             }
         },
     )
+}
+
+fn claude_plugin_command_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut candidates = Vec::new();
+    if cfg!(windows) {
+        candidates.push(("cmd", vec!["/C", "claude.cmd"]));
+    }
+    candidates.push(("claude", Vec::new()));
+    candidates
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7858,6 +8172,7 @@ fn run_codex_plugin_command(args: &[&str], failure_mode: CodexCommandFailureMode
         &candidates,
         args,
         "PLUGIN_CODEX_INSTALL_FAILED",
+        None,
         |message| match failure_mode {
             CodexCommandFailureMode::Strict => false,
             CodexCommandFailureMode::IgnoreMissing => is_plugin_missing_message(message),
@@ -7872,16 +8187,21 @@ fn run_plugin_command<F>(
     candidates: &[(&str, Vec<&str>)],
     args: &[&str],
     error_code: &str,
+    working_dir: Option<&Path>,
     is_ignorable_failure: F,
 ) -> Result<()>
 where
     F: Fn(&str) -> bool,
 {
     let mut last_error = None;
+    let mut first_execution_error = None;
     let mut command_not_found = true;
     for (program, prefix) in candidates {
-        let mut command = Command::new(program);
+        let mut command = external_command(program);
         command.args(prefix).args(args);
+        if let Some(working_dir) = working_dir {
+            command.current_dir(working_dir);
+        }
         match command.output() {
             Ok(output) if output.status.success() => return Ok(()),
             Ok(output) => {
@@ -7892,10 +8212,11 @@ where
                 if is_ignorable_failure(&message) {
                     return Ok(());
                 }
-                last_error = Some(format!(
-                    "{program} exited with {}: {message}",
-                    output.status
-                ));
+                let error = format!("{program} exited with {}: {message}", output.status);
+                if first_execution_error.is_none() {
+                    first_execution_error = Some(error.clone());
+                }
+                last_error = Some(error);
             }
             Err(err) => {
                 last_error = Some(format!("{program}: {err}"));
@@ -7919,13 +8240,15 @@ where
     Err(anyhow!(
         "{}: {}",
         error_code,
-        last_error.unwrap_or_else(|| format!(
-            "{} command not found",
-            candidates
-                .first()
-                .map(|(program, _)| *program)
-                .unwrap_or("plugin")
-        ))
+        first_execution_error
+            .or(last_error)
+            .unwrap_or_else(|| format!(
+                "{} command not found",
+                candidates
+                    .first()
+                    .map(|(program, _)| *program)
+                    .unwrap_or("plugin")
+            ))
     ))
 }
 
@@ -7963,6 +8286,11 @@ fn is_plugin_already_installed_message(message: &str) -> bool {
     lower.contains("already") && lower.contains("installed")
 }
 
+fn is_plugin_already_enabled_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("already") && lower.contains("enabled")
+}
+
 fn user_home_dir() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         let path = PathBuf::from(home);
@@ -7991,7 +8319,7 @@ fn set_plugin_binding_enabled_inner(
         .ok_or_else(|| {
             anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: plugin cache package not found")
         })?;
-    let marketplace_root = plugin_marketplace_root(
+    let marketplace_root = prepare_plugin_marketplace_root(
         state,
         &binding.target,
         &binding.scope,
@@ -7999,6 +8327,7 @@ fn set_plugin_binding_enabled_inner(
     )?;
 
     if request.enabled {
+        validate_plugin_target_scope(&binding.target, &binding.scope)?;
         ensure_plugin_scope_can_enable(
             &conn,
             Some(&binding.id),
@@ -8033,6 +8362,7 @@ fn set_plugin_binding_enabled_inner(
         )?;
         sync_codex_plugin_install(
             &binding.target,
+            &binding.scope,
             &binding.plugin_id,
             &binding.marketplace_name,
             &marketplace_root,
@@ -8042,11 +8372,13 @@ fn set_plugin_binding_enabled_inner(
             &binding.plugin_id,
             &binding.marketplace_name,
             &binding.scope,
+            binding.project_path.as_deref(),
             &marketplace_root,
         )?;
     } else {
         sync_codex_plugin_remove(
             &binding.target,
+            &binding.scope,
             &binding.plugin_id,
             &binding.marketplace_name,
         )?;
@@ -8055,6 +8387,7 @@ fn set_plugin_binding_enabled_inner(
             &binding.plugin_id,
             &binding.marketplace_name,
             &binding.scope,
+            binding.project_path.as_deref(),
             ClaudePluginRemoveAction::Disable,
         )?;
         remove_plugin_from_marketplace_file(
@@ -8097,7 +8430,7 @@ fn uninstall_plugin_inner(
 ) -> Result<Vec<PluginBinding>> {
     let conn = state.conn.lock().expect("db mutex poisoned");
     let binding = find_plugin_binding(&conn, &request.binding_id)?;
-    let marketplace_root = plugin_marketplace_root(
+    let marketplace_root = prepare_plugin_marketplace_root(
         state,
         &binding.target,
         &binding.scope,
@@ -8105,6 +8438,7 @@ fn uninstall_plugin_inner(
     )?;
     sync_codex_plugin_remove(
         &binding.target,
+        &binding.scope,
         &binding.plugin_id,
         &binding.marketplace_name,
     )?;
@@ -8113,6 +8447,7 @@ fn uninstall_plugin_inner(
         &binding.plugin_id,
         &binding.marketplace_name,
         &binding.scope,
+        binding.project_path.as_deref(),
         ClaudePluginRemoveAction::Uninstall,
     )?;
     remove_plugin_from_marketplace_file(&binding.target, &marketplace_root, &binding.plugin_id)?;
@@ -8195,15 +8530,24 @@ fn scan_local_plugins_inner(state: &AppState) -> Result<Vec<LocalPlugin>> {
     conn.execute("DELETE FROM local_plugins", [])?;
     let scanned_at = now();
     let mut seen_paths = HashSet::new();
+    let mut seen_plugin_keys = HashSet::new();
 
     for binding in list_plugin_bindings_inner(&conn)? {
-        insert_local_plugin_from_binding(state, &conn, &binding, &scanned_at, &mut seen_paths)?;
+        insert_local_plugin_from_binding(
+            state,
+            &conn,
+            &binding,
+            &scanned_at,
+            &mut seen_paths,
+            &mut seen_plugin_keys,
+        )?;
     }
 
     for (target, scope, project_path, root) in plugin_scan_roots(state, &conn)? {
         scan_plugin_marketplace_root(
             &conn,
             &mut seen_paths,
+            &mut seen_plugin_keys,
             &target,
             &scope,
             project_path.as_deref(),
@@ -8220,14 +8564,13 @@ fn plugin_scan_roots(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<(String, String, Option<String>, PathBuf)>> {
     let mut roots = Vec::new();
-    for target in ["codex", "claude"] {
-        roots.push((
-            target.to_string(),
-            "user".to_string(),
-            None,
-            plugin_marketplace_root(state, target, "user", None)?,
-        ));
-    }
+    // Skill Hub's own Claude user marketplace lives under app_dir and is represented by bindings.
+    roots.push((
+        "codex".to_string(),
+        "user".to_string(),
+        None,
+        plugin_marketplace_root(state, "codex", "user", None)?,
+    ));
 
     if let Some(home) = home_dir_path() {
         roots.push((
@@ -8262,6 +8605,7 @@ fn insert_local_plugin_from_binding(
     binding: &PluginBinding,
     scanned_at: &str,
     seen_paths: &mut HashSet<String>,
+    seen_plugin_keys: &mut HashSet<String>,
 ) -> Result<()> {
     let (_, component_inventory_json) =
         plugin_package_path_and_inventory(conn, &binding.package_id).unwrap_or_else(|| {
@@ -8306,6 +8650,14 @@ fn insert_local_plugin_from_binding(
             scanned_at
         ],
     )?;
+    if !binding.plugin_id.is_empty() {
+        seen_plugin_keys.insert(local_plugin_identity_key(
+            &binding.target,
+            &binding.scope,
+            binding.project_path.as_deref(),
+            &binding.plugin_id,
+        ));
+    }
     Ok(())
 }
 
@@ -8324,6 +8676,7 @@ fn plugin_package_path_and_inventory(
 fn scan_plugin_marketplace_root(
     conn: &rusqlite::Connection,
     seen_paths: &mut HashSet<String>,
+    seen_plugin_keys: &mut HashSet<String>,
     target: &str,
     scope: &str,
     project_path: Option<&str>,
@@ -8350,6 +8703,7 @@ fn scan_plugin_marketplace_root(
                 insert_local_plugin_from_path(
                     conn,
                     seen_paths,
+                    seen_plugin_keys,
                     target,
                     scope,
                     project_path,
@@ -8373,6 +8727,7 @@ fn scan_plugin_marketplace_root(
                 insert_local_plugin_from_path(
                     conn,
                     seen_paths,
+                    seen_plugin_keys,
                     target,
                     scope,
                     project_path,
@@ -8393,6 +8748,7 @@ fn scan_plugin_marketplace_root(
 fn insert_local_plugin_from_path(
     conn: &rusqlite::Connection,
     seen_paths: &mut HashSet<String>,
+    seen_plugin_keys: &mut HashSet<String>,
     target: &str,
     scope: &str,
     project_path: Option<&str>,
@@ -8422,6 +8778,12 @@ fn insert_local_plugin_from_path(
         .as_ref()
         .and_then(|profile| profile.plugin_id.clone())
         .or_else(|| entry_plugin_id.map(ToString::to_string));
+    if let Some(plugin_id) = plugin_id.as_deref() {
+        let key = local_plugin_identity_key(target, scope, project_path, plugin_id);
+        if seen_plugin_keys.contains(&key) {
+            return Ok(());
+        }
+    }
     let version = profile
         .as_ref()
         .and_then(|profile| profile.version.clone())
@@ -8451,7 +8813,27 @@ fn insert_local_plugin_from_path(
             scanned_at
         ],
     )?;
+    if let Some(plugin_id) = plugin_id.as_deref() {
+        seen_plugin_keys.insert(local_plugin_identity_key(
+            target,
+            scope,
+            project_path,
+            plugin_id,
+        ));
+    }
     Ok(())
+}
+
+fn local_plugin_identity_key(
+    target: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    plugin_id: &str,
+) -> String {
+    format!(
+        "{target}|{scope}|{}|{plugin_id}",
+        project_path.unwrap_or_default()
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -10124,6 +10506,27 @@ Capture a concise daily note.
     }
 
     #[test]
+    fn local_plugin_identity_key_groups_same_plugin_across_paths() {
+        assert_eq!(
+            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
+            local_plugin_identity_key("codex", "user", None, "commit-workflow")
+        );
+        assert_ne!(
+            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
+            local_plugin_identity_key("claude", "user", None, "commit-workflow")
+        );
+        assert_ne!(
+            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
+            local_plugin_identity_key(
+                "codex",
+                "project",
+                Some(r"C:\Users\ctf19\project-a"),
+                "commit-workflow"
+            )
+        );
+    }
+
+    #[test]
     fn parses_skill_markdown_admin_fields() {
         let content = r#"---
 version: 1.2.3
@@ -10375,10 +10778,7 @@ author: skill-hub
     fn plugin_publish_rejects_readme_without_required_frontmatter() {
         let files = vec![
             ("README.md".to_string(), b"# Commit Workflow\n".to_vec()),
-            (
-                "skills/review/SKILL.md".to_string(),
-                b"# Review\n".to_vec(),
-            ),
+            ("skills/review/SKILL.md".to_string(), b"# Review\n".to_vec()),
         ];
         let saved = PublishMeta {
             namespace: "internal".to_string(),
@@ -10420,10 +10820,7 @@ metadata:
 "#
                 .to_vec(),
             ),
-            (
-                "skills/review/SKILL.md".to_string(),
-                b"# Review\n".to_vec(),
-            ),
+            ("skills/review/SKILL.md".to_string(), b"# Review\n".to_vec()),
         ];
         let saved = PublishMeta {
             namespace: "internal".to_string(),
@@ -10652,9 +11049,10 @@ metadata:
             serde_json::from_slice(&fs::read(claude_path).expect("read marketplace"))
                 .expect("json");
         assert_eq!(
-            claude_doc["plugins"][0]["source"]["path"],
+            claude_doc["plugins"][0]["source"],
             "./plugins/internal.commit-workflow"
         );
+        assert_eq!(claude_doc["owner"]["name"], "Skill Hub");
         fs::remove_dir_all(root).expect("remove temp dir");
     }
 
@@ -10686,6 +11084,17 @@ metadata:
     }
 
     #[test]
+    fn claude_marketplace_schema_backfills_missing_owner() {
+        let next = ensure_claude_marketplace_schema(serde_json::json!({
+            "name": "skillhub",
+            "plugins": []
+        }));
+
+        assert!(next["owner"].is_object());
+        assert_eq!(next["owner"]["name"], "Skill Hub");
+    }
+
+    #[test]
     fn plugin_marketplace_remove_preserves_other_entries() {
         let existing = serde_json::json!({
             "name": "skillhub",
@@ -10698,6 +11107,68 @@ metadata:
         let plugins = next["plugins"].as_array().expect("plugins array");
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0]["name"], "alpha");
+    }
+
+    #[test]
+    fn delete_cached_plugin_rejects_any_binding_relation() {
+        let (state, package_id, package_dir) = plugin_cache_test_state(Some("disabled"));
+        let request = DeleteCachedPluginRequest {
+            source_id: Some("compiled-source".to_string()),
+            namespace: "internal".to_string(),
+            plugin_id: "commit-workflow".to_string(),
+            version: "1.0.0".to_string(),
+            target: "codex".to_string(),
+        };
+
+        let err = delete_cached_plugin_inner(request, &state)
+            .expect_err("any binding relation should block cache deletion");
+
+        assert!(err.to_string().contains("bindings"));
+        assert!(package_dir.exists());
+
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let package_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_packages WHERE id = ?1",
+                params![package_id],
+                |row| row.get(0),
+            )
+            .expect("count packages");
+        assert_eq!(package_count, 1);
+    }
+
+    #[test]
+    fn delete_cached_plugin_removes_unbound_cache_package() {
+        let (state, package_id, package_dir) = plugin_cache_test_state(None);
+        let request = DeleteCachedPluginRequest {
+            source_id: Some("compiled-source".to_string()),
+            namespace: "internal".to_string(),
+            plugin_id: "commit-workflow".to_string(),
+            version: "1.0.0".to_string(),
+            target: "codex".to_string(),
+        };
+
+        delete_cached_plugin_inner(request, &state).expect("unbound cache should delete");
+
+        assert!(!package_dir.exists());
+
+        let conn = state.conn.lock().expect("db mutex poisoned");
+        let package_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_packages WHERE id = ?1",
+                params![package_id],
+                |row| row.get(0),
+            )
+            .expect("count packages");
+        let metadata_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_package_metadata WHERE package_id = ?1",
+                params![package_id],
+                |row| row.get(0),
+            )
+            .expect("count metadata");
+        assert_eq!(package_count, 0);
+        assert_eq!(metadata_count, 0);
     }
 
     #[test]
@@ -10748,6 +11219,45 @@ metadata:
     }
 
     #[test]
+    fn plugin_draft_content_prefix_uses_gitlab_source_when_flat_root_is_generated_artifact() {
+        let root = "draft/gitlab/plugins/backend/java/commit-workflow/";
+        let objects = vec![
+            "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/.codex-plugin/plugin.json"
+                .to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/codex/.codex-plugin/plugin.json"
+                .to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/pluginhub.json".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/README.md".to_string(),
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/skills/review/SKILL.md"
+                .to_string(),
+        ];
+
+        let resolved = resolve_plugin_draft_content_prefix(root, &objects)
+            .expect("GitLab source root should resolve");
+
+        assert_eq!(
+            resolved.prefix,
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/"
+        );
+        assert_eq!(
+            resolved.pluginhub_path,
+            "draft/gitlab/plugins/backend/java/commit-workflow/source/pluginhub.json"
+        );
+
+        let files = collect_plugin_draft_preview_file_list(&resolved.prefix, &objects);
+        let paths = files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "README.md".to_string(),
+                "pluginhub.json".to_string(),
+                "skills/review/SKILL.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn plugin_draft_preview_file_list_uses_plugin_content_prefix() {
         let prefix = "draft/gitlab/plugins/backend/java/commit-workflow/";
         let files = collect_plugin_draft_preview_file_list(
@@ -10768,6 +11278,31 @@ metadata:
                 "pluginhub.json".to_string(),
                 "skills/review/SKILL.md".to_string(),
                 "validation.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_draft_preview_file_list_excludes_publish_meta() {
+        let prefix = "draft/gitlab/plugins/backend/java/commit-workflow/";
+        let files = collect_plugin_draft_preview_file_list(
+            prefix,
+            &[
+                "draft/gitlab/plugins/backend/java/commit-workflow/pluginhub.json".to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/README.md".to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/publish-meta.v1.json"
+                    .to_string(),
+                "draft/gitlab/plugins/backend/java/commit-workflow/skills/review/SKILL.md"
+                    .to_string(),
+            ],
+        );
+        let paths = files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "README.md".to_string(),
+                "pluginhub.json".to_string(),
+                "skills/review/SKILL.md".to_string()
             ]
         );
     }
@@ -10900,8 +11435,84 @@ metadata:
     }
 
     #[test]
+    fn claude_project_marketplace_root_lives_under_project_claude_dir() {
+        let state = AppState {
+            conn: std::sync::Arc::new(std::sync::Mutex::new(
+                rusqlite::Connection::open_in_memory().expect("open sqlite"),
+            )),
+            app_dir: PathBuf::from("/tmp/skillhub-app"),
+            local_macs: vec![],
+        };
+
+        let claude_root =
+            plugin_marketplace_root(&state, "claude", "project", Some("/tmp/project-a"))
+                .expect("resolve claude project marketplace root");
+        assert_eq!(
+            canonical_display_path(&claude_root),
+            "/tmp/project-a/.claude/skillhub-plugin-marketplace"
+        );
+
+        let codex_root =
+            plugin_marketplace_root(&state, "codex", "project", Some("/tmp/project-a"))
+                .expect("resolve codex project marketplace root");
+        assert_eq!(canonical_display_path(&codex_root), "/tmp/project-a");
+    }
+
+    #[test]
+    fn claude_project_marketplace_migration_moves_legacy_skillhub_root_under_claude_dir() {
+        let project = std::env::temp_dir().join(format!("skillhub-claude-project-{}", new_id()));
+        let legacy_marketplace_dir = project.join(".claude-plugin");
+        let legacy_plugin_dir = project.join("plugins").join("internal.commit-workflow");
+        fs::create_dir_all(&legacy_marketplace_dir).expect("create legacy marketplace dir");
+        fs::create_dir_all(&legacy_plugin_dir).expect("create legacy plugin dir");
+        fs::write(
+            legacy_marketplace_dir.join("marketplace.json"),
+            br#"{
+              "name": "skillhub",
+              "owner": { "name": "Skill Hub" },
+              "plugins": [
+                {
+                  "name": "commit-workflow",
+                  "version": "1.0.0",
+                  "source": "./plugins/internal.commit-workflow"
+                }
+              ]
+            }"#,
+        )
+        .expect("write legacy marketplace");
+        fs::write(legacy_plugin_dir.join("README.md"), "# Commit Workflow\n")
+            .expect("write legacy plugin file");
+
+        let new_root = project.join(".claude").join("skillhub-plugin-marketplace");
+        migrate_claude_project_marketplace_root(
+            "claude",
+            "project",
+            Some(project.to_string_lossy().as_ref()),
+            &new_root,
+        )
+        .expect("migrate legacy marketplace");
+
+        assert!(new_root
+            .join(".claude-plugin")
+            .join("marketplace.json")
+            .is_file());
+        assert!(new_root
+            .join("plugins")
+            .join("internal.commit-workflow")
+            .join("README.md")
+            .is_file());
+        assert!(!project.join(".claude-plugin").exists());
+        assert!(!project
+            .join("plugins")
+            .join("internal.commit-workflow")
+            .exists());
+
+        fs::remove_dir_all(project).expect("remove temp project");
+    }
+
+    #[test]
     fn claude_plugin_sync_commands_use_scope_and_marketplace_path() {
-        let marketplace_root = PathBuf::from("/tmp/project");
+        let marketplace_root = PathBuf::from("/tmp/project/.claude/skillhub-plugin-marketplace");
         assert_eq!(
             build_claude_plugin_install_commands(
                 "claude",
@@ -10915,7 +11526,7 @@ metadata:
                     "plugin".to_string(),
                     "marketplace".to_string(),
                     "add".to_string(),
-                    "/tmp/project/.claude-plugin/marketplace.json".to_string(),
+                    "/tmp/project/.claude/skillhub-plugin-marketplace/.claude-plugin/marketplace.json".to_string(),
                     "--scope".to_string(),
                     "project".to_string(),
                 ],
@@ -10945,6 +11556,63 @@ metadata:
             ),
             None
         );
+    }
+
+    #[test]
+    fn claude_project_marketplace_refresh_command_removes_existing_registration() {
+        assert_eq!(
+            build_claude_marketplace_remove_command("claude", "skillhub", "project"),
+            Some(vec![
+                "plugin".to_string(),
+                "marketplace".to_string(),
+                "remove".to_string(),
+                "skillhub".to_string(),
+                "--scope".to_string(),
+                "project".to_string(),
+            ])
+        );
+        assert_eq!(
+            build_claude_marketplace_remove_command("claude", "skillhub", "user"),
+            None
+        );
+        assert_eq!(
+            build_claude_marketplace_remove_command("codex", "skillhub", "project"),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_plugin_project_scope_uses_project_root_as_cli_working_dir() {
+        let project = r"C:\Users\ctf19\project-a";
+        assert_eq!(
+            claude_plugin_command_working_dir("project", Some(project)),
+            Some(PathBuf::from(project))
+        );
+        assert_eq!(
+            claude_plugin_command_working_dir("local", Some(project)),
+            Some(PathBuf::from(project))
+        );
+        assert_eq!(
+            claude_plugin_command_working_dir("user", Some(project)),
+            None
+        );
+        assert_eq!(claude_plugin_command_working_dir("project", None), None);
+    }
+
+    #[test]
+    fn codex_project_scope_does_not_sync_global_cli_plugin_config() {
+        assert!(should_sync_codex_plugin_cli("codex", "user"));
+        assert!(!should_sync_codex_plugin_cli("codex", "project"));
+        assert!(!should_sync_codex_plugin_cli("claude", "project"));
+    }
+
+    #[test]
+    fn plugin_target_scope_rejects_codex_project_plugins() {
+        assert!(validate_plugin_target_scope("codex", "user").is_ok());
+        assert!(validate_plugin_target_scope("claude", "project").is_ok());
+        let err = validate_plugin_target_scope("codex", "project")
+            .expect_err("Codex plugins do not support project-level activation");
+        assert!(err.to_string().contains("PLUGIN_SCOPE_UNSUPPORTED"));
     }
 
     #[test]
@@ -10981,6 +11649,88 @@ metadata:
                 "user".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn claude_plugin_command_candidates_use_windows_cmd_shim() {
+        let candidates = claude_plugin_command_candidates();
+        if cfg!(windows) {
+            assert_eq!(candidates[0].0, "cmd");
+            assert_eq!(candidates[0].1, vec!["/C", "claude.cmd"]);
+        }
+        assert!(candidates
+            .iter()
+            .any(|(program, prefix)| *program == "claude" && prefix.is_empty()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plugin_command_finds_cmd_shim_from_external_command_path() {
+        let temp = std::env::temp_dir().join(format!("skillhub-cli-shim-{}", new_id()));
+        fs::create_dir_all(&temp).expect("create shim dir");
+        fs::write(temp.join("claude.cmd"), "@echo off\r\nexit /b 0\r\n").expect("write shim");
+        let original_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", temp.as_os_str());
+
+        let result = run_plugin_command(
+            &[("cmd", vec!["/C", "claude.cmd"])],
+            &["--version"],
+            "TEST_PLUGIN_COMMAND_FAILED",
+            None,
+            |_| false,
+        );
+
+        match original_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = fs::remove_dir_all(&temp);
+        result.expect("cmd shim should run from external command PATH");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plugin_command_runs_from_requested_working_dir() {
+        let temp = std::env::temp_dir().join(format!("skillhub-cli-cwd-{}", new_id()));
+        fs::create_dir_all(&temp).expect("create cwd dir");
+        fs::write(temp.join("marker.txt"), "ok").expect("write marker");
+
+        let result = run_plugin_command(
+            &[(
+                "cmd",
+                vec!["/C", "if exist marker.txt (exit /b 0) else (exit /b 1)"],
+            )],
+            &[],
+            "TEST_PLUGIN_COMMAND_FAILED",
+            Some(&temp),
+            |_| false,
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+        result.expect("command should run from requested working directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plugin_command_preserves_first_executed_candidate_failure() {
+        let err = run_plugin_command(
+            &[
+                (
+                    "cmd",
+                    vec!["/C", "definitely-missing-skillhub-cli-shim.cmd"],
+                ),
+                ("definitely-missing-skillhub-cli-shim", Vec::new()),
+            ],
+            &["--version"],
+            "TEST_PLUGIN_COMMAND_FAILED",
+            None,
+            |_| false,
+        )
+        .expect_err("missing cmd shim should fail");
+
+        let message = err.to_string();
+        assert!(message.contains("cmd exited"));
+        assert!(!message.contains("definitely-missing-skillhub-cli-shim:"));
     }
 
     #[test]
@@ -11067,6 +11817,46 @@ metadata:
     }
 
     #[test]
+    fn plugin_scan_roots_skips_skillhub_managed_claude_user_marketplace_root() {
+        let app_dir = std::env::temp_dir().join(format!("skillhub-scan-roots-{}", new_id()));
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE projects (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              path TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("create projects table");
+        let state = AppState {
+            conn: std::sync::Arc::new(std::sync::Mutex::new(
+                rusqlite::Connection::open_in_memory().expect("open state sqlite"),
+            )),
+            app_dir: app_dir.clone(),
+            local_macs: vec![],
+        };
+
+        let roots = plugin_scan_roots(&state, &conn).expect("scan roots");
+        let skillhub_claude_user_root = canonical_display_path(
+            &app_dir
+                .join("plugin-marketplaces")
+                .join("claude")
+                .join("user"),
+        );
+
+        assert!(
+            roots
+                .iter()
+                .all(|(_, _, _, root)| canonical_display_path(root) != skillhub_claude_user_root),
+            "Skill Hub's own Claude user marketplace root should be represented by bindings, not scanned as an external local plugin"
+        );
+    }
+
+    #[test]
     fn codex_cli_idempotent_error_detection_is_narrow() {
         assert!(is_plugin_missing_message(
             "Error: plugin `demo` is not installed"
@@ -11076,6 +11866,13 @@ metadata:
         ));
         assert!(!is_plugin_already_configured_message(
             "Error: plugin `demo` is already installed"
+        ));
+    }
+
+    #[test]
+    fn claude_cli_idempotent_error_detection_handles_already_enabled() {
+        assert!(is_plugin_already_enabled_message(
+            "Plugin \"commit-workflow@skillhub\" is already enabled at user scope"
         ));
     }
 
@@ -11109,9 +11906,10 @@ metadata:
     }
 
     fn sample_plugin_files(extra: Vec<(&str, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
-        let mut files = vec![(
-            "pluginhub.json".to_string(),
-            br#"{
+        let mut files = vec![
+            (
+                "pluginhub.json".to_string(),
+                br#"{
               "schema": "skillhub.plugin-source.v1",
               "namespace": "internal",
               "id": "commit-workflow",
@@ -11126,14 +11924,142 @@ metadata:
               "riskLevel": "medium",
               "publishScope": "public"
             }"#
-            .to_vec(),
-        )];
-        files.extend(
-            extra
-                .into_iter()
-                .map(|(path, bytes)| (path.to_string(), bytes)),
-        );
+                .to_vec(),
+            ),
+            (
+                "README.md".to_string(),
+                br#"---
+name: Commit Workflow
+description: Team commit and PR workflow plugin.
+version: 1.0.0
+author: skill-hub
+---
+# Commit Workflow
+"#
+                .to_vec(),
+            ),
+        ];
+        for (path, bytes) in extra {
+            if let Some((_, existing_bytes)) = files
+                .iter_mut()
+                .find(|(existing_path, _)| existing_path == path)
+            {
+                *existing_bytes = bytes;
+            } else {
+                files.push((path.to_string(), bytes));
+            }
+        }
         files
+    }
+
+    fn plugin_cache_test_state(binding_status: Option<&str>) -> (AppState, String, PathBuf) {
+        let app_dir = std::env::temp_dir().join(format!("skillhub-plugin-cache-{}", new_id()));
+        let package_root = app_dir.join("plugin-packages");
+        let package_dir = package_root
+            .join("internal")
+            .join("commit-workflow")
+            .join("1.0.0")
+            .join("codex");
+        fs::create_dir_all(&package_dir).expect("create package dir");
+
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE plugin_packages (
+              id TEXT PRIMARY KEY,
+              source_id TEXT,
+              namespace TEXT NOT NULL,
+              plugin_id TEXT NOT NULL,
+              plugin_name TEXT NOT NULL,
+              version TEXT NOT NULL,
+              target TEXT NOT NULL,
+              package_path TEXT NOT NULL,
+              sha256 TEXT,
+              component_inventory_json TEXT NOT NULL,
+              risk_level TEXT NOT NULL,
+              cached_at TEXT NOT NULL
+            );
+            CREATE TABLE plugin_bindings (
+              id TEXT PRIMARY KEY,
+              package_id TEXT NOT NULL,
+              status TEXT NOT NULL
+            );
+            CREATE TABLE local_package_metadata (
+              package_id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              tags_json TEXT NOT NULL,
+              author TEXT,
+              source_path TEXT NOT NULL,
+              imported_at TEXT NOT NULL
+            );
+            CREATE TABLE audit_logs (
+              id TEXT PRIMARY KEY,
+              action TEXT NOT NULL,
+              skill_ref TEXT,
+              result TEXT NOT NULL,
+              detail TEXT,
+              created_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("create test schema");
+
+        let package_id = new_id();
+        let package_path = canonical_display_path(&package_dir);
+        conn.execute(
+            "INSERT INTO plugin_packages
+             (id, source_id, namespace, plugin_id, plugin_name, version, target, package_path,
+              sha256, component_inventory_json, risk_level, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                package_id,
+                Some("compiled-source".to_string()),
+                "internal",
+                "commit-workflow",
+                "Commit Workflow",
+                "1.0.0",
+                "codex",
+                package_path,
+                None::<String>,
+                "{}",
+                "low",
+                now()
+            ],
+        )
+        .expect("insert package");
+        conn.execute(
+            "INSERT INTO local_package_metadata
+             (package_id, name, summary, tags_json, author, source_path, imported_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                package_id,
+                "Commit Workflow",
+                "Team commit and PR workflow plugin.",
+                "[]",
+                Option::<String>::None,
+                package_path,
+                now()
+            ],
+        )
+        .expect("insert metadata");
+        if let Some(status) = binding_status {
+            conn.execute(
+                "INSERT INTO plugin_bindings (id, package_id, status) VALUES (?1, ?2, ?3)",
+                params![new_id(), package_id, status],
+            )
+            .expect("insert binding");
+        }
+
+        (
+            AppState {
+                conn: std::sync::Arc::new(std::sync::Mutex::new(conn)),
+                app_dir,
+                local_macs: vec![],
+            },
+            package_id,
+            package_dir,
+        )
     }
 
     #[test]

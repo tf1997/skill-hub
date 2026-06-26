@@ -721,13 +721,12 @@ pub fn list_cached_plugin_packages_inner(conn: &Connection) -> Result<Vec<Cached
              package.cached_at,
              package.risk_level,
              package.component_inventory_json,
-             COUNT(binding.id) AS binding_count
-         FROM plugin_packages package
-         LEFT JOIN plugin_bindings binding
-           ON binding.package_id = package.id
-          AND binding.status = 'installed'
-         GROUP BY package.id
-         ORDER BY package.cached_at DESC",
+              COUNT(binding.id) AS binding_count
+          FROM plugin_packages package
+          LEFT JOIN plugin_bindings binding
+            ON binding.package_id = package.id
+          GROUP BY package.id
+          ORDER BY package.cached_at DESC",
     )?;
 
     let rows = stmt.query_map([], |row| {

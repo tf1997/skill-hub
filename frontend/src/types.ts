@@ -316,6 +316,14 @@ export type DeleteCachedSkillRequest = {
   version: string;
 };
 
+export type DeleteCachedPluginRequest = {
+  sourceId?: string | null;
+  namespace: string;
+  pluginId: string;
+  version: string;
+  target: string;
+};
+
 export type DeleteLocalSkillRequest = {
   id: string;
 };

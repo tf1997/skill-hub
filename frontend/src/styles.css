@@ -982,6 +982,18 @@ select:focus-visible {
   box-shadow: 0 3px 8px rgba(79, 124, 255, 0.18);
 }
 
+.segmented button.restricted {
+  color: var(--muted);
+  background: transparent;
+  opacity: 0.58;
+  box-shadow: none;
+}
+
+.segmented button.restricted:hover {
+  box-shadow: none;
+  border-color: transparent;
+}
+
 .list-pane {
   display: flex;
   flex-direction: column;
@@ -3093,9 +3105,10 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  flex: 0 0 auto;
+  width: 30px;
   height: 28px;
-  padding: 0 8px;
+  padding: 0;
   color: var(--text-secondary);
   background: var(--control-bg);
   border: 1px solid var(--border-light);
@@ -4622,21 +4635,207 @@ select:focus-visible {
 }
 
 @media (max-width: 1280px) {
+  .admin-console {
+    gap: 10px;
+  }
+
+  .admin-header {
+    min-height: 48px;
+    padding: 8px 12px;
+  }
+
+  .admin-title h2 {
+    font-size: 21px;
+  }
+
   .admin-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
   }
 
   .admin-rail {
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   }
 
   .admin-rail button {
     justify-content: center;
+    min-height: 42px;
+    padding: 8px 10px;
+  }
+
+  .admin-panels {
+    gap: 10px;
   }
 
   .admin-panels.drafts {
-    grid-template-columns: minmax(280px, 0.75fr) minmax(0, 1.25fr);
+    grid-template-columns: minmax(304px, 0.68fr) minmax(0, 1.32fr);
+    gap: 10px;
+  }
+
+  .draft-browser > .section-toolbar {
+    min-height: 50px;
+    padding: 10px 12px;
+  }
+
+  .publish-editor > .section-toolbar {
+    min-height: 60px;
+    padding: 12px 14px;
+  }
+
+  .draft-kind-controls {
+    gap: 6px;
+  }
+
+  .draft-list {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .draft-list-tools {
+    gap: 6px;
+  }
+
+  .draft-search-box {
+    height: 32px;
+  }
+
+  .draft-status-filter {
+    gap: 5px;
+  }
+
+  .draft-status-filter-button {
+    height: 26px;
+    padding: 0 8px;
+  }
+
+  .draft-fold-button {
+    width: 28px;
+    height: 26px;
+  }
+
+  .draft-category-group,
+  .draft-items {
+    gap: 5px;
+  }
+
+  .draft-category-header {
+    min-height: 36px;
+    gap: 8px;
+    padding: 7px 10px;
+  }
+
+  .draft-category-header strong {
+    font-size: 13px;
+  }
+
+  .draft-category-header .badge,
+  .draft-subcategory-label small {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+  }
+
+  .draft-subcategory-group {
+    gap: 4px;
+    padding-left: 8px;
+  }
+
+  .draft-subcategory-label {
+    min-height: 32px;
+    gap: 7px;
+    padding: 6px 9px;
+  }
+
+  .draft-subcategory-items,
+  .draft-direct-items {
+    gap: 4px;
+    padding-left: 8px;
+  }
+
+  .draft-row {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    min-height: 38px;
+    gap: 7px;
+    padding: 5px 8px;
+  }
+
+  .draft-row.nested {
+    min-height: 36px;
+    padding: 4px 7px;
+  }
+
+  .plugin-draft-row {
+    min-height: 40px;
+  }
+
+  .draft-icon,
+  .draft-row.nested .draft-icon {
+    width: 24px;
+    height: 24px;
+  }
+
+  .draft-row .badge {
+    min-height: 19px;
+    gap: 4px;
+    padding: 2px 6px;
+    font-size: 10.5px;
+  }
+
+  .publish-scroll {
+    padding: 14px;
+  }
+
+  .publish-scroll .conflict-note,
+  .publish-readiness {
+    margin-top: 10px;
+  }
+
+  .admin-console .meta-form {
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+    gap: 10px 12px;
+  }
+
+  .admin-console .text-field {
+    gap: 6px;
+  }
+
+  .admin-console .text-field input,
+  .admin-console .text-field select {
+    height: 34px;
+    padding: 0 10px;
+  }
+
+  .plugin-draft-summary {
+    gap: 8px;
+  }
+
+  .plugin-draft-summary > div,
+  .plugin-draft-description {
+    padding: 10px;
+  }
+
+  .publish-actions {
+    gap: 6px;
+    padding: 10px 14px;
+  }
+
+  .publish-actions .primary-soft,
+  .publish-actions .primary-action {
+    min-height: 34px;
+    padding-inline: 10px;
+  }
+
+  .publish-actions .primary-action {
+    min-width: 108px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .admin-panels.drafts {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(220px, 0.72fr) minmax(360px, 1.28fr);
+    overflow: auto;
   }
 }
 

@@ -480,6 +480,16 @@ pub struct DeleteCachedSkillRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteCachedPluginRequest {
+    pub source_id: Option<String>,
+    pub namespace: String,
+    pub plugin_id: String,
+    pub version: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteLocalSkillRequest {
     pub id: String,
 }
