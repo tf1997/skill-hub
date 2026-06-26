@@ -6,10 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
-use reqwest::{header, Url};
 use rusqlite::{params, OptionalExtension};
-use sha2::{Digest, Sha256};
 use tauri::State;
 use zip::ZipArchive;
 
@@ -44,7 +41,7 @@ use crate::{
         UpgradePluginBindingRequest,
     },
     process_util::external_command,
-    services::{package, validation},
+    services::{object_store, package, validation},
 };
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
@@ -179,7 +176,7 @@ async fn ensure_admin_allowed(
         return Err(anyhow!("管理员密钥错误"));
     }
 
-    let allowlist = fetch_admin_mac_allowlist().await?;
+    let allowlist = object_store::fetch_admin_mac_allowlist().await?;
     authorize_admin_from_allowlist(admin_key, local_macs, &allowlist)
 }
 
@@ -373,7 +370,7 @@ async fn list_admin_drafts_inner(
     local_macs: &[String],
 ) -> Result<Vec<AdminDraftSkill>> {
     ensure_admin_allowed(admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let objects = client.list_objects(DRAFT_GITLAB_PREFIX).await?;
     let mut drafts = Vec::new();
     let mut seen_sources = HashSet::new();
@@ -565,7 +562,7 @@ async fn list_admin_plugin_drafts_inner(
     local_macs: &[String],
 ) -> Result<Vec<AdminDraftPlugin>> {
     ensure_admin_allowed(admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let objects = client.list_objects(PLUGIN_DRAFT_PREFIX).await?;
     let mut drafts = Vec::new();
 
@@ -768,7 +765,7 @@ async fn list_admin_audit_logs_inner(
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     ensure_can_view_admin_audit(&authorization)?;
     let limit = request.limit.unwrap_or(100).clamp(1, 200);
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut objects = client.list_objects("admin/audit/").await?;
     objects.retain(|object| object.ends_with(".json"));
     objects.sort_by(|a, b| b.cmp(a));
@@ -798,7 +795,7 @@ async fn preview_admin_draft_inner(
     local_macs: &[String],
 ) -> Result<SkillPreview> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_prefix = format!("{}{}/", DRAFT_GITLAB_PREFIX, source_path);
@@ -876,7 +873,7 @@ async fn preview_admin_plugin_draft_inner(
     local_macs: &[String],
 ) -> Result<SkillPreview> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
@@ -990,7 +987,7 @@ async fn save_publish_meta_inner(
         return save_plugin_publish_meta_inner(request, &authorization).await;
     }
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let mut meta = normalize_publish_meta_for_source(request.meta, &source_path);
     validation::validate_publish_meta(&meta)?;
@@ -1023,7 +1020,7 @@ async fn save_plugin_publish_meta_inner(
     request: SavePublishMetaRequest,
     authorization: &admin_config::AdminAuthorization,
 ) -> Result<PublishMeta> {
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let draft_objects = client.list_objects(&draft_root).await?;
@@ -1072,7 +1069,7 @@ async fn save_market_project_remote_inner(
     validation::validate_object_segment("project slug", &project_slug)?;
     ensure_can_manage_project(&authorization, &project_slug)?;
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut projects = load_remote_projects(&client).await?;
     let mut project = request.project;
     project.slug = project.slug.trim().to_string();
@@ -1123,7 +1120,7 @@ async fn delete_market_project_remote_inner(
     validation::validate_object_segment("project slug", &slug)?;
     ensure_can_manage_project(&authorization, &slug)?;
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
     let project_category = format!("project:{slug}");
     if catalog
@@ -1172,7 +1169,7 @@ async fn save_market_category_remote_inner(
     let category_id = request.category.id.trim().to_string();
     validation::validate_object_segment("category slug", &category_id)?;
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut categories = load_remote_categories(&client).await?;
     let mut category = request.category;
     category.id = category_id;
@@ -1209,7 +1206,7 @@ async fn delete_market_category_remote_inner(
     ensure_system_admin(&authorization)?;
     let category_id = request.category_id.trim().to_string();
     validation::validate_object_segment("category slug", &category_id)?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
     if catalog.skills.iter().any(|skill| {
         skill
@@ -1246,7 +1243,7 @@ async fn delete_market_category_remote_inner(
 
 async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let skill_md_path = format!("{}{}/SKILL.md", DRAFT_GITLAB_PREFIX, source_path);
     let skill_md = client
@@ -1319,7 +1316,7 @@ async fn publish_draft_inner(request: PublishDraftRequest, local_macs: &[String]
     let files = read_draft_files(&client, &draft_prefix, &draft_objects).await?;
     let source_fingerprint = draft_source_fingerprint(&files);
     let package_bytes = package::build_package_zip(&files)?;
-    let package_hash = sha256_hex(&package_bytes);
+    let package_hash = object_store::sha256_hex(&package_bytes);
     let package_size = package_bytes.len() as i64;
     let skill_json = build_skill_json(&meta, &version, &author, &package_hash, package_size);
     let job_id = new_id();
@@ -1498,7 +1495,7 @@ async fn publish_plugin_draft_inner(
     local_macs: &[String],
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let draft_objects = client.list_objects(&draft_root).await?;
@@ -1765,7 +1762,7 @@ async fn quick_republish_archived_skill_inner(
     local_macs: &[String],
 ) -> Result<()> {
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
 
     // 1. 读取保存的元数据（而不是 SKILL.md）
@@ -1978,7 +1975,7 @@ async fn archive_market_skill_inner(
     validation::validate_object_segment("namespace", &request.namespace)?;
     validation::validate_object_segment("skill id", &request.skill_id)?;
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut catalog = load_remote_catalog(&client).await?;
     let Some(skill) = catalog
         .skills
@@ -2062,7 +2059,7 @@ async fn archive_market_plugin_inner(
     validation::validate_object_segment("namespace", &request.namespace)?;
     validation::validate_object_segment("plugin id", &request.plugin_id)?;
 
-    let client = AdminObjectClient::new();
+    let client = object_store::AdminObjectClient::new();
     let mut catalog = load_remote_plugin_catalog(&client).await?;
     let Some(plugin) = catalog
         .plugins
@@ -3272,7 +3269,7 @@ async fn fetch_manifest_version(
     manifest_path: &str,
     version: &str,
 ) -> Result<SkillVersion> {
-    let manifest_url = object_url(source, manifest_path)?;
+    let manifest_url = object_store::object_url(source, manifest_path)?;
     let manifest: SkillManifest = reqwest::Client::new()
         .get(manifest_url)
         .send()
@@ -3296,7 +3293,7 @@ async fn fetch_plugin_manifest_version(
     manifest_path: &str,
     version: &str,
 ) -> Result<PluginVersion> {
-    let manifest_url = object_url(source, manifest_path)?;
+    let manifest_url = object_store::object_url(source, manifest_path)?;
     let manifest: PluginManifest = reqwest::Client::new()
         .get(manifest_url)
         .send()
@@ -3337,7 +3334,7 @@ async fn prepare_package(
     let version_info =
         version_info.ok_or_else(|| anyhow!("缺少远端版本信息，无法下载 skill 包"))?;
 
-    let package_url = object_url(source, &version_info.package_path)?;
+    let package_url = object_store::object_url(source, &version_info.package_path)?;
     let bytes = reqwest::Client::new()
         .get(package_url)
         .send()
@@ -3357,7 +3354,7 @@ async fn prepare_package(
     {
         package::verify_sha256(&bytes, expected)?;
     } else {
-        let hash_url = object_url(source, &version_info.sha256_path)?;
+        let hash_url = object_store::object_url(source, &version_info.sha256_path)?;
         let expected = reqwest::Client::new()
             .get(hash_url)
             .send()
@@ -3406,7 +3403,7 @@ async fn prepare_plugin_package(
         .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing plugin version info"))?;
     let package_ref = plugin_package_ref_for_target(version_info, target)
         .ok_or_else(|| anyhow!("PLUGIN_TARGET_UNSUPPORTED: missing package for {target}"))?;
-    let package_url = object_url(source, &package_ref.package_path)?;
+    let package_url = object_store::object_url(source, &package_ref.package_path)?;
     let bytes = reqwest::Client::new()
         .get(package_url)
         .send()
@@ -3426,7 +3423,7 @@ async fn prepare_plugin_package(
     {
         package::verify_sha256(&bytes, expected)?;
     } else {
-        let hash_url = object_url(source, &package_ref.sha256_path)?;
+        let hash_url = object_store::object_url(source, &package_ref.sha256_path)?;
         let expected = reqwest::Client::new()
             .get(hash_url)
             .send()
@@ -3487,7 +3484,7 @@ async fn plugin_component_inventory_json(
         }))
         .map_err(Into::into);
     };
-    let url = object_url(source, path)?;
+    let url = object_store::object_url(source, path)?;
     let value: serde_json::Value = reqwest::Client::new()
         .get(url)
         .send()
@@ -4093,10 +4090,10 @@ async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<MarketSkill>> {
 
     let client = reqwest::Client::new();
     for source in sources {
-        let catalog_url = object_url(&source, "catalog.v1.json")?;
-        let plugin_catalog_url = object_url(&source, PLUGIN_CATALOG_OBJECT)?;
-        let categories_url = object_url(&source, "categories.v1.json")?;
-        let projects_url = object_url(&source, "projects.v1.json")?;
+        let catalog_url = object_store::object_url(&source, "catalog.v1.json")?;
+        let plugin_catalog_url = object_store::object_url(&source, PLUGIN_CATALOG_OBJECT)?;
+        let categories_url = object_store::object_url(&source, "categories.v1.json")?;
+        let projects_url = object_store::object_url(&source, "projects.v1.json")?;
 
         let catalog_response = client
             .get(catalog_url)
@@ -5008,7 +5005,10 @@ fn normalize_publish_meta(mut meta: PublishMeta) -> PublishMeta {
     meta
 }
 
-async fn validate_publish_target(client: &AdminObjectClient, meta: &PublishMeta) -> Result<()> {
+async fn validate_publish_target(
+    client: &object_store::AdminObjectClient,
+    meta: &PublishMeta,
+) -> Result<()> {
     if meta.publish_scope == "project" {
         let project_slug = meta.publish_project_slug.as_deref().unwrap_or("");
         let projects = load_remote_projects(client).await?;
@@ -5407,7 +5407,7 @@ fn should_publish_plugin_version(
 }
 
 async fn validate_plugin_publish_target(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     meta: &PluginSourceMeta,
 ) -> Result<()> {
     if meta.publish_scope.as_deref() == Some("project") {
@@ -5439,7 +5439,7 @@ fn ensure_can_manage_plugin_publish_target(
     }
 }
 
-async fn load_remote_catalog(client: &AdminObjectClient) -> Result<CatalogDoc> {
+async fn load_remote_catalog(client: &object_store::AdminObjectClient) -> Result<CatalogDoc> {
     Ok(client
         .get_optional_json::<CatalogDoc>(CATALOG_OBJECT)
         .await?
@@ -5451,7 +5451,9 @@ async fn load_remote_catalog(client: &AdminObjectClient) -> Result<CatalogDoc> {
         }))
 }
 
-async fn load_remote_plugin_catalog(client: &AdminObjectClient) -> Result<PluginCatalogDoc> {
+async fn load_remote_plugin_catalog(
+    client: &object_store::AdminObjectClient,
+) -> Result<PluginCatalogDoc> {
     Ok(client
         .get_optional_json::<PluginCatalogDoc>(PLUGIN_CATALOG_OBJECT)
         .await?
@@ -5462,7 +5464,7 @@ async fn load_remote_plugin_catalog(client: &AdminObjectClient) -> Result<Plugin
         }))
 }
 
-async fn load_remote_categories(client: &AdminObjectClient) -> Result<CategoriesDoc> {
+async fn load_remote_categories(client: &object_store::AdminObjectClient) -> Result<CategoriesDoc> {
     let doc = client
         .get_optional_json::<CategoriesDoc>(CATEGORIES_OBJECT)
         .await?
@@ -5495,7 +5497,9 @@ fn ensure_publish_category(mut doc: CategoriesDoc, meta: &PublishMeta) -> Catego
     normalize_categories_doc(doc)
 }
 
-async fn load_remote_projects(client: &AdminObjectClient) -> Result<Vec<MarketProject>> {
+async fn load_remote_projects(
+    client: &object_store::AdminObjectClient,
+) -> Result<Vec<MarketProject>> {
     Ok(client
         .get_optional_json::<ProjectsDoc>(PROJECTS_OBJECT)
         .await?
@@ -5505,7 +5509,7 @@ async fn load_remote_projects(client: &AdminObjectClient) -> Result<Vec<MarketPr
 }
 
 async fn save_remote_projects(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     projects: &[MarketProject],
 ) -> Result<()> {
     client
@@ -5557,7 +5561,10 @@ fn normalize_market_projects(projects: Vec<MarketProject>) -> Vec<MarketProject>
     items
 }
 
-async fn write_all_market_indexes(client: &AdminObjectClient, catalog: &CatalogDoc) -> Result<()> {
+async fn write_all_market_indexes(
+    client: &object_store::AdminObjectClient,
+    catalog: &CatalogDoc,
+) -> Result<()> {
     let categories = rebuild_catalog_categories(&catalog.skills);
     let search_index = build_search_lite_index(catalog);
     write_market_indexes_for_categories(client, catalog, &categories).await?;
@@ -5569,7 +5576,7 @@ async fn write_all_market_indexes(client: &AdminObjectClient, catalog: &CatalogD
 }
 
 async fn write_plugin_market_indexes_for_categories(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     catalog: &PluginCatalogDoc,
     categories: &[String],
 ) -> Result<()> {
@@ -5602,7 +5609,7 @@ async fn write_plugin_market_indexes_for_categories(
 }
 
 async fn write_market_indexes_for_categories(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     catalog: &CatalogDoc,
     categories: &[String],
 ) -> Result<()> {
@@ -5619,7 +5626,7 @@ async fn write_market_indexes_for_categories(
 }
 
 async fn write_admin_audit(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     authorization: &admin_config::AdminAuthorization,
     action: &str,
     payload: serde_json::Value,
@@ -5639,7 +5646,7 @@ async fn write_admin_audit(
 }
 
 async fn find_draft_source_for_skill(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     namespace: &str,
     skill_id: &str,
 ) -> Result<Option<String>> {
@@ -5673,7 +5680,7 @@ async fn find_draft_source_for_skill(
 }
 
 async fn find_draft_source_for_plugin(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     namespace: &str,
     plugin_id: &str,
 ) -> Result<Option<String>> {
@@ -5808,7 +5815,7 @@ fn is_plugin_draft_root_marker(segment: &str) -> bool {
 }
 
 async fn read_draft_files(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     draft_prefix: &str,
     objects: &[String],
 ) -> Result<Vec<(String, Vec<u8>)>> {
@@ -5879,7 +5886,7 @@ fn plugin_draft_root_has_generated_artifacts(draft_root: &str, objects: &[String
 }
 
 async fn read_plugin_draft_files(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     draft_prefix: &str,
     objects: &[String],
 ) -> Result<Vec<(String, Vec<u8>)>> {
@@ -5899,7 +5906,7 @@ async fn read_plugin_draft_files(
 }
 
 async fn read_plugin_readme_metadata_from_objects(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     draft_prefix: &str,
     objects: &[String],
 ) -> Result<DraftSkillMetadata> {
@@ -5997,7 +6004,7 @@ fn draft_source_fingerprint(files: &[(String, Vec<u8>)]) -> serde_json::Value {
             serde_json::json!({
                 "path": path,
                 "size": bytes.len(),
-                "sha256": sha256_hex(bytes)
+                "sha256": object_store::sha256_hex(bytes)
             })
         })
         .collect::<Vec<_>>();
@@ -6010,7 +6017,7 @@ fn draft_source_fingerprint(files: &[(String, Vec<u8>)]) -> serde_json::Value {
     let canonical = serde_json::to_vec(&items).unwrap_or_default();
     serde_json::json!({
         "algorithm": "sha256",
-        "digest": sha256_hex(&canonical),
+        "digest": object_store::sha256_hex(&canonical),
         "files": items
     })
 }
@@ -6041,7 +6048,7 @@ fn collect_draft_preview_file_list(
 }
 
 async fn collect_draft_preview_files(
-    client: &AdminObjectClient,
+    client: &object_store::AdminObjectClient,
     draft_prefix: &str,
     file_list: &[SkillPreviewFileEntry],
     selected_path: Option<&str>,
@@ -6151,7 +6158,7 @@ fn prepare_plugin_publish(
     let mut packages = BTreeMap::new();
     for target in &meta.targets {
         let bytes = package::build_plugin_package_zip(files, &meta, target)?;
-        let sha256 = sha256_hex(&bytes);
+        let sha256 = object_store::sha256_hex(&bytes);
         packages.insert(
             target.clone(),
             PreparedPluginPackage {
@@ -6605,376 +6612,6 @@ fn build_market_index_for_category(catalog: &CatalogDoc, category: &str) -> serd
         "slug": slug,
         "skills": items
     })
-}
-
-fn extract_xml_values(input: &str, tag: &str) -> Vec<String> {
-    let start = format!("<{tag}>");
-    let end = format!("</{tag}>");
-    let mut rest = input;
-    let mut values = Vec::new();
-    while let Some(start_index) = rest.find(&start) {
-        let after_start = &rest[start_index + start.len()..];
-        let Some(end_index) = after_start.find(&end) else {
-            break;
-        };
-        values.push(xml_unescape(&after_start[..end_index]));
-        rest = &after_start[end_index + end.len()..];
-    }
-    values
-}
-
-fn xml_unescape(value: &str) -> String {
-    value
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
-}
-
-fn object_url(source: &Source, object_path: &str) -> Result<Url> {
-    let base = format!(
-        "{}/{}/{}",
-        source.endpoint.trim_end_matches('/'),
-        source.bucket.trim_matches('/'),
-        object_path.trim_start_matches('/')
-    );
-    Url::parse(&base).context("对象 URL 无效")
-}
-
-struct AdminObjectClient {
-    source: Source,
-    client: reqwest::Client,
-}
-
-impl AdminObjectClient {
-    fn new() -> Self {
-        Self {
-            source: Source {
-                id: "admin-publisher".to_string(),
-                name: "Admin Publisher".to_string(),
-                endpoint: COMPILED_SOURCE_ENDPOINT.to_string(),
-                bucket: COMPILED_SOURCE_BUCKET.to_string(),
-                region: COMPILED_SOURCE_REGION.map(ToString::to_string),
-                enabled: true,
-                last_sync_at: None,
-            },
-            client: reqwest::Client::new(),
-        }
-    }
-
-    async fn get_text(&self, object_path: &str) -> Result<String> {
-        let url = object_url(&self.source, object_path)?;
-        let signed = signed_request_headers("GET", &url, self.source.region.as_deref(), b"")?;
-        let mut request = self.client.get(url);
-        for (name, value) in signed {
-            request = request.header(name, value);
-        }
-        request
-            .send()
-            .await
-            .with_context(|| format!("读取 MinIO 对象失败: {object_path}"))?
-            .error_for_status()
-            .with_context(|| format!("MinIO 对象响应失败: {object_path}"))?
-            .text()
-            .await
-            .with_context(|| format!("读取 MinIO 对象内容失败: {object_path}"))
-    }
-
-    async fn get_optional_text(&self, object_path: &str) -> Result<Option<String>> {
-        let url = object_url(&self.source, object_path)?;
-        let signed = signed_request_headers("GET", &url, self.source.region.as_deref(), b"")?;
-        let mut request = self.client.get(url);
-        for (name, value) in signed {
-            request = request.header(name, value);
-        }
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("读取 MinIO 对象失败: {object_path}"))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        Ok(Some(
-            response
-                .error_for_status()
-                .with_context(|| format!("MinIO 对象响应失败: {object_path}"))?
-                .text()
-                .await
-                .with_context(|| format!("读取 MinIO 对象内容失败: {object_path}"))?,
-        ))
-    }
-
-    async fn get_bytes(&self, object_path: &str) -> Result<Vec<u8>> {
-        let url = object_url(&self.source, object_path)?;
-        let signed = signed_request_headers("GET", &url, self.source.region.as_deref(), b"")?;
-        let mut request = self.client.get(url);
-        for (name, value) in signed {
-            request = request.header(name, value);
-        }
-        Ok(request
-            .send()
-            .await
-            .with_context(|| format!("读取 MinIO 对象失败: {object_path}"))?
-            .error_for_status()
-            .with_context(|| format!("MinIO 对象响应失败: {object_path}"))?
-            .bytes()
-            .await
-            .with_context(|| format!("读取 MinIO 对象内容失败: {object_path}"))?
-            .to_vec())
-    }
-
-    async fn get_optional_json<T>(&self, object_path: &str) -> Result<Option<T>>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        let Some(text) = self.get_optional_text(object_path).await? else {
-            return Ok(None);
-        };
-        serde_json::from_str(&text)
-            .with_context(|| format!("解析 JSON 对象失败: {object_path}"))
-            .map(Some)
-    }
-
-    async fn put_json<T: serde::Serialize>(&self, object_path: &str, value: &T) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(value)?;
-        self.put_bytes(object_path, bytes, "application/json; charset=utf-8")
-            .await
-    }
-
-    async fn put_text(&self, object_path: &str, value: &str, content_type: &str) -> Result<()> {
-        self.put_bytes(object_path, value.as_bytes().to_vec(), content_type)
-            .await
-    }
-
-    async fn put_bytes(&self, object_path: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
-        let url = object_url(&self.source, object_path)?;
-        let signed = signed_request_headers("PUT", &url, self.source.region.as_deref(), &bytes)?;
-        let mut request = self
-            .client
-            .put(url)
-            .header(header::CONTENT_TYPE, content_type)
-            .body(bytes);
-        for (name, value) in signed {
-            request = request.header(name, value);
-        }
-        request
-            .send()
-            .await
-            .with_context(|| format!("写入 MinIO 对象失败: {object_path}"))?
-            .error_for_status()
-            .with_context(|| format!("MinIO 写入响应失败: {object_path}"))?;
-        Ok(())
-    }
-
-    async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut results = Vec::new();
-        let mut continuation: Option<String> = None;
-
-        loop {
-            let mut url = Url::parse(&format!(
-                "{}/{}",
-                self.source.endpoint.trim_end_matches('/'),
-                self.source.bucket.trim_matches('/')
-            ))
-            .context("对象列表 URL 无效")?;
-            {
-                let mut pairs = url.query_pairs_mut();
-                pairs.append_pair("list-type", "2");
-                pairs.append_pair("prefix", prefix);
-                pairs.append_pair("max-keys", "1000");
-                if let Some(token) = continuation.as_deref() {
-                    pairs.append_pair("continuation-token", token);
-                }
-            }
-
-            let signed = signed_request_headers("GET", &url, self.source.region.as_deref(), b"")?;
-            let mut request = self.client.get(url);
-            for (name, value) in signed {
-                request = request.header(name, value);
-            }
-            let text = request
-                .send()
-                .await
-                .with_context(|| format!("列出 MinIO 前缀失败: {prefix}"))?
-                .error_for_status()
-                .with_context(|| format!("MinIO 前缀列表响应失败: {prefix}"))?
-                .text()
-                .await
-                .context("读取 MinIO 前缀列表失败")?;
-
-            results.extend(extract_xml_values(&text, "Key"));
-            continuation = extract_xml_values(&text, "NextContinuationToken")
-                .into_iter()
-                .next();
-            if continuation.is_none() {
-                break;
-            }
-        }
-
-        Ok(results)
-    }
-}
-
-async fn fetch_admin_mac_allowlist() -> Result<admin_config::MacAllowlist> {
-    let client = AdminObjectClient::new();
-    let object_path = admin_config::allowlist_path();
-    let text = client.get_text(object_path).await?;
-
-    admin_config::parse_mac_allowlist(&text).with_context(|| {
-        format!(
-            "解析 MinIO MAC 白名单失败，请检查 {} 的 JSON 格式",
-            object_path
-        )
-    })
-}
-
-fn signed_request_headers(
-    method: &str,
-    url: &Url,
-    region: Option<&str>,
-    payload: &[u8],
-) -> Result<Vec<(&'static str, String)>> {
-    let request_time = Utc::now();
-    let amz_date = request_time.format("%Y%m%dT%H%M%SZ").to_string();
-    let short_date = request_time.format("%Y%m%d").to_string();
-    let region = region
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("us-east-1");
-    let host = url_host(url)?;
-    let payload_hash = sha256_hex(payload);
-
-    let canonical_request = format!(
-        "{}\n{}\n{}\nhost:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n\nhost;x-amz-content-sha256;x-amz-date\n{}",
-        method,
-        canonical_uri(url),
-        canonical_query(url),
-        host,
-        payload_hash,
-        amz_date,
-        payload_hash
-    );
-    let credential_scope = format!("{}/{}/s3/aws4_request", short_date, region);
-    let string_to_sign = format!(
-        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
-        amz_date,
-        credential_scope,
-        sha256_hex(canonical_request.as_bytes())
-    );
-    let signing_key = sigv4_signing_key(admin_config::publisher_secret_key(), &short_date, region);
-    let signature = hex_lower(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
-    let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={}",
-        admin_config::publisher_access_key(),
-        credential_scope,
-        signature
-    );
-
-    Ok(vec![
-        ("host", host),
-        ("x-amz-content-sha256", payload_hash),
-        ("x-amz-date", amz_date),
-        ("authorization", authorization),
-    ])
-}
-
-fn url_host(url: &Url) -> Result<String> {
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("MinIO endpoint 缺少 host"))?;
-    Ok(match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    })
-}
-
-fn canonical_uri(url: &Url) -> String {
-    let path = url.path();
-    if path.is_empty() {
-        "/".to_string()
-    } else {
-        path.to_string()
-    }
-}
-
-fn canonical_query(url: &Url) -> String {
-    let mut pairs = url
-        .query_pairs()
-        .map(|(key, value)| (uri_encode(&key, true), uri_encode(&value, true)))
-        .collect::<Vec<_>>();
-    pairs.sort();
-    pairs
-        .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
-fn uri_encode(value: &str, encode_slash: bool) -> String {
-    let mut out = String::new();
-    for byte in value.as_bytes() {
-        let ch = *byte as char;
-        let keep = ch.is_ascii_alphanumeric()
-            || matches!(ch, '-' | '_' | '.' | '~')
-            || (!encode_slash && ch == '/');
-        if keep {
-            out.push(ch);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
-fn sigv4_signing_key(secret: &str, short_date: &str, region: &str) -> Vec<u8> {
-    let date_key = hmac_sha256(format!("AWS4{secret}").as_bytes(), short_date.as_bytes());
-    let date_region_key = hmac_sha256(&date_key, region.as_bytes());
-    let date_region_service_key = hmac_sha256(&date_region_key, b"s3");
-    hmac_sha256(&date_region_service_key, b"aws4_request")
-}
-
-fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
-    const BLOCK_SIZE: usize = 64;
-
-    let mut normalized_key = if key.len() > BLOCK_SIZE {
-        Sha256::digest(key).to_vec()
-    } else {
-        key.to_vec()
-    };
-    normalized_key.resize(BLOCK_SIZE, 0);
-
-    let mut outer_key_pad = [0x5c_u8; BLOCK_SIZE];
-    let mut inner_key_pad = [0x36_u8; BLOCK_SIZE];
-    for index in 0..BLOCK_SIZE {
-        outer_key_pad[index] ^= normalized_key[index];
-        inner_key_pad[index] ^= normalized_key[index];
-    }
-
-    let mut inner = Sha256::new();
-    inner.update(inner_key_pad);
-    inner.update(message);
-    let inner_hash = inner.finalize();
-
-    let mut outer = Sha256::new();
-    outer.update(outer_key_pad);
-    outer.update(inner_hash);
-    outer.finalize().to_vec()
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex_lower(&hasher.finalize())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 fn ensure_scope_can_enable(
@@ -8578,7 +8215,7 @@ fn home_dir_path() -> Option<PathBuf> {
 }
 
 fn path_hash(value: &str) -> String {
-    sha256_hex(value.as_bytes())[..16].to_string()
+    object_store::sha256_hex(value.as_bytes())[..16].to_string()
 }
 
 fn scan_skill_root(
@@ -10186,27 +9823,6 @@ author: "Skill Hub"
     }
 
     #[test]
-    fn extracts_s3_list_keys() {
-        let xml = r#"<ListBucketResult>
-          <Contents><Key>draft/gitlab/skills/a/SKILL.md</Key></Contents>
-          <Contents><Key>draft/gitlab/skills/a/README.md</Key></Contents>
-          <NextContinuationToken>abc&amp;123</NextContinuationToken>
-        </ListBucketResult>"#;
-
-        assert_eq!(
-            extract_xml_values(xml, "Key"),
-            vec![
-                "draft/gitlab/skills/a/SKILL.md".to_string(),
-                "draft/gitlab/skills/a/README.md".to_string()
-            ]
-        );
-        assert_eq!(
-            extract_xml_values(xml, "NextContinuationToken"),
-            vec!["abc&123".to_string()]
-        );
-    }
-
-    #[test]
     fn parses_plugin_draft_multi_level_category_path() {
         let nested = parse_gitlab_source_path("backend/java/commit-workflow");
         assert_eq!(
@@ -11755,7 +11371,7 @@ metadata:
                 updated_at: None,
                 updated_by: None,
             };
-            let client = AdminObjectClient::new();
+            let client = object_store::AdminObjectClient::new();
             let mut projects = load_remote_projects(&client).await.expect("load projects");
             projects.retain(|item| item.slug != project.slug);
             projects.push(project);
@@ -11868,7 +11484,7 @@ metadata:
             .await
             .expect("admin mode should unlock against live MinIO");
 
-            let client = AdminObjectClient::new();
+            let client = object_store::AdminObjectClient::new();
             let project = MarketProject {
                 slug: "live-project".to_string(),
                 name: "Live Project".to_string(),
