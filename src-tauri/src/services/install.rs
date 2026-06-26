@@ -7,7 +7,6 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension};
 
 use crate::{
-    commands,
     db::{
         canonical_display_path, insert_audit, list_bindings_inner, list_cached_packages_inner,
         list_local_skills_inner, list_market_skills_inner, list_plugin_bindings_inner,
@@ -23,7 +22,7 @@ use crate::{
         UpgradePluginBindingRequest,
     },
     process_util::external_command,
-    services::{local, object_store, package, preview, validation},
+    services::{local, market, object_store, package, preview, validation},
 };
 pub(crate) async fn install_skill_inner(
     request: InstallSkillRequest,
@@ -31,7 +30,7 @@ pub(crate) async fn install_skill_inner(
 ) -> Result<SkillBinding> {
     validation::validate_target(&request.target)?;
     validation::validate_level(&request.level)?;
-    let _metadata_sync_error = commands::refresh_catalog_best_effort(state).await;
+    let _metadata_sync_error = market::refresh_catalog_best_effort(state).await;
 
     if request.level == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
         return Err(anyhow!("项目级启用必须选择项目目录"));
@@ -205,7 +204,7 @@ pub(crate) async fn install_plugin_inner(
     validation::validate_plugin_target(&request.target)?;
     validation::validate_plugin_scope(&request.scope)?;
     validation::validate_plugin_target_scope(&request.target, &request.scope)?;
-    let _metadata_sync_error = commands::refresh_catalog_best_effort(state).await;
+    let _metadata_sync_error = market::refresh_catalog_best_effort(state).await;
 
     if request.scope == "project" && request.project_path.as_deref().unwrap_or("").is_empty() {
         return Err(anyhow!(

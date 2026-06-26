@@ -8,7 +8,6 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, OptionalExtension};
 
 use crate::{
-    commands,
     db::{
         canonical_display_path, list_market_plugins_inner, list_market_skills_inner,
         list_sources_inner, AppState,
@@ -17,7 +16,7 @@ use crate::{
         MarketPlugin, MarketSkill, PluginPreviewRequest, SkillPreview, SkillPreviewFile,
         SkillPreviewFileEntry, SkillPreviewRequest,
     },
-    services::{install, local, validation},
+    services::{install, local, market, validation},
 };
 
 pub(crate) const PREVIEW_MAX_FILES: usize = 8;
@@ -77,7 +76,7 @@ pub(crate) async fn preview_skill_inner(
     let should_refresh_market_metadata =
         request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
     if should_refresh_market_metadata {
-        let _metadata_sync_error = commands::refresh_catalog_best_effort(state).await;
+        let _metadata_sync_error = market::refresh_catalog_best_effort(state).await;
     }
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
 
@@ -192,7 +191,7 @@ pub(crate) async fn preview_plugin_inner(
     let should_refresh_market_metadata =
         request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
     if should_refresh_market_metadata {
-        let _metadata_sync_error = commands::refresh_catalog_best_effort(state).await;
+        let _metadata_sync_error = market::refresh_catalog_best_effort(state).await;
     }
     let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
 
