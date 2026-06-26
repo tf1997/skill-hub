@@ -34,6 +34,75 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openExternal } from "@tauri-apps/api/shell";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import {
+  defaultMetaFromDraft,
+  defaultMetaFromPluginDraft,
+  draftCategoryLabel,
+  draftPrimaryCategory,
+  draftSearchText,
+  draftSecondaryCategory,
+  draftSkillLabel,
+  draftStatusClass,
+  draftStatusFilterLabels,
+  draftStatusFilterOrder,
+  emptyPublishMeta,
+  isPublishedDraft,
+  normalizeMetaForSave,
+  pluginDraftCategoryPath,
+  pluginDraftLabel,
+  pluginDraftPrimaryCategory,
+  pluginDraftSearchText,
+  pluginDraftSecondaryCategory,
+  pluginDraftStatusClass,
+  pluginDraftStatusLabel,
+  publishMetaMissingMessage,
+  sortDrafts,
+  sortPluginDrafts,
+  splitCsv
+} from "./lib/adminDrafts";
+import type { AdminArtifactKind, DraftStatusFilter, DraftStatusKey } from "./lib/adminDrafts";
+import {
+  categoryNameFromSlug,
+  emptyMarketCategory,
+  emptyMarketProject,
+  nextCategoryOrder,
+  nextProjectOrder,
+  normalizeCategoryList,
+  normalizeProjectList
+} from "./lib/categories";
+import { readError } from "./lib/errors";
+import {
+  getInstallPreview,
+  getInstallState,
+  getPluginInstallState,
+  isInstalledSkill,
+  marketStatusLabel,
+  pluginInstallPreview,
+  pluginScopeConflict,
+  scopeConflict
+} from "./lib/installState";
+import type { LevelChoice } from "./lib/installState";
+import {
+  availableLocalInstallTargets,
+  bindingSourceLabel,
+  bindingSourceTone,
+  cachedPackageInstallSummary,
+  cachedPackageInstallTargets,
+  cachedPackageKey,
+  canDeleteLocalSkillFromMatrix,
+  displaySkillTags,
+  hasAvailableLocalInstallTarget,
+  hasBindingForLocalSkill,
+  isLocalBinding,
+  isLocalInstallTarget,
+  localCachedInstallations,
+  localPluginDisplayName,
+  localSkillStatusLabel,
+  markLocalSkillsCached,
+  upsertCachedPackage
+} from "./lib/localSkills";
+import type { CachedSkillItem, LocalInstallDialogState, LocalInstallOptions, LocalInstallLevel, LocalInstallTarget } from "./lib/localSkills";
+import { pluginBindingStatusLabel, pluginLocalStatusLabel, pluginRiskLabel, pluginScopeLabel } from "./lib/plugins";
 import type {
   AdminDraftPreviewRequest,
   AdminAuditLog,
@@ -63,13 +132,9 @@ import type {
   SkillPreviewRequest
 } from "./types";
 
-type ViewKey = "market" | "installed" | "projects" | "updates" | "settings" | "admin";
-type LevelChoice = "personal" | "project" | "download";
-type MarketMode = "public" | "project";
+type ViewKey = "market" | "installed" | "projects" | "updates" | "settings" | "admin";type MarketMode = "public" | "project";
 type MarketArtifactKind = "skill" | "plugin";
-type AdminTab = "projects" | "drafts" | "archive" | "audit";
-type AdminArtifactKind = "skill" | "plugin";
-type GovernanceTab = "project" | "general";
+type AdminTab = "projects" | "drafts" | "archive" | "audit";type GovernanceTab = "project" | "general";
 type GovernanceDialog =
   | { kind: "project-create" }
   | { kind: "project-edit"; project: MarketProject }
@@ -103,27 +168,9 @@ type ContextMenuState = {
   open: boolean;
   x: number;
   y: number;
-};
-type CachedSkillItem = {
-  key: string;
-  package: CachedSkillPackage;
-  marketSkill?: MarketSkill;
-};
-type InstalledArtifactKind = "skill" | "plugin";
+};type InstalledArtifactKind = "skill" | "plugin";
 type UpdateArtifactKind = "skill" | "plugin";
-type UpdateStatusFilter = "ready" | "blocked";
-type LocalInstallLevel = "personal" | "project";
-type LocalInstallTarget = "codex" | "claude";
-type LocalInstallOptions = {
-  target: LocalInstallTarget;
-  level: LocalInstallLevel;
-  projectPath: string | null;
-};
-type LocalInstallDialogState =
-  | { kind: "local"; skill: LocalSkill }
-  | { kind: "cache"; item: CachedSkillItem };
-const localInstallTargets = ["codex", "claude"] as const;
-type InstalledTab = "bindings" | "cache" | "local";
+type UpdateStatusFilter = "ready" | "blocked";type InstalledTab = "bindings" | "cache" | "local";
 
 const emptyBootstrap: AppBootstrap = {
   sources: [],
@@ -184,115 +231,7 @@ const isProjectMarketSkill = (skill: MarketSkill) =>
 
 const isProjectMarketPlugin = (plugin: MarketPlugin) =>
   plugin.categories.some((category) => category.startsWith("project:"));
-
-const isPublishedDraft = (draft?: AdminDraftSkill | null) => draft?.status.trim() === "已发布";
-
-function publishMetaMissingFields(meta: PublishMeta, kind: AdminArtifactKind = "skill") {
-  const missing: string[] = [];
-  if (!meta.name.trim()) {
-    missing.push("名称");
-  }
-  if (!meta.summary.trim()) {
-    missing.push("摘要");
-  }
-  if (kind === "plugin") {
-    if (!meta.version?.trim()) {
-      missing.push("版本");
-    }
-    if (meta.targets.length === 0) {
-      missing.push("目标平台");
-    }
-    if (meta.levels.length === 0) {
-      missing.push("作用域");
-    }
-  }
-  if (meta.publishScope === "project") {
-    if (!meta.publishProjectSlug) {
-      missing.push("项目");
-    }
-  } else if (!meta.publishCategorySlug) {
-    missing.push("公共分类");
-  }
-  return missing;
-}
-
-function publishMetaMissingMessage(meta: PublishMeta, kind: AdminArtifactKind = "skill") {
-  const missing = publishMetaMissingFields(meta, kind);
-  if (missing.length === 0) {
-    return "";
-  }
-  return `请补齐${missing.join("、")}`;
-}
-
-function normalizeCategoryList(categories: Category[]) {
-  const byId = new Map<string, Category>();
-  for (const category of categories) {
-    const id = category.id.trim();
-    if (!id || id.startsWith("project:")) continue;
-    const name = category.name.trim() || id;
-    byId.set(id, {
-      id,
-      name,
-      order: Number.isFinite(category.order) ? category.order : 0
-    });
-  }
-
-  const normalized = [...byId.values()].sort((a, b) => {
-    if (a.order !== b.order) return a.order - b.order;
-    return a.id.localeCompare(b.id, "en");
-  });
-
-  let nextOrder = 10;
-  return normalized.map((category) => {
-    const order = category.order >= nextOrder ? category.order : nextOrder;
-    nextOrder = order + 10;
-    return { ...category, order };
-  });
-}
-
-function nextCategoryOrder(categories: Category[]) {
-  return categories.reduce((max, category) => Math.max(max, category.order), 0) + 10;
-}
-
-function projectOrder(project: MarketProject) {
-  return Number.isFinite(project.order) ? project.order : 0;
-}
-
-function compareMarketProjects(first: MarketProject, second: MarketProject) {
-  const firstOrder = projectOrder(first);
-  const secondOrder = projectOrder(second);
-  if (firstOrder !== secondOrder) return firstOrder - secondOrder;
-  return first.slug.localeCompare(second.slug, "en");
-}
-
-function normalizeProjectList(projects: MarketProject[]) {
-  const bySlug = new Map<string, MarketProject>();
-  for (const project of projects) {
-    const slug = project.slug.trim();
-    if (!slug) continue;
-    bySlug.set(slug, {
-      ...project,
-      slug,
-      name: project.name.trim() || slug,
-      description: project.description.trim(),
-      order: projectOrder(project)
-    });
-  }
-
-  const normalized = [...bySlug.values()].sort(compareMarketProjects);
-  let nextOrder = 10;
-  return normalized.map((project) => {
-    const order = project.order >= nextOrder ? project.order : nextOrder;
-    nextOrder = order + 10;
-    return { ...project, order };
-  });
-}
-
-function nextProjectOrder(projects: MarketProject[]) {
-  return projects.reduce((max, project) => Math.max(max, projectOrder(project)), 0) + 10;
-}
-
-function App() {
+function App() {
   const [view, setView] = useState<ViewKey>("market");
   const [data, setData] = useState<AppBootstrap>(emptyBootstrap);
   const [marketArtifactKind, setMarketArtifactKind] = useState<MarketArtifactKind>("skill");
@@ -3669,129 +3608,7 @@ function EmptyState(props: { title: string; body: string }) {
     </div>
   );
 }
-
-function draftCategoryPath(draft: AdminDraftSkill) {
-  const path = draft.gitlabCategoryPath?.map((item) => item.trim()).filter(Boolean) ?? [];
-  if (path.length > 0) {
-    return path;
-  }
-  return (draft.gitlabCategoryCode ?? "")
-    .split("/")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function draftPrimaryCategory(draft: AdminDraftSkill) {
-  return draftCategoryPath(draft)[0] ?? "未分类";
-}
-
-function draftSecondaryCategory(draft: AdminDraftSkill) {
-  const path = draftCategoryPath(draft);
-  return path.length > 1 ? path.slice(1).join("/") : null;
-}
-
-function draftCategoryLabel(category: string) {
-  return category.includes("/") ? category.split("/").join(" / ") : category;
-}
-
-function draftSkillLabel(draft: AdminDraftSkill) {
-  return draft.draftSlug ?? draft.gitlabSourcePath.split("/").pop() ?? draft.gitlabSourcePath;
-}
-
-function draftSearchText(draft: AdminDraftSkill) {
-  return [
-    draftSkillLabel(draft),
-    draft.gitlabSourcePath,
-    draftCategoryPath(draft).join("/"),
-    draftCategoryPath(draft).map(draftCategoryLabel).join(" "),
-    draft.status,
-    draft.validationStatus ?? "",
-    draft.version ?? "",
-    draft.author ?? "",
-    draft.publishMeta?.name ?? "",
-    draft.publishMeta?.summary ?? "",
-    draft.publishMeta?.tags.join(" ") ?? ""
-  ]
-    .join(" ")
-    .toLocaleLowerCase();
-}
-
-type DraftStatusFilter =
-  | "all"
-  | "draft"
-  | "published"
-  | "upgradable"
-  | "incomplete"
-  | "failed"
-  | "risk"
-  | "missing-source"
-  | "archived";
-
-type DraftStatusKey = Exclude<DraftStatusFilter, "all">;
-
-const draftStatusFilterLabels: Record<DraftStatusFilter, string> = {
-  all: "全部",
-  draft: "待发布",
-  published: "已发布",
-  upgradable: "可升级",
-  incomplete: "待补充",
-  failed: "校验失败",
-  risk: "版本风险",
-  "missing-source": "源缺失",
-  archived: "已下架"
-};
-
-const draftStatusFilterOrder: DraftStatusKey[] = [
-  "draft",
-  "upgradable",
-  "published",
-  "incomplete",
-  "failed",
-  "risk",
-  "missing-source",
-  "archived"
-];
-
-function draftStatusClass(draft: AdminDraftSkill): DraftStatusKey {
-  const status = draft.status.trim();
-  const validation = (draft.validationStatus ?? "").trim().toLocaleLowerCase();
-  const failedValidation = ["failed", "failure", "error", "invalid"].some((keyword) => validation.includes(keyword));
-  const incompleteValidation = ["incomplete", "missing", "metadata"].some((keyword) => validation.includes(keyword));
-
-  if (status === "已下架") {
-    return "archived";
-  }
-  if (status.includes("校验失败") || failedValidation) {
-    return "failed";
-  }
-  if (status.includes("元数据待补充") || status.includes("待补充") || incompleteValidation) {
-    return "incomplete";
-  }
-  if (status.includes("版本回退风险") || status.includes("风险")) {
-    return "risk";
-  }
-  if (!draft.sourceAvailable) {
-    return "missing-source";
-  }
-  if (status === "已发布") {
-    return "published";
-  }
-  if (status === "可升级") {
-    return "upgradable";
-  }
-  return "draft";
-}
-
-function sortDrafts(drafts: AdminDraftSkill[]) {
-  return [...drafts].sort((first, second) =>
-    draftSkillLabel(first).localeCompare(draftSkillLabel(second), undefined, {
-      numeric: true,
-      sensitivity: "base"
-    })
-  );
-}
-
-function DraftList(props: {
+function DraftList(props: {
   drafts: AdminDraftSkill[];
   selectedDraftPath: string | null;
   onSelectDraft: (draft: AdminDraftSkill) => void;
@@ -4046,68 +3863,7 @@ function DraftList(props: {
     </>
   );
 }
-
-function pluginDraftLabel(draft: AdminDraftPlugin) {
-  return draft.name ?? draft.pluginId ?? draft.draftSlug ?? draft.gitlabSourcePath;
-}
-
-function pluginDraftCategoryPath(draft: AdminDraftPlugin) {
-  return draft.gitlabCategoryPath?.map((item) => item.trim()).filter(Boolean) ?? [];
-}
-
-function pluginDraftPrimaryCategory(draft: AdminDraftPlugin) {
-  return pluginDraftCategoryPath(draft)[0] ?? "未分类";
-}
-
-function pluginDraftSecondaryCategory(draft: AdminDraftPlugin) {
-  const path = pluginDraftCategoryPath(draft);
-  return path.length > 1 ? path.slice(1).join("/") : null;
-}
-
-function pluginDraftSearchText(draft: AdminDraftPlugin) {
-  return [
-    pluginDraftLabel(draft),
-    draft.gitlabSourcePath,
-    pluginDraftCategoryPath(draft).join("/"),
-    pluginDraftCategoryPath(draft).map(draftCategoryLabel).join(" "),
-    draft.status,
-    pluginDraftStatusLabel(draft.status),
-    draft.validationStatus ?? "",
-    draft.namespace ?? "",
-    draft.pluginId ?? "",
-    draft.version ?? "",
-    draft.summary ?? "",
-    draft.targets.join(" "),
-    draft.scopes.join(" "),
-    draft.components.join(" "),
-    draft.riskLevel ?? "",
-    draft.publishMeta?.name ?? "",
-    draft.publishMeta?.summary ?? "",
-    draft.publishMeta?.tags.join(" ") ?? ""
-  ]
-    .join(" ")
-    .toLocaleLowerCase();
-}
-
-function sortPluginDrafts(drafts: AdminDraftPlugin[]) {
-  return [...drafts].sort((first, second) =>
-    pluginDraftLabel(first).localeCompare(pluginDraftLabel(second), undefined, {
-      numeric: true,
-      sensitivity: "base"
-    })
-  );
-}
-
-function pluginDraftStatusClass(status: string): DraftStatusKey {
-  if (status === "published") return "published";
-  if (status === "archived") return "archived";
-  if (status === "ready_to_publish") return "draft";
-  if (status.endsWith("_missing") || status === "source_missing") return "missing-source";
-  if (status === "metadata_incomplete") return "incomplete";
-  return "risk";
-}
-
-function PluginDraftList(props: {
+function PluginDraftList(props: {
   drafts: AdminDraftPlugin[];
   selectedDraftPath: string | null;
   onSelectDraft: (draft: AdminDraftPlugin) => void;
@@ -5312,19 +5068,7 @@ function adminAuditActionLabel(action: string) {
   };
   return labels[action] ?? action;
 }
-
-function pluginDraftStatusLabel(status: string) {
-  const labels: Record<string, string> = {
-    source_missing: "源文件缺失",
-    metadata_incomplete: "元数据待补充",
-    ready_to_publish: "待发布",
-    published: "已发布",
-    archived: "已下架"
-  };
-  return labels[status] ?? status;
-}
-
-function formatAuditTime(value: string) {
+function formatAuditTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value || "-";
@@ -6315,585 +6059,14 @@ function BindingDots(props: { bindings: SkillBinding[] }) {
     </span>
   );
 }
-
-function isInstalledSkill(skill: MarketSkill, bindings: SkillBinding[]) {
-  return bindings.some(
-    (binding) =>
-      binding.namespace === skill.namespace &&
-      binding.skillId === skill.id &&
-      binding.status === "installed"
-  );
-}
-
-function marketStatusLabel(skill: MarketSkill, bindings: SkillBinding[]) {
-  const related = bindings.filter(
-    (binding) => binding.namespace === skill.namespace && binding.skillId === skill.id
-  );
-  if (related.some((binding) => binding.enabled)) return "已启用";
-  if (related.length > 0) return "已安装";
-  if (skill.cachedVersions.includes(skill.latestVersion)) return "已缓存";
-  return "未安装";
-}
-
-function displaySkillTags(skill: MarketSkill) {
-  const values = [...skill.categories.filter((category) => !category.startsWith("project:")), ...skill.tags];
-  const seen = new Set<string>();
-  return values.filter((value) => {
-    const normalized = value.trim();
-    if (!normalized) return false;
-    const key = normalized.toLocaleLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function localSkillStatusLabel(skill: LocalSkill) {
-  if (skill.status === "missing") return "缺失";
-  if (!skill.enabled) return "已禁用";
-  if (skill.managedBySkillhub) return "Skill Hub";
-  if (skill.status === "cached") return "已加入缓存";
-  if (skill.origin === "market") return "来自市场";
-  if (skill.origin === "unknown") return "可能来自市场";
-  if (skill.origin === "local") return "用户自建";
-  if (skill.status === "unmanaged") return "用户自建";
-  return skill.status;
-}
-
-function isLocalBinding(binding: SkillBinding) {
-  return binding.sourceId === "__local__" || binding.namespace === "local";
-}
-
-function bindingSourceTone(binding: SkillBinding): "market" | "local" {
-  return isLocalBinding(binding) ? "local" : "market";
-}
-
-function bindingSourceLabel(binding: SkillBinding) {
-  return isLocalBinding(binding) ? "自建" : "市场";
-}
-
-function pluginScopeLabel(scope: string, projectPath?: string | null) {
-  if (scope === "project") {
-    return projectPath ? `项目：${projectPath}` : "项目";
-  }
-  if (scope === "user" || scope === "personal") {
-    return "个人";
-  }
-  if (scope === "local") {
-    return "本地";
-  }
-  return scope;
-}
-
-function pluginBindingStatusLabel(status: string, enabled: boolean) {
-  if (status === "missing") return "缺失";
-  if (status === "installed") return enabled ? "已写入" : "已禁用";
-  if (status === "cached") return "已缓存";
-  return enabled ? status : `${status} / 禁用`;
-}
-
-function pluginRiskLabel(riskLevel: string) {
-  if (riskLevel === "low") return "低风险";
-  if (riskLevel === "medium") return "中风险";
-  if (riskLevel === "high") return "高风险";
-  if (riskLevel === "critical") return "严重风险";
-  return riskLevel || "未评估";
-}
-
-function pluginLocalStatusLabel(plugin: AppBootstrap["localPlugins"][number]) {
-  if (plugin.status === "missing") return "缺失";
-  if (plugin.managedBySkillhub && plugin.enabled) return "Skill Hub 管理";
-  if (plugin.status === "unmanaged") return "外部安装";
-  if (plugin.enabled) return "启用";
-  return "禁用";
-}
-
-function canDeleteLocalSkillFromMatrix(skill: LocalSkill) {
-  return !skill.managedBySkillhub && skill.origin === "local" && (skill.status === "cached" || skill.status === "disabled");
-}
-
-function localPluginDisplayName(plugin: AppBootstrap["localPlugins"][number]) {
-  return normalizedLabel(plugin.pluginId) ?? normalizedLabel(plugin.marketplaceName) ?? "本地 plugin";
-}
-
-function normalizedLabel(value?: string | null) {
-  const next = value?.trim();
-  return next ? next : null;
-}
-
-function getInstallState(
-  skill: MarketSkill,
-  bindings: SkillBinding[],
-  target: string,
-  level: LevelChoice,
-  projectPath: string
-) {
-  if (level === "download") {
-    const cached = skill.cachedVersions.includes(skill.latestVersion);
-    return {
-      label: cached ? "已下载到本地仓库" : "下载到本地仓库",
-      disabled: cached,
-      tone: cached ? ("cached" as const) : ("install" as const)
-    };
-  }
-
-  const existing = bindings.find((binding) => {
-    const sameScope =
-      binding.target === target &&
-      binding.level === level &&
-      (level !== "project" || binding.projectPath === projectPath);
-    return sameScope && binding.status === "installed";
-  });
-
-  if (existing) {
-    return {
-      label: existing.enabled ? "已安装并启用" : "已安装，当前禁用",
-      disabled: true,
-      tone: "installed" as const
-    };
-  }
-
-  const cached = skill.cachedVersions.includes(skill.latestVersion);
-  return {
-    label: cached ? "从本地缓存安装" : "安装并启用",
-    disabled: false,
-    tone: cached ? ("cached" as const) : ("install" as const)
-  };
-}
-
-function getPluginInstallState(
-  plugin: MarketPlugin | undefined,
-  bindings: AppBootstrap["pluginBindings"],
-  target: string,
-  level: LevelChoice,
-  projectPath: string,
-  conflict: string | null
-) {
-  if (!plugin) {
-    return { label: "安装并启用", disabled: true, tone: "install" as const };
-  }
-  if (!plugin.targets.includes(target)) {
-    return { label: "当前平台不支持", disabled: true, tone: "install" as const };
-  }
-  if (target === "codex" && level === "project") {
-    return { label: "Codex 仅支持个人级 plugin", disabled: true, tone: "install" as const };
-  }
-  if (conflict) {
-    return { label: "存在范围冲突", disabled: true, tone: "install" as const };
-  }
-  const scope = level === "project" ? "project" : "user";
-  if (!plugin.scopes.includes(scope)) {
-    return { label: "当前范围不支持", disabled: true, tone: "install" as const };
-  }
-  if (level === "download") {
-    const cached = plugin.cachedVersions.includes(plugin.latestVersion);
-    return {
-      label: cached ? "已下载到本地仓库" : "下载到本地仓库",
-      disabled: cached,
-      tone: cached ? ("cached" as const) : ("install" as const)
-    };
-  }
-  const existing = bindings.find((binding) => {
-    const sameScope =
-      binding.target === target &&
-      binding.scope === scope &&
-      (scope !== "project" || binding.projectPath === projectPath);
-    return sameScope && binding.namespace === plugin.namespace && binding.pluginId === plugin.id && binding.status === "installed";
-  });
-  if (existing) {
-    const installedLabel =
-      target === "codex"
-        ? existing.enabled
-          ? "已安装到 Codex"
-          : "已安装，当前禁用"
-        : target === "claude"
-          ? existing.enabled
-            ? "已安装到 Claude Code"
-            : "已安装，当前禁用"
-        : existing.enabled
-          ? "已写入 marketplace"
-          : "已写入，当前禁用";
-    return {
-      label: installedLabel,
-      disabled: true,
-      tone: "installed" as const
-    };
-  }
-  const cached = plugin.cachedVersions.includes(plugin.latestVersion);
-  const installLabel =
-    target === "codex"
-      ? cached
-        ? "从缓存安装到 Codex"
-        : "安装到 Codex"
-      : target === "claude"
-        ? cached
-          ? "从缓存安装到 Claude Code"
-          : "安装到 Claude Code"
-        : cached
-          ? "从本地缓存写入"
-          : "写入 marketplace";
-  return {
-    label: installLabel,
-    disabled: false,
-    tone: cached ? ("cached" as const) : ("install" as const)
-  };
-}
-
-function skillKey(skill: MarketSkill) {
+function skillKey(skill: MarketSkill) {
   return `${skill.sourceId ?? "local"}:${skill.namespace}/${skill.id}`;
 }
 
 function pluginKey(plugin: MarketPlugin) {
   return `${plugin.sourceId ?? "local"}:${plugin.namespace}/${plugin.id}`;
 }
-
-function pluginInstallPreview(target: string, level: LevelChoice, projectPath: string) {
-  if (level === "download") {
-    return "下载到 Skill Hub plugin-packages，本次不写 marketplace。";
-  }
-  if (level === "project") {
-    if (target === "codex") {
-      return "Codex plugin 不支持项目级生效";
-    }
-    if (!projectPath) {
-      return "请选择项目。";
-    }
-    if (target === "claude") {
-      return `${projectPath}/.claude/skillhub-plugin-marketplace/.claude-plugin/marketplace.json`;
-    }
-  }
-  if (target === "codex") {
-    return "~/.agents/plugins/marketplace.json";
-  }
-  return `Skill Hub 本地 ${target} marketplace`;
-}
-
-function cachedPackageKey(cachedPackage: CachedSkillPackage) {
-  return `${cachedPackage.sourceId ?? ""}:${cachedPackage.namespace}/${cachedPackage.skillId}@${cachedPackage.version}`;
-}
-
-function upsertCachedPackage(packages: CachedSkillPackage[], cachedPackage: CachedSkillPackage) {
-  const key = cachedPackageKey(cachedPackage);
-  const next = packages.filter((item) => cachedPackageKey(item) !== key);
-  return [cachedPackage, ...next];
-}
-
-function hasAvailableLocalInstallTarget(
-  dialog: LocalInstallDialogState,
-  bindings: SkillBinding[],
-  localSkills: LocalSkill[]
-) {
-  return availableLocalInstallTargets(dialog, bindings, localSkills).length > 0;
-}
-
-function availableLocalInstallTargets(
-  dialog: LocalInstallDialogState,
-  bindings: SkillBinding[],
-  localSkills: LocalSkill[]
-): LocalInstallTarget[] {
-  const identity = localInstallIdentity(dialog);
-  return localInstallTargets.filter((target) => {
-    const bindingInstalled = bindings.some(
-      (binding) =>
-        binding.target === target &&
-        binding.namespace === identity.namespace &&
-        slugifyLocalSkillId(binding.skillId) === identity.skillId &&
-        binding.status !== "missing"
-    );
-    if (bindingInstalled) return false;
-    return !localSkills.some(
-      (skill) =>
-        skill.target === target &&
-        skill.status !== "missing" &&
-        !skill.managedBySkillhub &&
-        localSkillInstallKey(skill) === identity.skillId
-    );
-  });
-}
-
-function isLocalInstallTarget(value: string): value is LocalInstallTarget {
-  return value === "codex" || value === "claude";
-}
-
-function localInstallIdentity(dialog: LocalInstallDialogState) {
-  if (dialog.kind === "cache") {
-    return {
-      namespace: dialog.item.package.namespace,
-      skillId: slugifyLocalSkillId(dialog.item.package.skillId)
-    };
-  }
-  return {
-    namespace: "local",
-    skillId: localSkillInstallKey(dialog.skill)
-  };
-}
-
-function localSkillInstallKey(skill: LocalSkill) {
-  return slugifyLocalSkillId(skill.skillId || localPathName(skill.path) || skill.detectedManifest || "local-skill");
-}
-
-function cachedPackageInstallTargets(
-  cachedPackage: CachedSkillPackage,
-  bindings: SkillBinding[],
-  localSkills: LocalSkill[]
-) {
-  if (cachedPackage.origin !== "local") return [];
-  const identity = {
-    namespace: cachedPackage.namespace,
-    skillId: slugifyLocalSkillId(cachedPackage.skillId)
-  };
-  const targets = new Set<LocalInstallTarget>();
-
-  for (const binding of bindings) {
-    if (!isLocalInstallTarget(binding.target)) continue;
-    if (
-      binding.namespace === identity.namespace &&
-      slugifyLocalSkillId(binding.skillId) === identity.skillId &&
-      binding.status !== "missing"
-    ) {
-      targets.add(binding.target);
-    }
-  }
-
-  for (const skill of localCachedInstallations(cachedPackage, localSkills)) {
-    if (isLocalInstallTarget(skill.target)) {
-      targets.add(skill.target);
-    }
-  }
-
-  return [...targets];
-}
-
-function localCachedInstallations(cachedPackage: CachedSkillPackage, localSkills: LocalSkill[]) {
-  const fingerprint = cachedLocalSkillFingerprint(cachedPackage);
-  if (!fingerprint) return [];
-  return localSkills.filter(
-    (skill) =>
-      skill.status !== "missing" &&
-      !skill.managedBySkillhub &&
-      skill.origin === "local" &&
-      localSkillFingerprint(skill) === fingerprint
-  );
-}
-
-function hasBindingForLocalSkill(
-  cachedPackage: CachedSkillPackage,
-  skill: LocalSkill,
-  bindings: SkillBinding[]
-) {
-  const skillId = slugifyLocalSkillId(cachedPackage.skillId);
-  const projectPath = normalizeLocalPath(skill.projectPath);
-  return bindings.some((binding) => {
-    if (!isLocalBinding(binding)) return false;
-    if (binding.target !== skill.target || binding.level !== skill.level) return false;
-    if (slugifyLocalSkillId(binding.skillId) !== skillId) return false;
-    if (skill.level === "project") {
-      return normalizeLocalPath(binding.projectPath) === projectPath;
-    }
-    return true;
-  });
-}
-
-function cachedPackageInstallSummary(
-  cachedPackage: CachedSkillPackage,
-  bindings: SkillBinding[],
-  localSkills: LocalSkill[]
-) {
-  const targets = cachedPackageInstallTargets(cachedPackage, bindings, localSkills);
-  if (targets.length === 0) return cachedPackage.bindingCount > 0 ? `已安装 ${cachedPackage.bindingCount} 处` : "仅缓存";
-  return `已安装 ${targets.map((target) => targetLabels[target] ?? target).join("、")}`;
-}
-
-function markLocalSkillsCached(
-  localSkills: LocalSkill[],
-  cachedPackage: CachedSkillPackage,
-  sourceSkill?: LocalSkill
-) {
-  const fingerprints = new Set(
-    [cachedLocalSkillFingerprint(cachedPackage), sourceSkill ? localSkillFingerprint(sourceSkill) : null].filter(Boolean)
-  );
-  const paths = new Set(
-    [cachedPackage.sourcePath, sourceSkill?.path].map(normalizeLocalPath).filter(Boolean)
-  );
-
-  return localSkills.map((skill) => {
-    const pathMatched = paths.has(normalizeLocalPath(skill.path));
-    const fingerprint = localSkillFingerprint(skill);
-    const fingerprintMatched = Boolean(fingerprint && fingerprints.has(fingerprint));
-    if (!pathMatched && !fingerprintMatched) return skill;
-    return {
-      ...skill,
-      status: "cached",
-      origin: "local",
-      canImportToCache: false
-    };
-  });
-}
-
-function cachedLocalSkillFingerprint(cachedPackage: CachedSkillPackage) {
-  if (cachedPackage.origin !== "local") return null;
-  const skillId = slugifyLocalSkillId(cachedPackage.skillId);
-  if (!skillId) return null;
-  return `${skillId}@${normalizeLocalSkillVersion(cachedPackage.version)}`;
-}
-
-function localSkillFingerprint(skill: LocalSkill) {
-  const skillId = slugifyLocalSkillId(skill.skillId || localPathName(skill.path) || skill.detectedManifest || "");
-  if (!skillId) return null;
-  return `${skillId}@${normalizeLocalSkillVersion(skill.version)}`;
-}
-
-function normalizeLocalSkillVersion(version?: string | null) {
-  return version?.trim() || "0.0.0-local";
-}
-
-function normalizeLocalPath(path?: string | null) {
-  return path?.replace(/\\/g, "/").toLocaleLowerCase() ?? "";
-}
-
-function localPathName(path?: string | null) {
-  const parts = path?.replace(/\\/g, "/").split("/").filter(Boolean) ?? [];
-  return parts.length > 0 ? parts[parts.length - 1] : "";
-}
-
-function slugifyLocalSkillId(value: string) {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLocaleLowerCase();
-}
-
-function categoryNameFromSlug(slug: string) {
-  if (slug === "uncategorized") return "未分类";
-  return slug
-    .split(/[-_/]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toLocaleUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function scopeConflict(bindings: SkillBinding[], target: string, level: LevelChoice) {
-  if (level === "download") return null;
-  const opposite = level === "personal" ? "project" : "personal";
-  const conflict = bindings.find(
-    (binding) => binding.target === target && binding.level === opposite && binding.enabled
-  );
-  if (!conflict) return null;
-  return level === "personal"
-    ? "该 skill 已在项目级启用，请先禁用项目级绑定。"
-    : "该 skill 已在个人级启用，项目级不能再启用。";
-}
-
-function pluginScopeConflict(bindings: AppBootstrap["pluginBindings"], target: string, level: LevelChoice) {
-  if (level === "download") return null;
-  if (target === "codex" && level === "project") {
-    return "Codex plugin 当前只支持个人级安装，不支持项目级生效。";
-  }
-  const oppositeScopes = level === "personal" ? ["project"] : ["user", "personal"];
-  const conflict = bindings.find(
-    (binding) => binding.target === target && oppositeScopes.includes(binding.scope) && binding.enabled
-  );
-  if (!conflict) return null;
-  return level === "personal"
-    ? "该 plugin 已在项目级启用，请先禁用项目级绑定。"
-    : "该 plugin 已在个人级启用，项目级不能再启用。";
-}
-
-function getInstallPreview(
-  target: string,
-  level: LevelChoice,
-  projectPath: string,
-  targetRoots: TargetRoot[]
-) {
-  if (level === "download") return "Skill Hub 本地包仓库";
-  if (level === "personal") {
-    return targetRoots.find((root) => root.target === target)?.personalPath ?? "未配置个人级目录";
-  }
-  if (!projectPath) return "请选择项目根目录";
-  const suffix = target === "codex" ? ".codex/skills" : target === "claude" ? ".claude/skills" : `.skillhub/${target}/skills`;
-  return `${projectPath.replace(/\\/g, "/")}/${suffix}`;
-}
-
-function emptyPublishMeta(): PublishMeta {
-  return {
-    namespace: "community",
-    skillId: "",
-    version: null,
-    name: "",
-    summary: "",
-    tags: [],
-    targets: [],
-    levels: ["personal", "project"],
-    publishScope: "public",
-    publishCategorySlug: null,
-    publishProjectSlug: null,
-    changelog: ""
-  };
-}
-
-function emptyMarketProject(): MarketProject {
-  return {
-    slug: "",
-    name: "",
-    description: "",
-    order: 10
-  };
-}
-
-function emptyMarketCategory(): Category {
-  return {
-    id: "",
-    name: "",
-    order: 10
-  };
-}
-
-function defaultMetaFromDraft(draft: AdminDraftSkill): PublishMeta {
-  const slug = draftSkillLabel(draft);
-  return {
-    ...emptyPublishMeta(),
-    version: draft.version ?? null,
-    skillId: slug,
-    name: slug,
-    summary: draft.author ? `由 ${draft.author} 维护的 skill` : ""
-  };
-}
-
-function defaultMetaFromPluginDraft(draft: AdminDraftPlugin): PublishMeta {
-  const pluginId = draft.pluginId ?? draft.draftSlug ?? "";
-  const categorySlug = draft.gitlabCategoryPath[0] ?? null;
-  return {
-    ...emptyPublishMeta(),
-    namespace: draft.namespace ?? "community",
-    skillId: pluginId,
-    version: draft.version ?? "0.1.0",
-    name: pluginDraftLabel(draft),
-    summary: draft.summary ?? "",
-    tags: [],
-    targets: draft.targets,
-    levels: draft.scopes.length > 0 ? draft.scopes : ["user", "project"],
-    publishCategorySlug: categorySlug
-  };
-}
-
-function normalizeMetaForSave(meta: PublishMeta): PublishMeta {
-  return {
-    ...meta,
-    version: meta.version?.trim() || null,
-    publishCategorySlug: meta.publishScope === "project" ? null : meta.publishCategorySlug || null,
-    publishProjectSlug: meta.publishScope === "project" ? meta.publishProjectSlug : null
-  };
-}
-
-function splitCsv(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function viewTitle(view: ViewKey) {
+function viewTitle(view: ViewKey) {
   switch (view) {
     case "market":
       return "Object-store marketplace";
@@ -6926,13 +6099,4 @@ function viewHeadline(view: ViewKey) {
       return "管理发布";
   }
 }
-
-function readError(err: unknown) {
-  if (typeof err === "string") return err;
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return "操作失败";
-}
-
-export default App;
+export default App;
