@@ -17,7 +17,7 @@ use crate::{
         MarketPlugin, MarketSkill, PluginPreviewRequest, SkillPreview, SkillPreviewFile,
         SkillPreviewFileEntry, SkillPreviewRequest,
     },
-    services::{local, validation},
+    services::{install, local, validation},
 };
 
 pub(crate) const PREVIEW_MAX_FILES: usize = 8;
@@ -83,7 +83,7 @@ pub(crate) async fn preview_skill_inner(
 
     let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
         let conn = state.conn.lock().expect("db mutex poisoned");
-        let binding = commands::find_binding(&conn, binding_id)?;
+        let binding = install::find_binding(&conn, binding_id)?;
         (
             binding.skill_name,
             format!("{} / {}", binding.target, binding.level),
@@ -150,12 +150,11 @@ pub(crate) async fn preview_skill_inner(
             let version = requested_version.unwrap_or_else(|| skill.latest_version.clone());
             let version_info = match source.as_ref() {
                 Some(source) => Some(
-                    commands::fetch_manifest_version(source, &skill.manifest_path, &version)
-                        .await?,
+                    install::fetch_manifest_version(source, &skill.manifest_path, &version).await?,
                 ),
                 _ => None,
             };
-            let package_path = commands::prepare_package(
+            let package_path = install::prepare_package(
                 state,
                 source.as_ref(),
                 &skill,
@@ -199,7 +198,7 @@ pub(crate) async fn preview_plugin_inner(
 
     let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
         let conn = state.conn.lock().expect("db mutex poisoned");
-        let binding = commands::find_plugin_binding(&conn, binding_id)?;
+        let binding = install::find_plugin_binding(&conn, binding_id)?;
         let package_path: String = conn
             .query_row(
                 "SELECT package_path FROM plugin_packages WHERE id = ?1",
@@ -258,12 +257,12 @@ pub(crate) async fn preview_plugin_inner(
         let version = requested_version.unwrap_or_else(|| plugin.latest_version.clone());
         let version_info = match source.as_ref() {
             Some(source) => Some(
-                commands::fetch_plugin_manifest_version(source, &plugin.manifest_path, &version)
+                install::fetch_plugin_manifest_version(source, &plugin.manifest_path, &version)
                     .await?,
             ),
             _ => None,
         };
-        let package_path = commands::prepare_plugin_package(
+        let package_path = install::prepare_plugin_package(
             state,
             source.as_ref(),
             &plugin,

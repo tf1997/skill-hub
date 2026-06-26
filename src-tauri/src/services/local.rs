@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use rusqlite::params;
 
 use crate::{
-    commands,
     db::{
         canonical_display_path, list_bindings_inner, list_local_skills_inner,
         list_market_skills_inner, list_plugin_bindings_inner, list_projects_inner,
@@ -17,7 +16,7 @@ use crate::{
     models::{CachedSkillPackage, LocalPlugin, LocalSkill, MarketSkill, PluginBinding},
 };
 
-use super::{admin, object_store};
+use super::{admin, install, object_store};
 
 pub(crate) const LOCAL_NAMESPACE: &str = "local";
 pub(crate) const LOCAL_DEFAULT_VERSION: &str = "0.0.0-local";
@@ -94,7 +93,7 @@ pub(crate) fn scan_local_skills(state: &AppState) -> Result<Vec<LocalSkill>> {
 
     for project in projects {
         for target in ["codex", "claude"] {
-            let root = commands::resolve_project_skill_root(target, Path::new(&project.path));
+            let root = install::resolve_project_skill_root(target, Path::new(&project.path));
             scan_skill_root(
                 &conn,
                 &mut seen_paths,
@@ -171,7 +170,7 @@ fn plugin_scan_roots(
         "codex".to_string(),
         "user".to_string(),
         None,
-        commands::plugin_marketplace_root(state, "codex", "user", None)?,
+        install::plugin_marketplace_root(state, "codex", "user", None)?,
     ));
 
     if let Some(home) = home_dir_path() {
@@ -188,13 +187,13 @@ fn plugin_scan_roots(
             "codex".to_string(),
             "project".to_string(),
             Some(project.path.clone()),
-            commands::plugin_marketplace_root(state, "codex", "project", Some(&project.path))?,
+            install::plugin_marketplace_root(state, "codex", "project", Some(&project.path))?,
         ));
         roots.push((
             "claude".to_string(),
             "project".to_string(),
             Some(project.path.clone()),
-            commands::plugin_marketplace_root(state, "claude", "project", Some(&project.path))?,
+            install::plugin_marketplace_root(state, "claude", "project", Some(&project.path))?,
         ));
     }
 
@@ -217,7 +216,7 @@ fn insert_local_plugin_from_binding(
                     .to_string(),
             )
         });
-    let path = commands::plugin_marketplace_root(
+    let path = install::plugin_marketplace_root(
         state,
         &binding.target,
         &binding.scope,
@@ -286,7 +285,7 @@ fn scan_plugin_marketplace_root(
     scanned_at: &str,
 ) -> Result<()> {
     let marketplace_path = plugin_marketplace_path(target, root);
-    if let Some(doc) = commands::read_json_file(&marketplace_path) {
+    if let Some(doc) = install::read_json_file(&marketplace_path) {
         let marketplace_name = doc
             .get("name")
             .and_then(|value| value.as_str())
@@ -451,7 +450,7 @@ fn read_local_plugin_profile(target: &str, path: &Path) -> Option<LocalPluginPro
         "claude" => path.join(".claude-plugin").join("plugin.json"),
         _ => return None,
     };
-    let manifest = commands::read_json_file(&manifest_path)?;
+    let manifest = install::read_json_file(&manifest_path)?;
     let plugin_id = manifest
         .get("name")
         .or_else(|| manifest.get("id"))
