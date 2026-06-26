@@ -41,7 +41,7 @@ use crate::{
         UpgradePluginBindingRequest,
     },
     process_util::external_command,
-    services::{object_store, package, validation},
+    services::{local, object_store, package, preview, validation},
 };
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
@@ -56,12 +56,6 @@ const CATALOG_OBJECT: &str = "catalog.v1.json";
 const PLUGIN_CATALOG_OBJECT: &str = "plugin-catalog.v1.json";
 const CATEGORIES_OBJECT: &str = "categories.v1.json";
 const FIXED_PUBLISH_NAMESPACE: &str = "DT";
-const PREVIEW_MAX_FILES: usize = 8;
-const PREVIEW_MAX_FILE_LIST: usize = 500;
-const PREVIEW_MAX_BYTES: usize = 24 * 1024;
-const LOCAL_NAMESPACE: &str = "local";
-const LOCAL_DEFAULT_VERSION: &str = "0.0.0-local";
-const DISABLED_SKILLS_DIR: &str = ".skill-hub-disabled";
 
 #[tauri::command]
 pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<AppBootstrap> {
@@ -797,7 +791,7 @@ async fn preview_admin_draft_inner(
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
-    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
+    let selected_path = preview::normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_prefix = format!("{}{}/", DRAFT_GITLAB_PREFIX, source_path);
     let skill_md_path = format!("{draft_prefix}SKILL.md");
     let objects = client.list_objects(&draft_prefix).await?;
@@ -875,7 +869,7 @@ async fn preview_admin_plugin_draft_inner(
     let authorization = ensure_admin_allowed(&request.admin_key, local_macs).await?;
     let client = object_store::AdminObjectClient::new();
     let source_path = validation::normalize_relative_object_path(&request.gitlab_source_path)?;
-    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
+    let selected_path = preview::normalize_preview_file_path(request.file_path.as_deref())?;
     let draft_root = format!("{}{}/", PLUGIN_DRAFT_PREFIX, source_path);
     let objects = client.list_objects(&draft_root).await?;
     if objects.is_empty() {
@@ -2260,11 +2254,11 @@ async fn install_skill_inner(
     let (source_id, skill, source) = {
         let conn = state.conn.lock().expect("db mutex poisoned");
         let source_id = request.source_id.clone().or_else(|| {
-            default_source_for_skill(&conn, &request.namespace, &request.skill_id)
+            preview::default_source_for_skill(&conn, &request.namespace, &request.skill_id)
                 .ok()
                 .flatten()
         });
-        let skill = find_market_skill(
+        let skill = preview::find_market_skill(
             &conn,
             source_id.as_deref(),
             &request.namespace,
@@ -2436,11 +2430,11 @@ async fn install_plugin_inner(
     let (source_id, plugin, source) = {
         let conn = state.conn.lock().expect("db mutex poisoned");
         let source_id = request.source_id.clone().or_else(|| {
-            default_source_for_plugin(&conn, &request.namespace, &request.plugin_id)
+            preview::default_source_for_plugin(&conn, &request.namespace, &request.plugin_id)
                 .ok()
                 .flatten()
         });
-        let plugin = find_market_plugin(
+        let plugin = preview::find_market_plugin(
             &conn,
             source_id.as_deref(),
             &request.namespace,
@@ -2988,14 +2982,14 @@ fn import_local_skill_to_cache_inner(
         return Err(anyhow!("本地 skill 目录缺少 SKILL.md"));
     }
 
-    let mut profile = read_local_skill_profile(&source_path)?;
+    let mut profile = local::read_local_skill_profile(&source_path)?;
     if let Some(skill_id) = request
         .skill_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        profile.skill_id = slugify_skill_id(skill_id);
+        profile.skill_id = local::slugify_skill_id(skill_id);
     }
     if let Some(version) = request
         .version
@@ -3019,7 +3013,7 @@ fn import_local_skill_to_cache_inner(
         }
 
         let market_skills = list_market_skills_inner(&conn)?;
-        let classification = classify_local_skill(&profile, &market_skills);
+        let classification = local::classify_local_skill(&profile, &market_skills);
         if classification.origin == "market" {
             return Err(anyhow!(
                 "该目录匹配市场 skill，请通过市场缓存或恢复管理处理"
@@ -3034,7 +3028,7 @@ fn import_local_skill_to_cache_inner(
         }
         if let Some(existing) = cached_packages
             .into_iter()
-            .find(|package| cached_package_matches_local_profile(package, &profile))
+            .find(|package| local::cached_package_matches_local_profile(package, &profile))
         {
             return Ok(existing);
         }
@@ -3043,7 +3037,7 @@ fn import_local_skill_to_cache_inner(
     let package_dir = state
         .app_dir
         .join("packages")
-        .join(format!("{LOCAL_NAMESPACE}.{}", profile.skill_id))
+        .join(format!("{}.{}", local::LOCAL_NAMESPACE, profile.skill_id))
         .join(&profile.version);
 
     if package_dir.exists() {
@@ -3061,7 +3055,7 @@ fn import_local_skill_to_cache_inner(
     let package_id = ensure_package_record(
         &conn,
         Some(LOCAL_SOURCE_ID),
-        LOCAL_NAMESPACE,
+        local::LOCAL_NAMESPACE,
         &profile.skill_id,
         &profile.version,
         &package_dir,
@@ -3090,7 +3084,12 @@ fn import_local_skill_to_cache_inner(
         ],
     )?;
 
-    let skill_ref = format!("{LOCAL_NAMESPACE}/{}@{}", profile.skill_id, profile.version);
+    let skill_ref = format!(
+        "{}/{}@{}",
+        local::LOCAL_NAMESPACE,
+        profile.skill_id,
+        profile.version
+    );
     insert_audit(
         &conn,
         "import_local_cache",
@@ -3103,7 +3102,7 @@ fn import_local_skill_to_cache_inner(
         .into_iter()
         .find(|package| {
             package.source_id.as_deref() == Some(LOCAL_SOURCE_ID)
-                && package.namespace == LOCAL_NAMESPACE
+                && package.namespace == local::LOCAL_NAMESPACE
                 && package.skill_id == profile.skill_id
                 && package.version == profile.version
         })
@@ -3116,7 +3115,8 @@ fn install_cached_skill_inner(
 ) -> Result<SkillBinding> {
     validation::validate_target(&request.target)?;
     validation::validate_level(&request.level)?;
-    if request.source_id.as_deref() != Some(LOCAL_SOURCE_ID) || request.namespace != LOCAL_NAMESPACE
+    if request.source_id.as_deref() != Some(LOCAL_SOURCE_ID)
+        || request.namespace != local::LOCAL_NAMESPACE
     {
         return Err(anyhow!("install_cached_skill 仅用于自建本地缓存"));
     }
@@ -3264,7 +3264,7 @@ fn install_cached_skill_inner(
         .ok_or_else(|| anyhow!("安装后读取绑定失败"))
 }
 
-async fn fetch_manifest_version(
+pub(crate) async fn fetch_manifest_version(
     source: &Source,
     manifest_path: &str,
     version: &str,
@@ -3288,7 +3288,7 @@ async fn fetch_manifest_version(
         .ok_or_else(|| anyhow!("manifest 中不存在版本 {version}"))
 }
 
-async fn fetch_plugin_manifest_version(
+pub(crate) async fn fetch_plugin_manifest_version(
     source: &Source,
     manifest_path: &str,
     version: &str,
@@ -3312,7 +3312,7 @@ async fn fetch_plugin_manifest_version(
         .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: manifest missing version {version}"))
 }
 
-async fn prepare_package(
+pub(crate) async fn prepare_package(
     state: &AppState,
     source: Option<&Source>,
     skill: &MarketSkill,
@@ -3374,7 +3374,7 @@ async fn prepare_package(
     Ok(package_dir)
 }
 
-async fn prepare_plugin_package(
+pub(crate) async fn prepare_plugin_package(
     state: &AppState,
     source: Option<&Source>,
     plugin: &MarketPlugin,
@@ -3687,7 +3687,7 @@ async fn upgrade_plugin_binding_inner(
 
     let (plugin, source) = {
         let conn = state.conn.lock().expect("db mutex poisoned");
-        let plugin = find_market_plugin(
+        let plugin = preview::find_market_plugin(
             &conn,
             binding.source_id.as_deref(),
             &binding.namespace,
@@ -3937,111 +3937,12 @@ pub async fn unbind_project(
 
 #[tauri::command]
 pub async fn scan_local_skills(state: State<'_, AppState>) -> CommandResult<Vec<LocalSkill>> {
-    map_result((|| {
-        let conn = state.conn.lock().expect("db mutex poisoned");
-        conn.execute("DELETE FROM local_skills", [])?;
-
-        let bindings = list_bindings_inner(&conn)?;
-        let market_skills = list_market_skills_inner(&conn)?;
-        let target_roots = list_target_roots_inner(&conn)?;
-        let projects = list_projects_inner(&conn)?;
-        let cached_local_index = list_cached_local_index(&conn)?;
-        let scanned_at = now();
-        let mut seen_paths = HashSet::new();
-
-        for binding in &bindings {
-            let exists = PathBuf::from(&binding.install_path).exists();
-            seen_paths.insert(canonical_display_path(Path::new(&binding.install_path)));
-            conn.execute(
-                "INSERT INTO local_skills
-                 (id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
-                  status, enabled, scanned_at, origin, skill_id, version, summary, tags_json,
-                  matched_source_id, matched_namespace, matched_skill_id, matched_version,
-                  can_import_to_cache, can_restore_binding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, 'managed', ?10, ?11, NULL, '[]',
-                         ?12, ?13, ?14, ?15, 0, 0)",
-                params![
-                    new_id(),
-                    binding.target,
-                    binding.level,
-                    binding.project_path,
-                    binding.install_path,
-                    format!("{}@{}", binding.skill_name, binding.version),
-                    if exists { "managed" } else { "missing" },
-                    if binding.enabled { 1_i64 } else { 0_i64 },
-                    scanned_at,
-                    binding.skill_id,
-                    binding.version,
-                    binding.source_id,
-                    binding.namespace,
-                    binding.skill_id,
-                    binding.version
-                ],
-            )?;
-        }
-
-        for root in target_roots {
-            scan_skill_root(
-                &conn,
-                &mut seen_paths,
-                &root.target,
-                "personal",
-                None,
-                Path::new(&root.personal_path),
-                &scanned_at,
-                &market_skills,
-                &cached_local_index,
-                true,
-            )?;
-            scan_disabled_skill_root(
-                &conn,
-                &mut seen_paths,
-                &root.target,
-                "personal",
-                None,
-                Path::new(&root.personal_path),
-                &scanned_at,
-                &market_skills,
-                &cached_local_index,
-            )?;
-        }
-
-        for project in projects {
-            for target in ["codex", "claude"] {
-                let root = resolve_project_skill_root(target, Path::new(&project.path));
-                scan_skill_root(
-                    &conn,
-                    &mut seen_paths,
-                    target,
-                    "project",
-                    Some(project.path.as_str()),
-                    &root,
-                    &scanned_at,
-                    &market_skills,
-                    &cached_local_index,
-                    true,
-                )?;
-                scan_disabled_skill_root(
-                    &conn,
-                    &mut seen_paths,
-                    target,
-                    "project",
-                    Some(project.path.as_str()),
-                    &root,
-                    &scanned_at,
-                    &market_skills,
-                    &cached_local_index,
-                )?;
-            }
-        }
-
-        list_local_skills_inner(&conn)
-    })())
+    map_result(local::scan_local_skills(&state))
 }
 
 #[tauri::command]
 pub async fn scan_local_plugins(state: State<'_, AppState>) -> CommandResult<Vec<LocalPlugin>> {
-    map_result(scan_local_plugins_inner(&state))
+    map_result(local::scan_local_plugins(&state))
 }
 
 #[tauri::command]
@@ -4049,7 +3950,7 @@ pub async fn preview_skill(
     request: SkillPreviewRequest,
     state: State<'_, AppState>,
 ) -> CommandResult<SkillPreview> {
-    map_result(preview_skill_inner(request, &state).await)
+    map_result(preview::preview_skill_inner(request, &state).await)
 }
 
 #[tauri::command]
@@ -4057,9 +3958,8 @@ pub async fn preview_plugin(
     request: PluginPreviewRequest,
     state: State<'_, AppState>,
 ) -> CommandResult<SkillPreview> {
-    map_result(preview_plugin_inner(request, &state).await)
+    map_result(preview::preview_plugin_inner(request, &state).await)
 }
-
 #[tauri::command]
 pub async fn list_update_candidates(
     state: State<'_, AppState>,
@@ -4071,7 +3971,7 @@ pub async fn list_update_candidates(
     })())
 }
 
-async fn refresh_catalog_best_effort(state: &AppState) -> Option<String> {
+pub(crate) async fn refresh_catalog_best_effort(state: &AppState) -> Option<String> {
     match refresh_catalog_inner(state).await {
         Ok(_) => None,
         Err(err) => Some(err.to_string()),
@@ -4358,12 +4258,12 @@ fn category_name_from_slug(slug: &str) -> String {
         .join(" ")
 }
 #[derive(Debug, Clone, Default)]
-struct DraftSkillMetadata {
-    name: Option<String>,
-    description: Option<String>,
-    tags: Vec<String>,
-    version: Option<String>,
-    author: Option<String>,
+pub(crate) struct DraftSkillMetadata {
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) author: Option<String>,
 }
 
 fn default_publish_meta_from_draft(
@@ -4742,7 +4642,7 @@ fn draft_skill_id_from_source_path(source_path: &str) -> String {
         .unwrap_or_else(|| "skill".to_string())
 }
 
-fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
+pub(crate) fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
     let mut metadata = DraftSkillMetadata::default();
     let mut metadata_tags = Vec::new();
     let mut metadata_tags_present = false;
@@ -4765,7 +4665,7 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
         let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
         if let Some(item) = trimmed.strip_prefix("- ") {
             if let Some(is_metadata_tags) = tag_list_source {
-                if let Some(tag) = clean_frontmatter_value(item) {
+                if let Some(tag) = local::clean_frontmatter_value(item) {
                     if is_metadata_tags {
                         metadata_tags_present = true;
                         push_unique_tag(&mut metadata_tags, tag);
@@ -4787,20 +4687,24 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
         }
 
         match (indent == 0, section.as_deref(), key.as_str()) {
-            (true, _, "name") => metadata.name = clean_frontmatter_value(value),
-            (true, _, "description") => metadata.description = clean_frontmatter_value(value),
+            (true, _, "name") => metadata.name = local::clean_frontmatter_value(value),
+            (true, _, "description") => {
+                metadata.description = local::clean_frontmatter_value(value)
+            }
             (true, _, "tags") => {
                 for tag in parse_frontmatter_tags(value) {
                     push_unique_tag(&mut metadata.tags, tag);
                 }
                 tag_list_source = Some(false);
             }
-            (true, _, "version") => metadata.version = clean_frontmatter_value(value),
-            (true, _, "author") => metadata.author = clean_frontmatter_value(value),
+            (true, _, "version") => metadata.version = local::clean_frontmatter_value(value),
+            (true, _, "author") => metadata.author = local::clean_frontmatter_value(value),
             (false, Some("metadata"), "version") => {
-                metadata.version = clean_frontmatter_value(value)
+                metadata.version = local::clean_frontmatter_value(value)
             }
-            (false, Some("metadata"), "author") => metadata.author = clean_frontmatter_value(value),
+            (false, Some("metadata"), "author") => {
+                metadata.author = local::clean_frontmatter_value(value)
+            }
             (false, Some("metadata"), "tags") => {
                 metadata_tags_present = true;
                 for tag in parse_frontmatter_tags(value) {
@@ -4820,7 +4724,7 @@ fn parse_skill_frontmatter(content: &str) -> DraftSkillMetadata {
 }
 
 fn parse_frontmatter_tags(value: &str) -> Vec<String> {
-    let Some(cleaned) = clean_frontmatter_value(value) else {
+    let Some(cleaned) = local::clean_frontmatter_value(value) else {
         return Vec::new();
     };
     let inner = cleaned
@@ -4834,7 +4738,7 @@ fn parse_frontmatter_tags(value: &str) -> Vec<String> {
     if inner.contains(',') {
         inner
             .split(',')
-            .filter_map(clean_frontmatter_value)
+            .filter_map(local::clean_frontmatter_value)
             .collect()
     } else {
         vec![inner.to_string()]
@@ -4858,7 +4762,7 @@ fn parse_skill_markdown_field(content: &str, field: &str) -> Option<String> {
             continue;
         };
         if key.trim().eq_ignore_ascii_case(expected) {
-            return clean_frontmatter_value(value);
+            return local::clean_frontmatter_value(value);
         }
     }
     None
@@ -5942,10 +5846,10 @@ fn collect_plugin_draft_preview_file_list(
         })
         .collect::<Vec<_>>();
     relatives.sort();
-    relatives.truncate(PREVIEW_MAX_FILE_LIST);
+    relatives.truncate(preview::PREVIEW_MAX_FILE_LIST);
     relatives
         .iter()
-        .map(|relative| preview_file_entry(relative))
+        .map(|relative| preview::preview_file_entry(relative))
         .collect()
 }
 
@@ -6040,10 +5944,10 @@ fn collect_draft_preview_file_list(
         })
         .collect::<Vec<_>>();
     relatives.sort();
-    relatives.truncate(PREVIEW_MAX_FILE_LIST);
+    relatives.truncate(preview::PREVIEW_MAX_FILE_LIST);
     relatives
         .iter()
-        .map(|relative| preview_file_entry(relative))
+        .map(|relative| preview::preview_file_entry(relative))
         .collect()
 }
 
@@ -6054,11 +5958,11 @@ async fn collect_draft_preview_files(
     selected_path: Option<&str>,
     meta: Option<&PublishMeta>,
 ) -> Result<Vec<SkillPreviewFile>> {
-    let candidates = preview_candidate_paths(file_list, selected_path);
+    let candidates = preview::preview_candidate_paths(file_list, selected_path);
 
     let mut files = Vec::new();
     for relative in candidates {
-        if files.len() >= PREVIEW_MAX_FILES {
+        if files.len() >= preview::PREVIEW_MAX_FILES {
             break;
         }
         let bytes = if relative == "publish-meta.v1.json" {
@@ -6070,58 +5974,14 @@ async fn collect_draft_preview_files(
             let object_path = format!("{draft_prefix}{relative}");
             client.get_bytes(&object_path).await?
         };
-        if let Some(file) = preview_file_from_bytes(&relative, &bytes, PREVIEW_MAX_BYTES) {
+        if let Some(file) =
+            preview::preview_file_from_bytes(&relative, &bytes, preview::PREVIEW_MAX_BYTES)
+        {
             files.push(file);
         }
     }
 
     Ok(files)
-}
-
-fn preview_candidate_paths(
-    file_list: &[SkillPreviewFileEntry],
-    selected_path: Option<&str>,
-) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let push_candidate = |candidates: &mut Vec<String>, relative: &str| {
-        if candidates.iter().any(|item| item == relative) {
-            return;
-        }
-        if file_list
-            .iter()
-            .any(|file| file.path == relative && file.previewable)
-        {
-            candidates.push(relative.to_string());
-        }
-    };
-
-    if let Some(path) = selected_path {
-        push_candidate(&mut candidates, path);
-    }
-
-    for relative in [
-        "SKILL.md",
-        "publish-meta.v1.json",
-        "README.md",
-        "readme.md",
-        "CHANGELOG.md",
-        "changelog.md",
-        "skill.json",
-        "validation.json",
-    ] {
-        push_candidate(&mut candidates, relative);
-    }
-
-    for file in file_list {
-        if candidates.len() >= PREVIEW_MAX_FILES {
-            break;
-        }
-        if file.previewable && !candidates.iter().any(|item| item == &file.path) {
-            candidates.push(file.path.clone());
-        }
-    }
-
-    candidates
 }
 
 #[derive(Debug, Clone)]
@@ -6816,7 +6676,7 @@ fn materialize_plugin_marketplace(
     })
 }
 
-fn plugin_marketplace_root(
+pub(crate) fn plugin_marketplace_root(
     state: &AppState,
     target: &str,
     scope: &str,
@@ -6835,7 +6695,7 @@ fn plugin_marketplace_root(
                 .join("plugin-marketplaces")
                 .join(target)
                 .join("projects")
-                .join(path_hash(project)),
+                .join(local::path_hash(project)),
         });
     }
 
@@ -6879,12 +6739,12 @@ fn migrate_claude_project_marketplace_root(
         return Ok(());
     }
 
-    let legacy_marketplace_path = plugin_marketplace_path("claude", &legacy_root);
+    let legacy_marketplace_path = local::plugin_marketplace_path("claude", &legacy_root);
     let Some(legacy_doc) = read_json_file(&legacy_marketplace_path) else {
         return Ok(());
     };
 
-    let new_marketplace_path = plugin_marketplace_path("claude", new_root);
+    let new_marketplace_path = local::plugin_marketplace_path("claude", new_root);
     if !new_marketplace_path.exists() {
         if let Some(parent) = new_marketplace_path.parent() {
             fs::create_dir_all(parent)?;
@@ -6954,7 +6814,7 @@ fn plugin_marketplace_name(target: &str, scope: &str, project_path: Option<&str>
     }
     if target == "codex" && scope == "project" {
         if let Some(project_path) = project_path {
-            return format!("skillhub-{}", path_hash(project_path));
+            return format!("skillhub-{}", local::path_hash(project_path));
         }
     }
     "skillhub".to_string()
@@ -7043,7 +6903,7 @@ fn write_plugin_marketplace_file(
     }
 }
 
-fn read_json_file(path: &Path) -> Option<serde_json::Value> {
+pub(crate) fn read_json_file(path: &Path) -> Option<serde_json::Value> {
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -7145,7 +7005,7 @@ fn rewrite_plugin_marketplace_entry(
 }
 
 fn remove_plugin_from_marketplace_file(target: &str, root: &Path, plugin_id: &str) -> Result<()> {
-    let path = plugin_marketplace_path(target, root);
+    let path = local::plugin_marketplace_path(target, root);
     let Some(doc) = read_json_file(&path) else {
         return Ok(());
     };
@@ -7275,7 +7135,7 @@ fn build_claude_plugin_install_commands(
     let selector = format!("{plugin_id}@{marketplace_name}");
     let scope = normalize_claude_plugin_scope(scope);
     let marketplace_path =
-        canonical_display_path(&plugin_marketplace_path("claude", marketplace_root));
+        canonical_display_path(&local::plugin_marketplace_path("claude", marketplace_root));
     Some(vec![
         vec![
             "plugin".to_string(),
@@ -7748,7 +7608,10 @@ fn uninstall_plugin_inner(
     list_plugin_bindings_inner(&conn)
 }
 
-fn find_plugin_binding(conn: &rusqlite::Connection, binding_id: &str) -> Result<PluginBinding> {
+pub(crate) fn find_plugin_binding(
+    conn: &rusqlite::Connection,
+    binding_id: &str,
+) -> Result<PluginBinding> {
     list_plugin_bindings_inner(conn)?
         .into_iter()
         .find(|binding| binding.id == binding_id)
@@ -7774,1421 +7637,6 @@ fn market_plugin_from_binding(binding: &PluginBinding) -> MarketPlugin {
         installed_bindings: Vec::new(),
         updated_at: Some(binding.updated_at.clone()),
     }
-}
-
-fn scan_local_plugins_inner(state: &AppState) -> Result<Vec<LocalPlugin>> {
-    let conn = state.conn.lock().expect("db mutex poisoned");
-    conn.execute("DELETE FROM local_plugins", [])?;
-    let scanned_at = now();
-    let mut seen_paths = HashSet::new();
-    let mut seen_plugin_keys = HashSet::new();
-
-    for binding in list_plugin_bindings_inner(&conn)? {
-        insert_local_plugin_from_binding(
-            state,
-            &conn,
-            &binding,
-            &scanned_at,
-            &mut seen_paths,
-            &mut seen_plugin_keys,
-        )?;
-    }
-
-    for (target, scope, project_path, root) in plugin_scan_roots(state, &conn)? {
-        scan_plugin_marketplace_root(
-            &conn,
-            &mut seen_paths,
-            &mut seen_plugin_keys,
-            &target,
-            &scope,
-            project_path.as_deref(),
-            &root,
-            &scanned_at,
-        )?;
-    }
-
-    crate::db::list_local_plugins_inner(&conn)
-}
-
-fn plugin_scan_roots(
-    state: &AppState,
-    conn: &rusqlite::Connection,
-) -> Result<Vec<(String, String, Option<String>, PathBuf)>> {
-    let mut roots = Vec::new();
-    // Skill Hub's own Claude user marketplace lives under app_dir and is represented by bindings.
-    roots.push((
-        "codex".to_string(),
-        "user".to_string(),
-        None,
-        plugin_marketplace_root(state, "codex", "user", None)?,
-    ));
-
-    if let Some(home) = home_dir_path() {
-        roots.push((
-            "claude".to_string(),
-            "user".to_string(),
-            None,
-            home.join(".claude-plugin"),
-        ));
-    }
-
-    for project in list_projects_inner(conn)? {
-        roots.push((
-            "codex".to_string(),
-            "project".to_string(),
-            Some(project.path.clone()),
-            plugin_marketplace_root(state, "codex", "project", Some(&project.path))?,
-        ));
-        roots.push((
-            "claude".to_string(),
-            "project".to_string(),
-            Some(project.path.clone()),
-            plugin_marketplace_root(state, "claude", "project", Some(&project.path))?,
-        ));
-    }
-
-    Ok(roots)
-}
-
-fn insert_local_plugin_from_binding(
-    state: &AppState,
-    conn: &rusqlite::Connection,
-    binding: &PluginBinding,
-    scanned_at: &str,
-    seen_paths: &mut HashSet<String>,
-    seen_plugin_keys: &mut HashSet<String>,
-) -> Result<()> {
-    let (_, component_inventory_json) =
-        plugin_package_path_and_inventory(conn, &binding.package_id).unwrap_or_else(|| {
-            (
-                binding.platform_ref.clone(),
-                serde_json::json!({ "schema": "skillhub.plugin-component-inventory.v1" })
-                    .to_string(),
-            )
-        });
-    let path = plugin_marketplace_root(
-        state,
-        &binding.target,
-        &binding.scope,
-        binding.project_path.as_deref(),
-    )?
-    .join("plugins")
-    .join(format!("{}.{}", binding.namespace, binding.plugin_id));
-    let path = canonical_display_path(&path);
-    seen_paths.insert(canonical_display_path(Path::new(&path)));
-    let exists = Path::new(&path).exists();
-    conn.execute(
-        "INSERT INTO local_plugins
-         (id, target, scope, project_path, path, marketplace_name, plugin_id, version,
-          enabled, status, component_inventory_json, managed_by_skillhub, scanned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)",
-        params![
-            new_id(),
-            binding.target,
-            binding.scope,
-            binding.project_path,
-            path,
-            binding.marketplace_name,
-            binding.plugin_id,
-            binding.version,
-            if binding.enabled { 1_i64 } else { 0_i64 },
-            if exists {
-                binding.status.as_str()
-            } else {
-                "missing"
-            },
-            component_inventory_json,
-            scanned_at
-        ],
-    )?;
-    if !binding.plugin_id.is_empty() {
-        seen_plugin_keys.insert(local_plugin_identity_key(
-            &binding.target,
-            &binding.scope,
-            binding.project_path.as_deref(),
-            &binding.plugin_id,
-        ));
-    }
-    Ok(())
-}
-
-fn plugin_package_path_and_inventory(
-    conn: &rusqlite::Connection,
-    package_id: &str,
-) -> Option<(String, String)> {
-    conn.query_row(
-        "SELECT package_path, component_inventory_json FROM plugin_packages WHERE id = ?1",
-        params![package_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-    )
-    .ok()
-}
-
-fn scan_plugin_marketplace_root(
-    conn: &rusqlite::Connection,
-    seen_paths: &mut HashSet<String>,
-    seen_plugin_keys: &mut HashSet<String>,
-    target: &str,
-    scope: &str,
-    project_path: Option<&str>,
-    root: &Path,
-    scanned_at: &str,
-) -> Result<()> {
-    let marketplace_path = plugin_marketplace_path(target, root);
-    if let Some(doc) = read_json_file(&marketplace_path) {
-        let marketplace_name = doc
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("external")
-            .to_string();
-        if let Some(plugins) = doc.get("plugins").and_then(|value| value.as_array()) {
-            for entry in plugins {
-                let Some(path) = entry
-                    .get("source")
-                    .and_then(|source| source.get("path"))
-                    .and_then(|value| value.as_str())
-                else {
-                    continue;
-                };
-                let plugin_path = resolve_plugin_source_path(target, root, path);
-                insert_local_plugin_from_path(
-                    conn,
-                    seen_paths,
-                    seen_plugin_keys,
-                    target,
-                    scope,
-                    project_path,
-                    &plugin_path,
-                    Some(&marketplace_name),
-                    entry.get("name").and_then(|value| value.as_str()),
-                    entry.get("version").and_then(|value| value.as_str()),
-                    scanned_at,
-                    true,
-                )?;
-            }
-        }
-    }
-
-    let plugins_root = root.join("plugins");
-    if plugins_root.is_dir() {
-        for entry in fs::read_dir(plugins_root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                insert_local_plugin_from_path(
-                    conn,
-                    seen_paths,
-                    seen_plugin_keys,
-                    target,
-                    scope,
-                    project_path,
-                    &path,
-                    None,
-                    None,
-                    None,
-                    scanned_at,
-                    true,
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn insert_local_plugin_from_path(
-    conn: &rusqlite::Connection,
-    seen_paths: &mut HashSet<String>,
-    seen_plugin_keys: &mut HashSet<String>,
-    target: &str,
-    scope: &str,
-    project_path: Option<&str>,
-    path: &Path,
-    marketplace_name: Option<&str>,
-    entry_plugin_id: Option<&str>,
-    entry_version: Option<&str>,
-    scanned_at: &str,
-    enabled: bool,
-) -> Result<()> {
-    let display_path = canonical_display_path(path);
-    if !seen_paths.insert(display_path.clone()) {
-        return Ok(());
-    }
-
-    let profile = read_local_plugin_profile(target, path);
-    let status = if path.exists() {
-        if profile.is_some() {
-            "unmanaged"
-        } else {
-            "invalid"
-        }
-    } else {
-        "missing"
-    };
-    let plugin_id = profile
-        .as_ref()
-        .and_then(|profile| profile.plugin_id.clone())
-        .or_else(|| entry_plugin_id.map(ToString::to_string));
-    if let Some(plugin_id) = plugin_id.as_deref() {
-        let key = local_plugin_identity_key(target, scope, project_path, plugin_id);
-        if seen_plugin_keys.contains(&key) {
-            return Ok(());
-        }
-    }
-    let version = profile
-        .as_ref()
-        .and_then(|profile| profile.version.clone())
-        .or_else(|| entry_version.map(ToString::to_string));
-    let component_inventory_json = profile
-        .as_ref()
-        .map(|profile| profile.component_inventory_json.clone())
-        .unwrap_or_else(|| "{}".to_string());
-
-    conn.execute(
-        "INSERT INTO local_plugins
-         (id, target, scope, project_path, path, marketplace_name, plugin_id, version,
-          enabled, status, component_inventory_json, managed_by_skillhub, scanned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
-        params![
-            new_id(),
-            target,
-            scope,
-            project_path,
-            display_path,
-            marketplace_name,
-            plugin_id,
-            version,
-            if enabled { 1_i64 } else { 0_i64 },
-            status,
-            component_inventory_json,
-            scanned_at
-        ],
-    )?;
-    if let Some(plugin_id) = plugin_id.as_deref() {
-        seen_plugin_keys.insert(local_plugin_identity_key(
-            target,
-            scope,
-            project_path,
-            plugin_id,
-        ));
-    }
-    Ok(())
-}
-
-fn local_plugin_identity_key(
-    target: &str,
-    scope: &str,
-    project_path: Option<&str>,
-    plugin_id: &str,
-) -> String {
-    format!(
-        "{target}|{scope}|{}|{plugin_id}",
-        project_path.unwrap_or_default()
-    )
-}
-
-#[derive(Debug, Clone)]
-struct LocalPluginProfile {
-    plugin_id: Option<String>,
-    version: Option<String>,
-    component_inventory_json: String,
-}
-
-fn read_local_plugin_profile(target: &str, path: &Path) -> Option<LocalPluginProfile> {
-    let manifest_path = match target {
-        "codex" => path.join(".codex-plugin").join("plugin.json"),
-        "claude" => path.join(".claude-plugin").join("plugin.json"),
-        _ => return None,
-    };
-    let manifest = read_json_file(&manifest_path)?;
-    let plugin_id = manifest
-        .get("name")
-        .or_else(|| manifest.get("id"))
-        .or_else(|| manifest.get("pluginId"))
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string);
-    let version = manifest
-        .get("version")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string);
-    Some(LocalPluginProfile {
-        plugin_id,
-        version,
-        component_inventory_json: local_plugin_component_inventory_json(target, path, &manifest),
-    })
-}
-
-fn local_plugin_component_inventory_json(
-    target: &str,
-    path: &Path,
-    manifest: &serde_json::Value,
-) -> String {
-    let target_inventory = serde_json::json!({
-        "manifest": manifest,
-        "skills": child_dir_names(path.join("skills")),
-        "commands": child_file_names(path.join("commands")),
-        "agents": child_file_names(path.join("agents")),
-        "hooks": child_file_names(path.join("hooks")),
-        "mcpServers": path.join(".mcp.json").exists(),
-        "lspServers": path.join(".lsp.json").exists(),
-        "monitors": child_file_names(path.join("monitors")),
-        "bin": child_file_names(path.join("bin")),
-        "assets": child_file_names(path.join("assets")),
-        "settings": path.join("settings.json").exists(),
-        "apps": path.join(".app.json").exists()
-    });
-    let mut targets = serde_json::Map::new();
-    targets.insert(target.to_string(), target_inventory);
-    let inventory = serde_json::json!({
-        "schema": "skillhub.plugin-component-inventory.v1",
-        "targets": targets
-    });
-    serde_json::to_string(&inventory).unwrap_or_else(|_| "{}".to_string())
-}
-
-fn child_dir_names(path: PathBuf) -> Vec<String> {
-    child_names(path, true)
-}
-
-fn child_file_names(path: PathBuf) -> Vec<String> {
-    child_names(path, false)
-}
-
-fn child_names(path: PathBuf, dirs: bool) -> Vec<String> {
-    let mut items = fs::read_dir(path)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if file_type.is_dir() != dirs {
-                return None;
-            }
-            entry.file_name().to_str().map(ToString::to_string)
-        })
-        .collect::<Vec<_>>();
-    items.sort();
-    items
-}
-
-fn plugin_marketplace_path(target: &str, root: &Path) -> PathBuf {
-    match target {
-        "codex" if !is_codex_marketplace_dir(root) => root
-            .join(".agents")
-            .join("plugins")
-            .join("marketplace.json"),
-        "claude" if root.file_name().and_then(|name| name.to_str()) != Some(".claude-plugin") => {
-            root.join(".claude-plugin").join("marketplace.json")
-        }
-        _ => root.join("marketplace.json"),
-    }
-}
-
-fn is_codex_marketplace_dir(root: &Path) -> bool {
-    root.file_name().and_then(|name| name.to_str()) == Some("plugins")
-        && root
-            .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|name| name.to_str())
-            == Some(".agents")
-}
-
-fn resolve_plugin_source_path(target: &str, root: &Path, source_path: &str) -> PathBuf {
-    let raw = PathBuf::from(source_path);
-    if raw.is_absolute() {
-        return raw;
-    }
-    if target == "claude" {
-        if root.file_name().and_then(|name| name.to_str()) == Some(".claude-plugin") {
-            return root.parent().unwrap_or(root).join(raw);
-        }
-        return root.join(raw);
-    }
-    root.join(raw)
-}
-
-fn home_dir_path() -> Option<PathBuf> {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .map(PathBuf::from)
-}
-
-fn path_hash(value: &str) -> String {
-    object_store::sha256_hex(value.as_bytes())[..16].to_string()
-}
-
-fn scan_skill_root(
-    conn: &rusqlite::Connection,
-    seen_paths: &mut HashSet<String>,
-    target: &str,
-    level: &str,
-    project_path: Option<&str>,
-    root: &Path,
-    scanned_at: &str,
-    market_skills: &[MarketSkill],
-    cached_local_index: &CachedLocalSkillIndex,
-    enabled: bool,
-) -> Result<()> {
-    if !root.exists() || !root.is_dir() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if enabled
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name == DISABLED_SKILLS_DIR)
-        {
-            continue;
-        }
-
-        let display_path = canonical_display_path(&path);
-        if !seen_paths.insert(display_path.clone()) {
-            continue;
-        }
-
-        let Some(profile) = local_skill_profile_from_path(&path)? else {
-            continue;
-        };
-        let mut classification = classify_local_skill(&profile, market_skills);
-        if cached_local_index.contains(&display_path, &profile) {
-            classification.origin = "local".to_string();
-            classification.status = "cached".to_string();
-            classification.can_import_to_cache = false;
-        }
-
-        conn.execute(
-            "INSERT INTO local_skills
-             (id, target, level, project_path, path, detected_manifest, managed_by_skillhub,
-              status, enabled, scanned_at, origin, skill_id, version, summary, tags_json,
-              matched_source_id, matched_namespace, matched_skill_id, matched_version,
-              can_import_to_cache, can_restore_binding)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-            params![
-                new_id(),
-                target,
-                level,
-                project_path,
-                display_path,
-                profile.name,
-                if enabled { classification.status } else { "disabled".to_string() },
-                if enabled { 1_i64 } else { 0_i64 },
-                scanned_at,
-                classification.origin,
-                profile.skill_id,
-                profile.version,
-                profile.summary,
-                serde_json::to_string(&profile.tags)?,
-                classification.matched_source_id,
-                classification.matched_namespace,
-                classification.matched_skill_id,
-                classification.matched_version,
-                if classification.can_import_to_cache { 1_i64 } else { 0_i64 },
-                if classification.can_restore_binding { 1_i64 } else { 0_i64 }
-            ],
-        )?;
-    }
-
-    Ok(())
-}
-
-fn scan_disabled_skill_root(
-    conn: &rusqlite::Connection,
-    seen_paths: &mut HashSet<String>,
-    target: &str,
-    level: &str,
-    project_path: Option<&str>,
-    root: &Path,
-    scanned_at: &str,
-    market_skills: &[MarketSkill],
-    cached_local_index: &CachedLocalSkillIndex,
-) -> Result<()> {
-    let disabled_root = root.join(DISABLED_SKILLS_DIR);
-    scan_skill_root(
-        conn,
-        seen_paths,
-        target,
-        level,
-        project_path,
-        &disabled_root,
-        scanned_at,
-        market_skills,
-        cached_local_index,
-        false,
-    )
-}
-
-fn detect_local_skill_label(path: &Path) -> Option<String> {
-    let skill_md = path.join("SKILL.md");
-    if !skill_md.is_file() {
-        return None;
-    }
-
-    skill_name_from_dir(path)
-        .or_else(|| read_skill_markdown_name(&skill_md))
-        .or_else(|| read_skill_markdown_title(&skill_md))
-        .or_else(|| Some("local-skill".to_string()))
-}
-
-#[derive(Debug, Clone, Default)]
-struct CachedLocalSkillIndex {
-    source_paths: HashSet<String>,
-    fingerprints: HashSet<String>,
-}
-
-impl CachedLocalSkillIndex {
-    fn contains(&self, display_path: &str, profile: &LocalSkillProfile) -> bool {
-        self.source_paths.contains(display_path)
-            || self
-                .fingerprints
-                .contains(&local_skill_fingerprint(profile))
-    }
-}
-
-fn list_cached_local_index(conn: &rusqlite::Connection) -> Result<CachedLocalSkillIndex> {
-    let mut stmt = conn.prepare(
-        "SELECT package.skill_id, package.version, local_meta.source_path
-         FROM skill_packages package
-         LEFT JOIN local_package_metadata local_meta
-           ON local_meta.package_id = package.id
-         WHERE package.source_id = ?1
-           AND package.namespace = ?2",
-    )?;
-    let rows = stmt.query_map(params![LOCAL_SOURCE_ID, LOCAL_NAMESPACE], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    })?;
-
-    let mut index = CachedLocalSkillIndex::default();
-    for row in rows {
-        let (skill_id, version, source_path) = row?;
-        index
-            .fingerprints
-            .insert(normalized_local_skill_fingerprint(&skill_id, &version));
-        if let Some(source_path) = source_path
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty())
-        {
-            index
-                .source_paths
-                .insert(canonical_display_path(Path::new(&source_path)));
-        }
-    }
-    Ok(index)
-}
-
-#[derive(Debug, Clone)]
-struct LocalSkillProfile {
-    name: String,
-    summary: String,
-    skill_id: String,
-    version: String,
-    author: Option<String>,
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct LocalSkillClassification {
-    origin: String,
-    status: String,
-    matched_source_id: Option<String>,
-    matched_namespace: Option<String>,
-    matched_skill_id: Option<String>,
-    matched_version: Option<String>,
-    can_import_to_cache: bool,
-    can_restore_binding: bool,
-}
-
-fn local_skill_profile_from_path(path: &Path) -> Result<Option<LocalSkillProfile>> {
-    let skill_md = path.join("SKILL.md");
-    if !skill_md.is_file() {
-        return Ok(None);
-    }
-    read_local_skill_profile(path).map(Some)
-}
-
-fn read_local_skill_profile(path: &Path) -> Result<LocalSkillProfile> {
-    let skill_md = path.join("SKILL.md");
-    let content = fs::read_to_string(&skill_md).context("读取本地 SKILL.md 失败")?;
-    let metadata = parse_skill_frontmatter(&content);
-    let dir_name = skill_name_from_dir(path).unwrap_or_else(|| "local-skill".to_string());
-    let title = parse_skill_markdown_title(&content);
-    let name = metadata
-        .name
-        .clone()
-        .or(title)
-        .unwrap_or_else(|| dir_name.clone());
-    let summary = metadata
-        .description
-        .clone()
-        .or_else(|| first_markdown_paragraph(&content))
-        .unwrap_or_default();
-    let skill_id = slugify_skill_id(&dir_name).if_empty_then(|| slugify_skill_id(&name));
-    let skill_id = if skill_id.is_empty() {
-        "local-skill".to_string()
-    } else {
-        skill_id
-    };
-
-    Ok(LocalSkillProfile {
-        name,
-        summary,
-        skill_id,
-        version: metadata
-            .version
-            .unwrap_or_else(|| LOCAL_DEFAULT_VERSION.to_string()),
-        author: metadata.author,
-        tags: metadata.tags,
-    })
-}
-
-fn local_skill_fingerprint(profile: &LocalSkillProfile) -> String {
-    normalized_local_skill_fingerprint(&profile.skill_id, &profile.version)
-}
-
-fn normalized_local_skill_fingerprint(skill_id: &str, version: &str) -> String {
-    let skill_id = slugify_skill_id(skill_id);
-    let version = version.trim();
-    let version = if version.is_empty() {
-        LOCAL_DEFAULT_VERSION
-    } else {
-        version
-    };
-    format!("{skill_id}@{version}")
-}
-
-fn cached_package_matches_local_profile(
-    package: &CachedSkillPackage,
-    profile: &LocalSkillProfile,
-) -> bool {
-    package.source_id.as_deref() == Some(LOCAL_SOURCE_ID)
-        && package.namespace == LOCAL_NAMESPACE
-        && normalized_local_skill_fingerprint(&package.skill_id, &package.version)
-            == local_skill_fingerprint(profile)
-}
-
-trait EmptyStringFallback {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String;
-}
-
-impl EmptyStringFallback for String {
-    fn if_empty_then<F>(self, fallback: F) -> String
-    where
-        F: FnOnce() -> String,
-    {
-        if self.is_empty() {
-            fallback()
-        } else {
-            self
-        }
-    }
-}
-
-fn first_markdown_paragraph(content: &str) -> Option<String> {
-    let mut in_frontmatter = content.lines().next().map(str::trim) == Some("---");
-    let mut seen_frontmatter_end = !in_frontmatter;
-    for line in content.lines().take(160) {
-        let trimmed = line.trim();
-        if in_frontmatter {
-            if trimmed == "---" || trimmed == "..." {
-                in_frontmatter = false;
-                seen_frontmatter_end = true;
-            }
-            continue;
-        }
-        if !seen_frontmatter_end || trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        return Some(trimmed.to_string());
-    }
-    None
-}
-
-fn slugify_skill_id(value: &str) -> String {
-    let mut output = String::new();
-    let mut last_dash = false;
-    for ch in value.trim().chars() {
-        if ch.is_ascii_alphanumeric() {
-            output.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash {
-            output.push('-');
-            last_dash = true;
-        }
-    }
-    output.trim_matches('-').to_string()
-}
-
-fn classify_local_skill(
-    profile: &LocalSkillProfile,
-    market_skills: &[MarketSkill],
-) -> LocalSkillClassification {
-    if let Some(skill) = market_skills.iter().find(|skill| {
-        skill.id.eq_ignore_ascii_case(&profile.skill_id) && skill.latest_version == profile.version
-    }) {
-        return LocalSkillClassification {
-            origin: "market".to_string(),
-            status: "market".to_string(),
-            matched_source_id: skill.source_id.clone(),
-            matched_namespace: Some(skill.namespace.clone()),
-            matched_skill_id: Some(skill.id.clone()),
-            matched_version: Some(skill.latest_version.clone()),
-            can_import_to_cache: false,
-            can_restore_binding: true,
-        };
-    }
-
-    if let Some(skill) = market_skills.iter().find(|skill| {
-        skill.id.eq_ignore_ascii_case(&profile.skill_id)
-            || skill.name.eq_ignore_ascii_case(&profile.name)
-    }) {
-        return LocalSkillClassification {
-            origin: "unknown".to_string(),
-            status: "possible_market".to_string(),
-            matched_source_id: skill.source_id.clone(),
-            matched_namespace: Some(skill.namespace.clone()),
-            matched_skill_id: Some(skill.id.clone()),
-            matched_version: Some(skill.latest_version.clone()),
-            can_import_to_cache: true,
-            can_restore_binding: true,
-        };
-    }
-
-    LocalSkillClassification {
-        origin: "local".to_string(),
-        status: "local".to_string(),
-        matched_source_id: None,
-        matched_namespace: None,
-        matched_skill_id: None,
-        matched_version: None,
-        can_import_to_cache: true,
-        can_restore_binding: false,
-    }
-}
-
-fn skill_name_from_dir(path: &Path) -> Option<String> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToString::to_string)
-}
-
-fn read_skill_markdown_name(path: &Path) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    parse_skill_markdown_name(&content)
-}
-
-fn read_skill_markdown_title(path: &Path) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    parse_skill_markdown_title(&content)
-}
-
-fn parse_skill_markdown_name(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-
-    for line in lines.take(80) {
-        let trimmed = line.trim();
-        if trimmed == "---" || trimmed == "..." {
-            break;
-        }
-
-        let Some((key, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-
-        if key.trim().eq_ignore_ascii_case("name") {
-            return clean_frontmatter_value(value);
-        }
-    }
-
-    None
-}
-
-fn clean_frontmatter_value(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    let unquoted = if trimmed.len() >= 2 {
-        let first = trimmed.as_bytes()[0] as char;
-        let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
-        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-            &trimmed[1..trimmed.len() - 1]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-
-    let name = unquoted.trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
-}
-
-fn parse_skill_markdown_title(content: &str) -> Option<String> {
-    for line in content.lines().take(80) {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('#') {
-            continue;
-        }
-
-        let title = trimmed.trim_start_matches('#').trim();
-        if !title.is_empty() {
-            return Some(title.to_string());
-        }
-    }
-
-    None
-}
-
-fn display_skill_name_from_path(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("local-skill")
-        .to_string()
-}
-
-async fn preview_skill_inner(
-    request: SkillPreviewRequest,
-    state: &AppState,
-) -> Result<SkillPreview> {
-    let should_refresh_market_metadata =
-        request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
-    if should_refresh_market_metadata {
-        let _metadata_sync_error = refresh_catalog_best_effort(state).await;
-    }
-    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
-
-    let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
-        let conn = state.conn.lock().expect("db mutex poisoned");
-        let binding = find_binding(&conn, binding_id)?;
-        (
-            binding.skill_name,
-            format!("{} / {}", binding.target, binding.level),
-            PathBuf::from(binding.install_path),
-        )
-    } else if let Some(path) = request.path.as_deref() {
-        let root_path = PathBuf::from(path);
-        let title = detect_local_skill_label(&root_path)
-            .unwrap_or_else(|| display_skill_name_from_path(&root_path));
-        (title, "本地目录".to_string(), root_path)
-    } else {
-        let namespace = request
-            .namespace
-            .as_deref()
-            .ok_or_else(|| anyhow!("缺少 namespace"))?;
-        let skill_id = request
-            .skill_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("缺少 skill id"))?;
-        let requested_source_id = request.source_id.clone();
-        let requested_version = request.version.clone();
-        let cached_preview = {
-            let conn = state.conn.lock().expect("db mutex poisoned");
-            let source_id = requested_source_id.clone().or_else(|| {
-                default_source_for_skill(&conn, namespace, skill_id)
-                    .ok()
-                    .flatten()
-            });
-            match requested_version.as_deref() {
-                Some(version) => find_cached_package_preview(
-                    &conn,
-                    source_id.as_deref(),
-                    namespace,
-                    skill_id,
-                    version,
-                )?,
-                None => None,
-            }
-        };
-
-        if let Some((skill_name, package_path)) = cached_preview {
-            (
-                skill_name,
-                "本地缓存".to_string(),
-                PathBuf::from(package_path),
-            )
-        } else {
-            let (source_id, skill, source) = {
-                let conn = state.conn.lock().expect("db mutex poisoned");
-                let source_id = requested_source_id.or_else(|| {
-                    default_source_for_skill(&conn, namespace, skill_id)
-                        .ok()
-                        .flatten()
-                });
-                let skill = find_market_skill(&conn, source_id.as_deref(), namespace, skill_id)?;
-                let source = source_id.as_deref().and_then(|id| {
-                    list_sources_inner(&conn)
-                        .ok()?
-                        .into_iter()
-                        .find(|item| item.id == id)
-                });
-                (source_id, skill, source)
-            };
-            let version = requested_version.unwrap_or_else(|| skill.latest_version.clone());
-            let version_info = match source.as_ref() {
-                Some(source) => {
-                    Some(fetch_manifest_version(source, &skill.manifest_path, &version).await?)
-                }
-                _ => None,
-            };
-            let package_path = prepare_package(
-                state,
-                source.as_ref(),
-                &skill,
-                &version,
-                version_info.as_ref(),
-            )
-            .await?;
-            (
-                skill.name,
-                source_id.unwrap_or_else(|| "本地缓存".to_string()),
-                package_path,
-            )
-        }
-    };
-
-    if !root_path.exists() || !root_path.is_dir() {
-        return Err(anyhow!("预览目录不存在"));
-    }
-
-    let (file_list, files) = collect_preview_files(&root_path, selected_path.as_deref())?;
-
-    Ok(SkillPreview {
-        title,
-        root_path: canonical_display_path(&root_path),
-        origin,
-        files,
-        file_list,
-    })
-}
-
-async fn preview_plugin_inner(
-    request: PluginPreviewRequest,
-    state: &AppState,
-) -> Result<SkillPreview> {
-    let should_refresh_market_metadata =
-        request.binding_id.is_none() && request.path.is_none() && request.version.is_none();
-    if should_refresh_market_metadata {
-        let _metadata_sync_error = refresh_catalog_best_effort(state).await;
-    }
-    let selected_path = normalize_preview_file_path(request.file_path.as_deref())?;
-
-    let (title, origin, root_path) = if let Some(binding_id) = request.binding_id.as_deref() {
-        let conn = state.conn.lock().expect("db mutex poisoned");
-        let binding = find_plugin_binding(&conn, binding_id)?;
-        let package_path: String = conn
-            .query_row(
-                "SELECT package_path FROM plugin_packages WHERE id = ?1",
-                params![binding.package_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                anyhow!("PLUGIN_MARKETPLACE_WRITE_FAILED: plugin cache package not found")
-            })?;
-        (
-            binding.plugin_name,
-            format!("{} / {}", binding.target, binding.scope),
-            PathBuf::from(package_path),
-        )
-    } else if let Some(path) = request.path.as_deref() {
-        let root_path = PathBuf::from(path);
-        (
-            display_skill_name_from_path(&root_path),
-            "local plugin".to_string(),
-            root_path,
-        )
-    } else {
-        let namespace = request
-            .namespace
-            .as_deref()
-            .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing namespace"))?;
-        let plugin_id = request
-            .plugin_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: missing plugin id"))?;
-        let target = request.target.as_deref().unwrap_or("codex");
-        validation::validate_plugin_target(target)?;
-        let requested_source_id = request.source_id.clone();
-        let requested_version = request.version.clone();
-
-        let (source_id, plugin, source) = {
-            let conn = state.conn.lock().expect("db mutex poisoned");
-            let source_id = requested_source_id.or_else(|| {
-                default_source_for_plugin(&conn, namespace, plugin_id)
-                    .ok()
-                    .flatten()
-            });
-            let plugin = find_market_plugin(&conn, source_id.as_deref(), namespace, plugin_id)?;
-            if !plugin.targets.iter().any(|item| item == target) {
-                return Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}"));
-            }
-            let source = source_id.as_deref().and_then(|id| {
-                list_sources_inner(&conn)
-                    .ok()?
-                    .into_iter()
-                    .find(|item| item.id == id)
-            });
-            (source_id, plugin, source)
-        };
-        let version = requested_version.unwrap_or_else(|| plugin.latest_version.clone());
-        let version_info = match source.as_ref() {
-            Some(source) => {
-                Some(fetch_plugin_manifest_version(source, &plugin.manifest_path, &version).await?)
-            }
-            _ => None,
-        };
-        let package_path = prepare_plugin_package(
-            state,
-            source.as_ref(),
-            &plugin,
-            &version,
-            target,
-            version_info.as_ref(),
-        )
-        .await?;
-        (
-            plugin.name,
-            format!(
-                "{} / {}",
-                source_id.unwrap_or_else(|| "local cache".to_string()),
-                target
-            ),
-            package_path,
-        )
-    };
-
-    if !root_path.exists() || !root_path.is_dir() {
-        return Err(anyhow!(
-            "PLUGIN_PACKAGE_BUILD_FAILED: preview directory missing"
-        ));
-    }
-
-    let (file_list, files) = collect_preview_files(&root_path, selected_path.as_deref())?;
-
-    Ok(SkillPreview {
-        title,
-        root_path: canonical_display_path(&root_path),
-        origin,
-        files,
-        file_list,
-    })
-}
-
-fn collect_preview_files(
-    root: &Path,
-    selected_path: Option<&str>,
-) -> Result<(Vec<SkillPreviewFileEntry>, Vec<SkillPreviewFile>)> {
-    let file_list = collect_preview_file_list(root)?;
-    let candidates = preview_candidate_paths(&file_list, selected_path);
-
-    let mut files = Vec::new();
-    let mut seen = HashSet::new();
-    for relative in candidates {
-        if files.len() >= PREVIEW_MAX_FILES || !seen.insert(relative.clone()) {
-            continue;
-        }
-        let path = root.join(&relative);
-        if !path.exists() || !path.is_file() {
-            continue;
-        }
-        if let Some(file) = read_preview_file(&relative, &path, PREVIEW_MAX_BYTES)? {
-            files.push(file);
-        }
-    }
-
-    Ok((file_list, files))
-}
-
-fn collect_preview_file_list(root: &Path) -> Result<Vec<SkillPreviewFileEntry>> {
-    let mut entries = Vec::new();
-    collect_preview_candidates(root, root, &mut entries, PREVIEW_MAX_FILE_LIST)?;
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
-}
-
-fn collect_preview_candidates(
-    root: &Path,
-    current: &Path,
-    candidates: &mut Vec<SkillPreviewFileEntry>,
-    max_files: usize,
-) -> Result<()> {
-    if candidates.len() >= max_files {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let allow_hidden_plugin_manifest_dir =
-            path.is_dir() && (name == ".codex-plugin" || name == ".claude-plugin");
-        if (name.starts_with('.') && !allow_hidden_plugin_manifest_dir)
-            || name == "node_modules"
-            || name == "target"
-        {
-            continue;
-        }
-
-        if path.is_dir() {
-            collect_preview_candidates(root, &path, candidates, max_files)?;
-        } else {
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            candidates.push(preview_file_entry(&relative));
-        }
-
-        if candidates.len() >= max_files {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-fn is_previewable_relative_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "md" | "txt"
-                    | "json"
-                    | "toml"
-                    | "yaml"
-                    | "yml"
-                    | "rs"
-                    | "ts"
-                    | "tsx"
-                    | "js"
-                    | "jsx"
-                    | "py"
-                    | "ps1"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn preview_file_entry(relative: &str) -> SkillPreviewFileEntry {
-    SkillPreviewFileEntry {
-        path: relative.to_string(),
-        language: language_for_relative_path(relative),
-        previewable: is_previewable_relative_path(relative),
-    }
-}
-
-fn normalize_preview_file_path(value: Option<&str>) -> Result<Option<String>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let path = value.trim().trim_matches('/');
-    if path.is_empty()
-        || path.contains("..")
-        || path.contains('\\')
-        || path.split('/').any(|part| part.trim().is_empty())
-    {
-        return Err(anyhow!("预览文件路径不合法"));
-    }
-    Ok(Some(path.to_string()))
-}
-
-fn read_preview_file(
-    relative: &str,
-    path: &Path,
-    max_bytes: usize,
-) -> Result<Option<SkillPreviewFile>> {
-    let bytes = fs::read(path)?;
-    let truncated = bytes.len() > max_bytes;
-    let slice = if truncated {
-        &bytes[..max_bytes]
-    } else {
-        bytes.as_slice()
-    };
-    let Ok(content) = String::from_utf8(slice.to_vec()) else {
-        return Ok(None);
-    };
-
-    Ok(Some(SkillPreviewFile {
-        path: relative.to_string(),
-        language: language_for_path(path),
-        content,
-        truncated,
-    }))
-}
-
-fn preview_file_from_bytes(
-    relative: &str,
-    bytes: &[u8],
-    max_bytes: usize,
-) -> Option<SkillPreviewFile> {
-    let truncated = bytes.len() > max_bytes;
-    let slice = if truncated {
-        &bytes[..max_bytes]
-    } else {
-        bytes
-    };
-    let Ok(content) = String::from_utf8(slice.to_vec()) else {
-        return None;
-    };
-
-    Some(SkillPreviewFile {
-        path: relative.to_string(),
-        language: language_for_relative_path(relative),
-        content,
-        truncated,
-    })
-}
-
-fn language_for_path(path: &Path) -> String {
-    language_for_relative_path(&path.to_string_lossy())
-}
-
-fn language_for_relative_path(path: &str) -> String {
-    match path
-        .rsplit('.')
-        .next()
-        .filter(|extension| *extension != path)
-        .or_else(|| {
-            Path::new(path)
-                .extension()
-                .and_then(|extension| extension.to_str())
-        })
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "md" => "markdown",
-        "json" => "json",
-        "toml" => "toml",
-        "yaml" | "yml" => "yaml",
-        "rs" => "rust",
-        "ts" | "tsx" => "typescript",
-        "js" | "jsx" => "javascript",
-        "py" => "python",
-        "ps1" => "powershell",
-        _ => "text",
-    }
-    .to_string()
-}
-
-fn default_source_for_skill(
-    conn: &rusqlite::Connection,
-    namespace: &str,
-    skill_id: &str,
-) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT source_id FROM catalog_cache WHERE namespace = ?1 AND skill_id = ?2 LIMIT 1",
-        params![namespace, skill_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-fn find_market_skill(
-    conn: &rusqlite::Connection,
-    source_id: Option<&str>,
-    namespace: &str,
-    skill_id: &str,
-) -> Result<MarketSkill> {
-    let skills = list_market_skills_inner(conn)?;
-    skills
-        .into_iter()
-        .find(|skill| {
-            skill.namespace == namespace
-                && skill.id == skill_id
-                && source_id
-                    .map(|id| skill.source_id.as_deref() == Some(id))
-                    .unwrap_or(true)
-        })
-        .ok_or_else(|| anyhow!("未找到 skill: {namespace}/{skill_id}"))
-}
-
-fn default_source_for_plugin(
-    conn: &rusqlite::Connection,
-    namespace: &str,
-    plugin_id: &str,
-) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT source_id FROM plugin_catalog_cache WHERE namespace = ?1 AND plugin_id = ?2 LIMIT 1",
-        params![namespace, plugin_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-fn find_market_plugin(
-    conn: &rusqlite::Connection,
-    source_id: Option<&str>,
-    namespace: &str,
-    plugin_id: &str,
-) -> Result<MarketPlugin> {
-    let plugins = list_market_plugins_inner(conn)?;
-    plugins
-        .into_iter()
-        .find(|plugin| {
-            plugin.namespace == namespace
-                && plugin.id == plugin_id
-                && source_id
-                    .map(|id| plugin.source_id.as_deref() == Some(id))
-                    .unwrap_or(true)
-        })
-        .ok_or_else(|| anyhow!("PLUGIN_SOURCE_INVALID: plugin not found {namespace}/{plugin_id}"))
-}
-
-fn find_cached_package_preview(
-    conn: &rusqlite::Connection,
-    source_id: Option<&str>,
-    namespace: &str,
-    skill_id: &str,
-    version: &str,
-) -> Result<Option<(String, String)>> {
-    conn.query_row(
-        "SELECT COALESCE(catalog.name, binding.skill_name, package.skill_id), package.package_path
-         FROM skill_packages package
-         LEFT JOIN catalog_cache catalog
-           ON COALESCE(catalog.source_id, '') = COALESCE(package.source_id, '')
-          AND catalog.namespace = package.namespace
-          AND catalog.skill_id = package.skill_id
-         LEFT JOIN skill_bindings binding
-           ON COALESCE(binding.source_id, '') = COALESCE(package.source_id, '')
-          AND binding.namespace = package.namespace
-          AND binding.skill_id = package.skill_id
-          AND binding.version = package.version
-         WHERE COALESCE(package.source_id, '') = COALESCE(?1, '')
-           AND package.namespace = ?2
-           AND package.skill_id = ?3
-           AND package.version = ?4
-         LIMIT 1",
-        params![source_id, namespace, skill_id, version],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
-    .map_err(Into::into)
 }
 
 fn ensure_package_record(
@@ -9359,7 +7807,7 @@ fn ensure_install_path_not_bound_to_other_skill(
     }
 }
 
-fn resolve_project_skill_root(target: &str, project_path: &Path) -> PathBuf {
+pub(crate) fn resolve_project_skill_root(target: &str, project_path: &Path) -> PathBuf {
     match target {
         "codex" => project_path.join(".codex").join("skills"),
         "claude" => project_path.join(".claude").join("skills"),
@@ -9367,7 +7815,7 @@ fn resolve_project_skill_root(target: &str, project_path: &Path) -> PathBuf {
     }
 }
 
-fn find_binding(conn: &rusqlite::Connection, binding_id: &str) -> Result<SkillBinding> {
+pub(crate) fn find_binding(conn: &rusqlite::Connection, binding_id: &str) -> Result<SkillBinding> {
     list_bindings_inner(conn)?
         .into_iter()
         .find(|binding| binding.id == binding_id)
@@ -9392,14 +7840,15 @@ fn disabled_local_skill_path(path: &Path) -> Result<PathBuf> {
     let leaf = path
         .file_name()
         .ok_or_else(|| anyhow!("本地 skill 路径缺少目录名"))?;
-    Ok(parent.join(DISABLED_SKILLS_DIR).join(leaf))
+    Ok(parent.join(local::DISABLED_SKILLS_DIR).join(leaf))
 }
 
 fn enabled_local_skill_path(path: &Path) -> Result<PathBuf> {
     let disabled_root = path
         .parent()
         .ok_or_else(|| anyhow!("禁用 skill 路径缺少父目录"))?;
-    if disabled_root.file_name().and_then(|name| name.to_str()) != Some(DISABLED_SKILLS_DIR) {
+    if disabled_root.file_name().and_then(|name| name.to_str()) != Some(local::DISABLED_SKILLS_DIR)
+    {
         return Err(anyhow!("该本地 skill 不在禁用目录中，无法恢复启用"));
     }
     let root = disabled_root
@@ -9504,144 +7953,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_skill_name_from_frontmatter() {
-        let content = r#"---
-name: api-conventions
-description: API design patterns for this codebase
----
-
-When writing API endpoints:
-- Use RESTful naming conventions
-"#;
-
-        assert_eq!(
-            parse_skill_markdown_name(content).as_deref(),
-            Some("api-conventions")
-        );
-    }
-
-    #[test]
-    fn parses_quoted_skill_name_from_frontmatter() {
-        let content = r#"---
-name: "API Conventions"
----
-
-# Fallback title
-"#;
-
-        assert_eq!(
-            parse_skill_markdown_name(content).as_deref(),
-            Some("API Conventions")
-        );
-    }
-
-    #[test]
-    fn falls_back_to_markdown_title_when_frontmatter_name_is_missing() {
-        let content = r#"---
-description: API design patterns for this codebase
----
-
-# API Conventions
-"#;
-
-        assert_eq!(parse_skill_markdown_name(content), None);
-        assert_eq!(
-            parse_skill_markdown_title(content).as_deref(),
-            Some("API Conventions")
-        );
-    }
-
-    #[test]
-    fn local_skill_label_prefers_directory_name() {
-        let root = std::env::temp_dir().join(format!("skillhub-test-{}", new_id()));
-        let skill_dir = root.join("api-conventions");
-        fs::create_dir_all(&skill_dir).expect("create temp skill dir");
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            r#"---
-name: frontmatter-name
----
-
-# Heading Name
-"#,
-        )
-        .expect("write temp SKILL.md");
-
-        assert_eq!(
-            detect_local_skill_label(&skill_dir).as_deref(),
-            Some("api-conventions")
-        );
-
-        fs::remove_dir_all(root).expect("remove temp skill dir");
-    }
-
-    #[test]
-    fn local_skill_profile_allows_minimal_skill_md() {
-        let root = std::env::temp_dir().join(format!("skillhub-test-{}", new_id()));
-        let skill_dir = root.join("Daily Note Helper");
-        fs::create_dir_all(&skill_dir).expect("create temp skill dir");
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            r#"# Daily Note Helper
-
-Capture a concise daily note.
-"#,
-        )
-        .expect("write temp SKILL.md");
-
-        let profile = read_local_skill_profile(&skill_dir).expect("parse local profile");
-        assert_eq!(profile.name, "Daily Note Helper");
-        assert_eq!(profile.skill_id, "daily-note-helper");
-        assert_eq!(profile.version, LOCAL_DEFAULT_VERSION);
-        assert_eq!(profile.summary, "Capture a concise daily note.");
-        assert!(profile.tags.is_empty());
-
-        fs::remove_dir_all(root).expect("remove temp skill dir");
-    }
-
-    #[test]
-    fn local_skill_classification_requires_strong_market_match() {
-        let market = vec![MarketSkill {
-            namespace: "live".to_string(),
-            id: "daily-note-helper".to_string(),
-            name: "Daily Note Helper".to_string(),
-            summary: String::new(),
-            latest_version: "1.0.0".to_string(),
-            categories: vec![],
-            tags: vec![],
-            targets: vec![],
-            levels: vec![],
-            manifest_path: "skills/live/daily-note-helper/manifest.json".to_string(),
-            updated_at: None,
-            source_id: Some("compiled-source".to_string()),
-            installed_bindings: vec![],
-            cached_versions: vec![],
-        }];
-        let profile = LocalSkillProfile {
-            name: "Daily Note Helper".to_string(),
-            summary: String::new(),
-            skill_id: "daily-note-helper".to_string(),
-            version: LOCAL_DEFAULT_VERSION.to_string(),
-            author: None,
-            tags: vec![],
-        };
-
-        let weak = classify_local_skill(&profile, &market);
-        assert_eq!(weak.origin, "unknown");
-        assert!(weak.can_import_to_cache);
-
-        let strong = classify_local_skill(
-            &LocalSkillProfile {
-                version: "1.0.0".to_string(),
-                ..profile
-            },
-            &market,
-        );
-        assert_eq!(strong.origin, "market");
-        assert!(!strong.can_import_to_cache);
-    }
-
-    #[test]
     fn local_skill_enable_disable_paths_round_trip() {
         let active = PathBuf::from(r"C:\Users\ctf19\.codex\skills\daily-note-helper");
         let disabled = disabled_local_skill_path(&active).expect("disabled path should resolve");
@@ -9659,27 +7970,6 @@ Capture a concise daily note.
     fn local_skill_enable_path_requires_disabled_root() {
         let active = PathBuf::from(r"C:\Users\ctf19\.codex\skills\daily-note-helper");
         assert!(enabled_local_skill_path(&active).is_err());
-    }
-
-    #[test]
-    fn local_plugin_identity_key_groups_same_plugin_across_paths() {
-        assert_eq!(
-            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
-            local_plugin_identity_key("codex", "user", None, "commit-workflow")
-        );
-        assert_ne!(
-            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
-            local_plugin_identity_key("claude", "user", None, "commit-workflow")
-        );
-        assert_ne!(
-            local_plugin_identity_key("codex", "user", None, "commit-workflow"),
-            local_plugin_identity_key(
-                "codex",
-                "project",
-                Some(r"C:\Users\ctf19\project-a"),
-                "commit-workflow"
-            )
-        );
     }
 
     #[test]
@@ -10048,33 +8338,6 @@ metadata:
         ]);
         let err = prepare_plugin_publish(&files, None).expect_err("unsafe path should fail");
         assert!(err.to_string().contains("PLUGIN_PACKAGE_BUILD_FAILED"));
-    }
-
-    #[test]
-    fn plugin_preview_file_list_includes_native_manifest_directory() {
-        let root = std::env::temp_dir().join(format!("skillhub-plugin-preview-{}", new_id()));
-        fs::create_dir_all(root.join(".codex-plugin")).expect("create manifest dir");
-        fs::write(
-            root.join(".codex-plugin").join("plugin.json"),
-            br#"{"name":"demo"}"#,
-        )
-        .expect("write manifest");
-        fs::create_dir_all(root.join("skills").join("demo")).expect("create skill dir");
-        fs::write(
-            root.join("skills").join("demo").join("SKILL.md"),
-            b"# Demo\n",
-        )
-        .expect("write skill");
-
-        let entries = collect_preview_file_list(&root).expect("collect preview files");
-
-        assert!(entries
-            .iter()
-            .any(|entry| entry.path == ".codex-plugin/plugin.json"));
-        assert!(entries
-            .iter()
-            .any(|entry| entry.path == "skills/demo/SKILL.md"));
-        fs::remove_dir_all(root).expect("remove temp dir");
     }
 
     #[test]
@@ -10518,8 +8781,11 @@ metadata:
     #[test]
     fn claude_plugin_marketplace_path_resolves_from_marketplace_dir() {
         let root = PathBuf::from("/tmp/project");
-        let resolved =
-            resolve_plugin_source_path("claude", &root, "./plugins/internal.commit-workflow");
+        let resolved = local::resolve_plugin_source_path(
+            "claude",
+            &root,
+            "./plugins/internal.commit-workflow",
+        );
         assert_eq!(
             canonical_display_path(&resolved),
             "/tmp/project/./plugins/internal.commit-workflow"
@@ -10884,7 +9150,7 @@ metadata:
     fn codex_plugin_marketplace_path_uses_agents_plugins_catalog() {
         let root = PathBuf::from("/tmp/project");
         assert_eq!(
-            canonical_display_path(&plugin_marketplace_path("codex", &root)),
+            canonical_display_path(&local::plugin_marketplace_path("codex", &root)),
             "/tmp/project/.agents/plugins/marketplace.json"
         );
     }
@@ -10894,49 +9160,9 @@ metadata:
         assert_eq!(plugin_marketplace_name("codex", "user", None), "personal");
         assert_eq!(
             plugin_marketplace_name("codex", "project", Some("/tmp/project")),
-            format!("skillhub-{}", path_hash("/tmp/project"))
+            format!("skillhub-{}", local::path_hash("/tmp/project"))
         );
         assert_eq!(plugin_marketplace_name("claude", "user", None), "skillhub");
-    }
-
-    #[test]
-    fn plugin_scan_roots_skips_skillhub_managed_claude_user_marketplace_root() {
-        let app_dir = std::env::temp_dir().join(format!("skillhub-scan-roots-{}", new_id()));
-        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE projects (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              path TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            "#,
-        )
-        .expect("create projects table");
-        let state = AppState {
-            conn: std::sync::Arc::new(std::sync::Mutex::new(
-                rusqlite::Connection::open_in_memory().expect("open state sqlite"),
-            )),
-            app_dir: app_dir.clone(),
-            local_macs: vec![],
-        };
-
-        let roots = plugin_scan_roots(&state, &conn).expect("scan roots");
-        let skillhub_claude_user_root = canonical_display_path(
-            &app_dir
-                .join("plugin-marketplaces")
-                .join("claude")
-                .join("user"),
-        );
-
-        assert!(
-            roots
-                .iter()
-                .all(|(_, _, _, root)| canonical_display_path(root) != skillhub_claude_user_root),
-            "Skill Hub's own Claude user marketplace root should be represented by bindings, not scanned as an external local plugin"
-        );
     }
 
     #[test]
@@ -11186,17 +9412,6 @@ author: skill-hub
             doc.items.iter().map(|item| item.order).collect::<Vec<_>>(),
             vec![10, 20, 30]
         );
-    }
-
-    #[test]
-    fn preview_file_from_bytes_detects_language_and_truncates() {
-        let file = preview_file_from_bytes("src/main.ts", b"abcdef", 3)
-            .expect("text preview should parse");
-
-        assert_eq!(file.language, "typescript");
-        assert_eq!(file.content, "abc");
-        assert!(file.truncated);
-        assert!(preview_file_from_bytes("asset.bin", &[0, 159], 10).is_none());
     }
 
     #[test]
