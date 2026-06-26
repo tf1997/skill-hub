@@ -7,6 +7,7 @@ mod db;
 mod minio_config;
 mod models;
 mod process_util;
+mod services;
 mod updater;
 mod webview_prereq;
 
