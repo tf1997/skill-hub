@@ -137,6 +137,20 @@
   opacity: 0.48;
   transform: none;
 }
+.primary-action.installing {
+  cursor: progress;
+  opacity: 0.86;
+}
+
+.button-spinner {
+  animation: button-spin 0.9s linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .error-strip,
 .conflict-note {

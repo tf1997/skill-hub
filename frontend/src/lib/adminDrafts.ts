@@ -2,6 +2,8 @@ import type { AdminDraftPlugin, AdminDraftSkill, PublishMeta } from "../types";
 
 export type AdminArtifactKind = "skill" | "plugin";
 
+export const pluginBuiltinTargets = ["codex", "claude"];
+
 export const isPublishedDraft = (draft?: AdminDraftSkill | null) => draft?.status.trim() === "已发布";
 
 export function publishMetaMissingFields(meta: PublishMeta, kind: AdminArtifactKind = "skill") {
@@ -15,9 +17,6 @@ export function publishMetaMissingFields(meta: PublishMeta, kind: AdminArtifactK
   if (kind === "plugin") {
     if (!meta.version?.trim()) {
       missing.push("版本");
-    }
-    if (meta.targets.length === 0) {
-      missing.push("目标平台");
     }
     if (meta.levels.length === 0) {
       missing.push("作用域");
@@ -272,7 +271,7 @@ export function defaultMetaFromPluginDraft(draft: AdminDraftPlugin): PublishMeta
     name: pluginDraftLabel(draft),
     summary: draft.summary ?? "",
     tags: [],
-    targets: draft.targets,
+    targets: [...pluginBuiltinTargets],
     levels: draft.scopes.length > 0 ? draft.scopes : ["user", "project"],
     publishCategorySlug: categorySlug
   };

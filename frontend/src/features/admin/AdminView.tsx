@@ -20,6 +20,8 @@ import { DraftList } from "./DraftList";
 import { GovernanceDialogView } from "./GovernanceDialogView";
 import { PluginDraftList } from "./PluginDraftList";
 
+const pluginBuiltinTargetLabel = "Codex / Claude Code";
+
 export function AdminView(props: {
   session: AdminSession | null;
   activeTab: AdminTab;
@@ -607,13 +609,10 @@ export function AdminView(props: {
                             onChange={(event) => updatePluginMeta("tags", splitCsv(event.target.value))}
                           />
                         </label>
-                        <label className="text-field">
-                          <span>目标平台，逗号分隔</span>
-                          <input
-                            value={props.pluginMeta.targets.join(", ")}
-                            onChange={(event) => updatePluginMeta("targets", splitCsv(event.target.value))}
-                          />
-                        </label>
+                        <div className="text-field readonly-display">
+                          <span>目标平台</span>
+                          <strong>{pluginBuiltinTargetLabel}</strong>
+                        </div>
                         <label className="text-field">
                           <span>作用域，逗号分隔</span>
                           <input
@@ -684,7 +683,7 @@ export function AdminView(props: {
                         </div>
                         <div>
                           <span>支持平台</span>
-                          <strong>{selectedPluginDraft.targets.join(" / ") || "未声明"}</strong>
+                          <strong>{pluginBuiltinTargetLabel}</strong>
                         </div>
                         <div>
                           <span>风险</span>

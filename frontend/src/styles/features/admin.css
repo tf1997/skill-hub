@@ -680,6 +680,19 @@
   background: rgba(110, 128, 154, 0.08);
   cursor: not-allowed;
 }
+.text-field.readonly-display strong {
+  display: flex;
+  min-width: 0;
+  height: 36px;
+  align-items: center;
+  padding: 0 12px;
+  color: var(--text-primary);
+  background: rgba(110, 128, 154, 0.08);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 650;
+}
 
 .archive-skill-row.disabled {
   opacity: 0.58;

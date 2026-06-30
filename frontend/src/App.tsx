@@ -194,6 +194,8 @@ function App() {
   const [installTarget, setInstallTarget] = useState("codex");
   const [installLevel, setInstallLevel] = useState<LevelChoice>("personal");
   const [installProjectPath, setInstallProjectPath] = useState("");
+  const [installingPluginKey, setInstallingPluginKey] = useState<string | null>(null);
+  const [installingPluginStage, setInstallingPluginStage] = useState("");
   const [updatePolicy, setUpdatePolicy] = useState("follow_latest");
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
@@ -560,7 +562,11 @@ function App() {
       return;
     }
 
+    const activePluginKey = pluginKey(selectedPlugin);
     setBusy(true);
+    setInstallingPluginKey(activePluginKey);
+    setInstallingPluginStage("准备插件包");
+    setNotice(`${selectedPlugin.name} 正在准备插件包...`);
     setError(null);
     try {
       const request: InstallPluginRequest = {
@@ -575,7 +581,17 @@ function App() {
         updatePolicy,
         enable: installLevel !== "download"
       };
+      setInstallingPluginStage(
+        installLevel === "download"
+          ? "下载并解压缓存"
+          : installTarget === "claude"
+            ? "写入 marketplace 并同步 Claude Code"
+            : "写入 marketplace 并同步 Codex"
+      );
+      setNotice(`${selectedPlugin.name} 正在${installLevel === "download" ? "下载缓存" : "写入 marketplace"}...`);
       await api.installPlugin(request);
+      setInstallingPluginStage("刷新安装状态");
+      setNotice(`${selectedPlugin.name} 正在刷新安装状态...`);
       await load();
       const installText =
         installLevel === "download"
@@ -589,10 +605,11 @@ function App() {
     } catch (err) {
       setError(readError(err));
     } finally {
+      setInstallingPluginKey(null);
+      setInstallingPluginStage("");
       setBusy(false);
     }
   }
-
   async function handleUpgradeBinding(update: UpdateCandidate) {
     setBusy(true);
     setError(null);
@@ -1475,6 +1492,8 @@ function App() {
             }}
             installProjectPath={installProjectPath}
             onInstallProjectPath={setInstallProjectPath}
+            installingPluginKey={installingPluginKey}
+            installingPluginStage={installingPluginStage}
             targetRoots={data.targetRoots}
             projects={data.projects}
             onInstall={() => void (marketArtifactKind === "plugin" ? installSelectedPlugin() : installSelectedSkill())}

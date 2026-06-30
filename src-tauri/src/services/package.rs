@@ -225,31 +225,14 @@ fn build_native_plugin_manifest(
 }
 
 fn should_include_common_plugin_file(path: &str, target: &str) -> bool {
-    if path == "pluginhub.json" {
+    if path == "pluginhub.json" || is_package_control_file(path) {
         return false;
     }
-    if matches!(
-        path,
-        "README.md" | "CHANGELOG.md" | "LICENSE" | "LICENSE.md" | ".mcp.json"
-    ) {
-        return true;
-    }
-    if path.starts_with("skills/") || path.starts_with("hooks/") || path.starts_with("assets/") {
-        return true;
-    }
-    match target {
-        "codex" => path == ".app.json",
-        "claude" => {
-            path == ".lsp.json"
-                || path == "settings.json"
-                || path.starts_with("agents/")
-                || path.starts_with("monitors/")
-                || path.starts_with("bin/")
-        }
-        _ => false,
+    match plugin_native_manifest_path(target) {
+        Ok(manifest_path) => path != manifest_path,
+        Err(_) => false,
     }
 }
-
 pub(crate) fn normalize_zip_relative_path(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
     let trimmed = normalized.trim().trim_matches('/');

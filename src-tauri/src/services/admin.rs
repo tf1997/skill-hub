@@ -30,6 +30,7 @@ pub(crate) const PLUGIN_DRAFT_PREFIX: &str = "draft/gitlab/plugins/";
 pub(crate) const DRAFT_ADMIN_PREFIX: &str = "draft/admin/gitlab/skills/";
 pub(crate) const PLUGIN_ADMIN_PREFIX: &str = "draft/admin/gitlab/plugins/";
 pub(crate) const ARCHIVED_ADMIN_PREFIX: &str = "draft/admin/archived/skills/";
+pub(crate) const PLUGIN_ARCHIVED_ADMIN_PREFIX: &str = "draft/admin/archived/plugins/";
 pub(crate) const PROJECTS_OBJECT: &str = "projects.v1.json";
 pub(crate) const CATALOG_OBJECT: &str = "catalog.v1.json";
 pub(crate) const PLUGIN_CATALOG_OBJECT: &str = "plugin-catalog.v1.json";
@@ -98,20 +99,11 @@ pub(crate) async fn list_admin_drafts_inner(
     let mut drafts = Vec::new();
     let mut seen_sources = HashSet::new();
 
-    for object in objects
-        .iter()
-        .filter(|object| object.ends_with("/SKILL.md") && object.starts_with(DRAFT_GITLAB_PREFIX))
-    {
-        let source_path = object
-            .trim_start_matches(DRAFT_GITLAB_PREFIX)
-            .trim_end_matches("/SKILL.md")
-            .to_string();
-        if source_path.trim().is_empty() {
-            continue;
-        }
+    for source_path in collect_skill_draft_source_paths(&objects) {
         seen_sources.insert(source_path.clone());
 
-        let skill_md = client.get_text(object).await.unwrap_or_default();
+        let skill_md_path = format!("{DRAFT_GITLAB_PREFIX}{source_path}/SKILL.md");
+        let skill_md = client.get_text(&skill_md_path).await.unwrap_or_default();
         let draft_metadata = parse_skill_frontmatter(&skill_md);
         let version = draft_metadata.version.clone();
         let author = draft_metadata.author.clone();
@@ -288,6 +280,7 @@ pub(crate) async fn list_admin_plugin_drafts_inner(
     let client = object_store::AdminObjectClient::new();
     let objects = client.list_objects(PLUGIN_DRAFT_PREFIX).await?;
     let mut drafts = Vec::new();
+    let mut seen_sources = HashSet::new();
 
     for source_path in collect_plugin_draft_source_paths(&objects) {
         if source_path.trim().is_empty() {
@@ -369,7 +362,7 @@ pub(crate) async fn list_admin_plugin_drafts_inner(
                     non_empty_string(meta.name),
                     non_empty_string(meta.summary),
                     non_empty_string(meta.version),
-                    meta.targets,
+                    plugin_builtin_targets(),
                     meta.scopes,
                     meta.components,
                     meta.risk_level.filter(|value| !value.trim().is_empty()),
@@ -454,6 +447,7 @@ pub(crate) async fn list_admin_plugin_drafts_inner(
             validation_status.as_deref(),
         );
 
+        seen_sources.insert(source_path.clone());
         drafts.push(AdminDraftPlugin {
             gitlab_source_path: source_path,
             draft_slug: draft_location.draft_slug,
@@ -477,10 +471,228 @@ pub(crate) async fn list_admin_plugin_drafts_inner(
         });
     }
 
+    for prefix in [PLUGIN_ADMIN_PREFIX, PLUGIN_ARCHIVED_ADMIN_PREFIX] {
+        let admin_objects = client.list_objects(prefix).await?;
+        for object in admin_objects
+            .iter()
+            .filter(|object| object.ends_with("/state.v1.json") && object.starts_with(prefix))
+        {
+            let state_json = client
+                .get_optional_json::<serde_json::Value>(object)
+                .await?
+                .unwrap_or_default();
+            let Some(draft) = plugin_admin_state_draft_from_json(object, &state_json) else {
+                continue;
+            };
+            if seen_sources.insert(draft.gitlab_source_path.clone()) {
+                drafts.push(draft);
+            }
+        }
+    }
     drafts.sort_by(|a, b| a.gitlab_source_path.cmp(&b.gitlab_source_path));
     Ok(drafts)
 }
 
+pub(crate) fn plugin_admin_state_draft_from_json(
+    object_path: &str,
+    state_json: &serde_json::Value,
+) -> Option<AdminDraftPlugin> {
+    let object_source_path = object_path
+        .strip_prefix(PLUGIN_ADMIN_PREFIX)
+        .or_else(|| object_path.strip_prefix(PLUGIN_ARCHIVED_ADMIN_PREFIX))?
+        .strip_suffix("/state.v1.json")?
+        .to_string();
+    let source_path = state_json
+        .get("gitlabSourcePath")
+        .or_else(|| state_json.get("gitlab_source_path"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .unwrap_or(object_source_path);
+    if !is_valid_draft_source_path(&source_path) {
+        return None;
+    }
+
+    let namespace = state_json
+        .get("namespace")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let plugin_id = state_json
+        .get("pluginId")
+        .or_else(|| state_json.get("plugin_id"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let name = state_json
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| plugin_id.clone());
+    let summary = state_json
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "Plugin source is no longer available from GitLab.".to_string());
+    let published_version = state_json
+        .get("publishedVersion")
+        .or_else(|| state_json.get("published_version"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let state_status = state_json
+        .get("status")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let categories = state_json
+        .get("categories")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let publish_scope = state_json
+        .get("publishScope")
+        .or_else(|| state_json.get("publish_scope"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            categories.iter().find_map(|category| {
+                category
+                    .strip_prefix("project:")
+                    .map(|_| "project".to_string())
+            })
+        })
+        .unwrap_or_else(|| "public".to_string());
+    let publish_project_slug = state_json
+        .get("publishProjectSlug")
+        .or_else(|| state_json.get("publish_project_slug"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            categories
+                .iter()
+                .find_map(|category| category.strip_prefix("project:").map(ToString::to_string))
+        });
+    let publish_category_slug = state_json
+        .get("publishCategorySlug")
+        .or_else(|| state_json.get("publish_category_slug"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            categories
+                .iter()
+                .find(|category| !category.starts_with("project:"))
+                .cloned()
+        });
+    let updated_at = state_json
+        .get("updatedAt")
+        .or_else(|| state_json.get("updated_at"))
+        .or_else(|| state_json.get("archivedAt"))
+        .or_else(|| state_json.get("archived_at"))
+        .or_else(|| state_json.get("publishedAt"))
+        .or_else(|| state_json.get("published_at"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let updated_by = state_json
+        .get("archivedBy")
+        .or_else(|| state_json.get("archived_by"))
+        .or_else(|| state_json.get("publishedBy"))
+        .or_else(|| state_json.get("published_by"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+
+    let mut draft_location = parse_gitlab_source_path(&source_path);
+    if draft_location.draft_slug.is_none() {
+        draft_location.draft_slug = plugin_id.clone();
+    }
+    if draft_location.category_path.is_empty() {
+        if let Some(namespace) = namespace.as_ref() {
+            draft_location.category_path.push(namespace.clone());
+        }
+    }
+
+    let targets = plugin_builtin_targets();
+    let scopes = vec!["user".to_string(), "project".to_string()];
+    let publish_meta = match (namespace.clone(), plugin_id.clone(), name.clone()) {
+        (Some(namespace), Some(plugin_id), Some(name)) => Some(PublishMeta {
+            namespace,
+            skill_id: plugin_id,
+            version: published_version.clone(),
+            name,
+            summary: summary.clone(),
+            tags: Vec::new(),
+            targets: targets.clone(),
+            levels: scopes.clone(),
+            publish_scope: publish_scope.clone(),
+            publish_category_slug: if publish_scope == "project" {
+                None
+            } else {
+                publish_category_slug.clone()
+            },
+            publish_project_slug: if publish_scope == "project" {
+                publish_project_slug.clone()
+            } else {
+                None
+            },
+            changelog: String::new(),
+            updated_at: updated_at.clone(),
+            updated_by,
+        }),
+        _ => None,
+    };
+    let status = plugin_draft_status(
+        false,
+        false,
+        published_version.as_deref(),
+        published_version.as_deref(),
+        state_status.as_deref(),
+        &targets,
+        publish_meta.as_ref(),
+        None,
+    );
+
+    Some(AdminDraftPlugin {
+        gitlab_source_path: source_path,
+        draft_slug: draft_location.draft_slug,
+        gitlab_category_path: draft_location.category_path,
+        source_available: false,
+        readme_metadata_complete: false,
+        namespace,
+        plugin_id,
+        name,
+        summary: Some(summary),
+        version: published_version.clone(),
+        targets,
+        scopes,
+        components: Vec::new(),
+        risk_level: None,
+        status,
+        validation_status: None,
+        publish_meta,
+        published_version,
+        updated_at,
+    })
+}
 pub(crate) async fn list_admin_audit_logs_inner(
     request: ListAdminAuditLogsRequest,
     local_macs: &[String],
@@ -1971,6 +2183,9 @@ pub(crate) fn normalize_publish_meta_for_source(
     meta
 }
 
+pub(crate) fn plugin_builtin_targets() -> Vec<String> {
+    vec!["codex".to_string(), "claude".to_string()]
+}
 pub(crate) fn default_plugin_publish_meta(meta: &PluginSourceMeta) -> PublishMeta {
     PublishMeta {
         namespace: meta.namespace.clone(),
@@ -1979,7 +2194,7 @@ pub(crate) fn default_plugin_publish_meta(meta: &PluginSourceMeta) -> PublishMet
         name: meta.name.clone(),
         summary: meta.summary.clone(),
         tags: meta.tags.clone(),
-        targets: meta.targets.clone(),
+        targets: plugin_builtin_targets(),
         levels: meta.scopes.clone(),
         publish_scope: "public".to_string(),
         publish_category_slug: None,
@@ -2002,7 +2217,7 @@ pub(crate) fn default_plugin_publish_meta_from_readme(
         name: metadata.name.clone().unwrap_or_else(|| plugin_id.clone()),
         summary: metadata.description.clone().unwrap_or_default(),
         tags: metadata.tags.clone(),
-        targets: Vec::new(),
+        targets: plugin_builtin_targets(),
         levels: vec!["user".to_string(), "project".to_string()],
         publish_scope: "public".to_string(),
         publish_category_slug: None,
@@ -2090,6 +2305,7 @@ pub(crate) fn normalize_plugin_publish_meta(
     if meta.levels.is_empty() {
         meta.levels = vec!["user".to_string(), "project".to_string()];
     }
+    meta.targets = plugin_builtin_targets();
     meta
 }
 
@@ -2186,7 +2402,7 @@ pub(crate) fn plugin_source_meta_from_readme(
         name: name.clone(),
         summary: summary.clone(),
         tags: metadata.tags.clone(),
-        targets: Vec::new(),
+        targets: plugin_builtin_targets(),
         levels: vec!["user".to_string(), "project".to_string()],
         publish_scope: "public".to_string(),
         publish_category_slug: None,
@@ -3304,6 +3520,51 @@ pub(crate) async fn find_draft_source_for_plugin(
     Ok(None)
 }
 
+pub(crate) fn collect_skill_draft_source_paths(objects: &[String]) -> Vec<String> {
+    let mut paths = objects
+        .iter()
+        .filter_map(|object| {
+            if !object.starts_with(DRAFT_GITLAB_PREFIX) || !object.ends_with("/SKILL.md") {
+                return None;
+            }
+            let source_path = object
+                .trim_start_matches(DRAFT_GITLAB_PREFIX)
+                .trim_end_matches("/SKILL.md");
+            if !is_valid_draft_source_path(source_path) {
+                return None;
+            }
+            Some(source_path.to_string())
+        })
+        .collect::<Vec<_>>();
+    prune_nested_draft_source_paths(&mut paths);
+    paths
+}
+
+fn is_valid_draft_source_path(source_path: &str) -> bool {
+    !source_path.trim().is_empty() && !source_path.contains("..") && !source_path.contains('\\')
+}
+
+fn prune_nested_draft_source_paths(paths: &mut Vec<String>) {
+    paths.sort();
+    paths.dedup();
+
+    let mut roots: Vec<String> = Vec::new();
+    for path in paths.iter() {
+        if !roots
+            .iter()
+            .any(|root| is_nested_draft_source_path(path, root))
+        {
+            roots.push(path.clone());
+        }
+    }
+    *paths = roots;
+}
+
+fn is_nested_draft_source_path(path: &str, root: &str) -> bool {
+    path.len() > root.len()
+        && path.starts_with(root)
+        && path.as_bytes().get(root.len()) == Some(&b'/')
+}
 pub(crate) fn collect_plugin_draft_source_paths(objects: &[String]) -> Vec<String> {
     let mut paths = objects
         .iter()
@@ -3339,8 +3600,7 @@ pub(crate) fn collect_plugin_draft_source_paths(objects: &[String]) -> Vec<Strin
             paths.push(source_path);
         }
     }
-    paths.sort();
-    paths.dedup();
+    prune_nested_draft_source_paths(&mut paths);
     paths
 }
 
@@ -3807,14 +4067,9 @@ pub(crate) fn validate_plugin_source_meta(meta: &PluginSourceMeta) -> Result<()>
 
 pub(crate) fn validate_plugin_source_files(files: &[(String, Vec<u8>)]) -> Result<()> {
     for (path, _) in files {
-        let Some(path) = package::normalize_zip_relative_path(path) else {
+        if package::normalize_zip_relative_path(path).is_none() {
             return Err(anyhow!(
                 "PLUGIN_PACKAGE_BUILD_FAILED: 包含不安全路径 {path}"
-            ));
-        };
-        if is_plugin_platform_generated_path(&path) {
-            return Err(anyhow!(
-                "PLUGIN_SOURCE_INVALID: 插件草稿只保存通用插件数据，平台目录由发布器动态生成: {path}"
             ));
         }
     }
@@ -3831,7 +4086,6 @@ pub(crate) fn is_plugin_platform_generated_path(path: &str) -> bool {
         || normalized.starts_with("codex/")
         || normalized.starts_with("claude/")
 }
-
 pub(crate) fn build_plugin_component_inventory(
     files: &[(String, Vec<u8>)],
     targets: &[String],
@@ -3977,21 +4231,10 @@ pub(crate) fn build_plugin_risk_report(
     reasons.sort();
     reasons.dedup();
 
-    let computed = if reasons.iter().any(|reason| {
-        reason.contains("hooks")
-            || reason.contains("MCP")
-            || reason.contains("LSP")
-            || reason.contains("monitors")
-            || reason.contains("executable")
-    }) {
-        "high"
-    } else if reasons.is_empty() {
-        "low"
-    } else {
-        "medium"
-    };
-    let risk_level = max_risk_level(declared_level.unwrap_or(""), computed);
-    let requires_user_review = risk_level == "high";
+    let risk_level = declared_level
+        .filter(|level| !level.trim().is_empty())
+        .unwrap_or("low");
+    let requires_user_review = false;
     serde_json::json!({
         "schema": "skillhub.plugin-risk-report.v1",
         "riskLevel": risk_level,
@@ -4013,22 +4256,6 @@ fn inventory_array<'a>(
         .and_then(|value| value.as_array())
         .map(|items| items.iter().collect())
         .unwrap_or_default()
-}
-
-pub(crate) fn max_risk_level(first: &str, second: &str) -> String {
-    fn rank(level: &str) -> i32 {
-        match level {
-            "high" => 3,
-            "medium" => 2,
-            "low" => 1,
-            _ => 0,
-        }
-    }
-    if rank(first) >= rank(second) {
-        first.to_string()
-    } else {
-        second.to_string()
-    }
 }
 
 pub(crate) fn build_plugin_json(prepared: &PreparedPluginPublish) -> serde_json::Value {

@@ -227,20 +227,28 @@ pub(crate) async fn refresh_catalog_inner(state: &AppState) -> Result<Vec<Market
             .await
             .context("解析 catalog.v1.json 失败")?;
 
-        let plugin_catalog_doc: Option<PluginCatalogDoc> =
-            match client.get(plugin_catalog_url).send().await {
-                Ok(response) => {
-                    if response.status() == reqwest::StatusCode::NOT_FOUND {
-                        None
-                    } else {
-                        match response.error_for_status() {
-                            Ok(ok_response) => ok_response.json().await.ok(),
-                            Err(_) => None,
-                        }
-                    }
-                }
-                Err(_) => None,
-            };
+        let plugin_catalog_response = client
+            .get(plugin_catalog_url)
+            .send()
+            .await
+            .context("connect plugin-catalog.v1.json failed")?;
+        let plugin_catalog_status = plugin_catalog_response.status();
+        let plugin_catalog_doc: Option<PluginCatalogDoc> = if plugin_catalog_status
+            == reqwest::StatusCode::NOT_FOUND
+        {
+            None
+        } else {
+            Some(
+                plugin_catalog_response
+                    .error_for_status()
+                    .with_context(|| {
+                        format!("read plugin-catalog.v1.json failed: HTTP {plugin_catalog_status}")
+                    })?
+                    .json()
+                    .await
+                    .context("parse plugin-catalog.v1.json failed")?,
+            )
+        };
 
         let categories_doc: Option<CategoriesDoc> = match client.get(categories_url).send().await {
             Ok(response) => match response.error_for_status() {

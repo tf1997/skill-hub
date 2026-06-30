@@ -1,4 +1,3 @@
-
 use crate::services::admin::*;
 use crate::services::install::*;
 use crate::services::{object_store, validation};
@@ -388,11 +387,13 @@ metadata:
     );
     assert_eq!(prepared.meta.version, "1.0.0");
     assert_eq!(prepared.meta.tags, vec!["web", "testing"]);
+    assert_eq!(prepared.meta.targets, vec!["codex", "claude"]);
     assert!(prepared.packages.contains_key("codex"));
+    assert!(prepared.packages.contains_key("claude"));
 }
 
 #[test]
-fn plugin_publish_meta_overrides_source_publish_target() {
+fn plugin_publish_meta_uses_builtin_targets() {
     let source = PluginSourceMeta {
         schema: "skillhub.plugin-source.v1".to_string(),
         namespace: "internal".to_string(),
@@ -433,7 +434,7 @@ fn plugin_publish_meta_overrides_source_publish_target() {
     assert_eq!(merged.name, "Managed Commit Workflow");
     assert_eq!(merged.summary, "Managed summary");
     assert_eq!(merged.tags, vec!["managed"]);
-    assert_eq!(merged.targets, vec!["claude"]);
+    assert_eq!(merged.targets, vec!["codex", "claude"]);
     assert_eq!(merged.scopes, vec!["project"]);
     assert_eq!(merged.publish_scope.as_deref(), Some("project"));
     assert_eq!(merged.publish_project_slug.as_deref(), Some("alpha"));
@@ -441,20 +442,43 @@ fn plugin_publish_meta_overrides_source_publish_target() {
 }
 
 #[test]
-fn plugin_publish_rejects_platform_generated_directories_in_source() {
-    let files = sample_plugin_files(vec![(
-        "codex/.codex-plugin/plugin.json",
-        br#"{"name":"Commit Workflow"}"#.to_vec(),
-    )]);
-    let err = prepare_plugin_publish(&files, None).expect_err("platform directories should fail");
-    assert!(err.to_string().contains("PLUGIN_SOURCE_INVALID"));
+fn plugin_publish_allows_platform_and_custom_directories_in_source() {
+    let files = sample_plugin_files(vec![
+        (
+            "codex/.codex-plugin/plugin.json",
+            br#"{"name":"Source Manifest"}"#.to_vec(),
+        ),
+        ("claude/hooks/setup.sh", b"echo setup\n".to_vec()),
+        ("tools/analyze/config.json", br#"{"enabled":true}"#.to_vec()),
+    ]);
+
+    let prepared = prepare_plugin_publish(&files, None).expect("plugin publish should prepare");
+    let codex_package = prepared.packages.get("codex").expect("codex package");
+    let mut archive = ZipArchive::new(Cursor::new(codex_package.bytes.clone())).expect("zip opens");
+
+    let generated_manifest_size = {
+        let generated_manifest = archive
+            .by_name(".codex-plugin/plugin.json")
+            .expect("generated codex manifest should be present");
+        generated_manifest.size()
+    };
+    assert_ne!(
+        generated_manifest_size,
+        br#"{"name":"Source Manifest"}"#.len() as u64
+    );
+    assert!(archive.by_name("codex/.codex-plugin/plugin.json").is_ok());
+    assert!(archive.by_name("claude/hooks/setup.sh").is_ok());
+    assert!(archive.by_name("tools/analyze/config.json").is_ok());
 }
 
 #[test]
-fn plugin_package_filters_target_specific_common_files() {
+fn plugin_package_preserves_target_specific_and_custom_files() {
     let files = sample_plugin_files(vec![
         ("skills/review/SKILL.md", b"# Review\n".to_vec()),
         ("agents/reviewer.md", b"agent".to_vec()),
+        ("monitors/health.md", b"monitor".to_vec()),
+        ("bin/run.ps1", b"Write-Host ok".to_vec()),
+        ("tools/analyze/config.json", br#"{"enabled":true}"#.to_vec()),
         (".app.json", br#"{"apps":[]}"#.to_vec()),
     ]);
     let prepared = prepare_plugin_publish(&files, None).expect("plugin publish should prepare");
@@ -463,7 +487,10 @@ fn plugin_package_filters_target_specific_common_files() {
     assert!(archive.by_name(".codex-plugin/plugin.json").is_ok());
     assert!(archive.by_name("skills/review/SKILL.md").is_ok());
     assert!(archive.by_name(".app.json").is_ok());
-    assert!(archive.by_name("agents/reviewer.md").is_err());
+    assert!(archive.by_name("agents/reviewer.md").is_ok());
+    assert!(archive.by_name("monitors/health.md").is_ok());
+    assert!(archive.by_name("bin/run.ps1").is_ok());
+    assert!(archive.by_name("tools/analyze/config.json").is_ok());
     assert_eq!(prepared.risk_level, "medium");
 }
 
@@ -663,6 +690,37 @@ fn delete_cached_plugin_removes_unbound_cache_package() {
 }
 
 #[test]
+fn delete_cached_plugin_removes_market_preview_package_dir() {
+    let (state, _, _legacy_package_dir) = plugin_cache_test_state(None);
+    let preview_package_dir = state
+        .app_dir
+        .join("plugin-packages")
+        .join("internal.commit-workflow")
+        .join("1.0.0")
+        .join("codex");
+    fs::create_dir_all(preview_package_dir.join(".codex-plugin"))
+        .expect("create preview package dir");
+    fs::write(
+        preview_package_dir
+            .join(".codex-plugin")
+            .join("plugin.json"),
+        b"{}",
+    )
+    .expect("write preview manifest");
+
+    let request = DeleteCachedPluginRequest {
+        source_id: Some("compiled-source".to_string()),
+        namespace: "internal".to_string(),
+        plugin_id: "commit-workflow".to_string(),
+        version: "1.0.0".to_string(),
+        target: "codex".to_string(),
+    };
+
+    delete_cached_plugin_inner(request, &state).expect("delete cache should clean preview dir");
+
+    assert!(!preview_package_dir.exists());
+}
+#[test]
 fn plugin_draft_content_prefix_prefers_flat_plugin_root() {
     let root = "draft/gitlab/plugins/backend/java/commit-workflow/";
     let objects = vec![
@@ -830,6 +888,118 @@ fn plugin_draft_source_paths_include_directories_without_pluginhub() {
 }
 
 #[test]
+fn plugin_draft_source_paths_ignore_nested_readme_under_detected_root() {
+    let objects = vec![
+        "draft/gitlab/plugins/productivity/automation/release-notes-helper/README.md".to_string(),
+        "draft/gitlab/plugins/productivity/automation/release-notes-helper/docs/README.md"
+            .to_string(),
+        "draft/gitlab/plugins/productivity/automation/release-notes-helper/docs/usage.md"
+            .to_string(),
+        "draft/gitlab/plugins/productivity/automation/release-notes-helper/skills/write/SKILL.md"
+            .to_string(),
+    ];
+
+    let paths = collect_plugin_draft_source_paths(&objects);
+
+    assert_eq!(
+        paths,
+        vec!["productivity/automation/release-notes-helper".to_string()]
+    );
+}
+
+#[test]
+fn skill_draft_source_paths_ignore_nested_skill_md_under_detected_root() {
+    let objects = vec![
+        "draft/gitlab/skills/productivity/release-notes-helper/SKILL.md".to_string(),
+        "draft/gitlab/skills/productivity/release-notes-helper/docs/SKILL.md".to_string(),
+        "draft/gitlab/skills/productivity/release-notes-helper/docs/usage.md".to_string(),
+    ];
+
+    let paths = collect_skill_draft_source_paths(&objects);
+
+    assert_eq!(paths, vec!["productivity/release-notes-helper".to_string()]);
+}
+#[test]
+fn plugin_admin_state_builds_source_missing_draft_without_gitlab_source() {
+    let state = serde_json::json!({
+        "gitlabSourcePath": "productivity/automation/release-notes-helper",
+        "namespace": "productivity",
+        "pluginId": "release-notes-helper",
+        "name": "Release Notes Helper",
+        "summary": "Generate release notes from commits and PRs.",
+        "publishedVersion": "0.2.0",
+        "publishScope": "public",
+        "publishCategorySlug": "productivity",
+        "status": "published",
+        "updatedAt": "2026-06-29T10:20:30Z"
+    });
+
+    let draft = plugin_admin_state_draft_from_json(
+        "draft/admin/gitlab/plugins/productivity/automation/release-notes-helper/state.v1.json",
+        &state,
+    )
+    .expect("published plugin state should build a fallback draft");
+
+    assert_eq!(
+        draft.gitlab_source_path,
+        "productivity/automation/release-notes-helper"
+    );
+    assert_eq!(draft.draft_slug.as_deref(), Some("release-notes-helper"));
+    assert_eq!(
+        draft.gitlab_category_path,
+        vec!["productivity".to_string(), "automation".to_string()]
+    );
+    assert!(!draft.source_available);
+    assert_eq!(draft.status, "source_missing");
+    assert_eq!(draft.namespace.as_deref(), Some("productivity"));
+    assert_eq!(draft.plugin_id.as_deref(), Some("release-notes-helper"));
+    assert_eq!(draft.version.as_deref(), Some("0.2.0"));
+    assert_eq!(draft.published_version.as_deref(), Some("0.2.0"));
+    assert_eq!(
+        draft.targets,
+        vec!["codex".to_string(), "claude".to_string()]
+    );
+    let meta = draft
+        .publish_meta
+        .expect("fallback draft should include publish metadata");
+    assert_eq!(meta.publish_scope, "public");
+    assert_eq!(meta.publish_category_slug.as_deref(), Some("productivity"));
+}
+
+#[test]
+fn archived_plugin_admin_state_builds_archived_draft_without_gitlab_source() {
+    let state = serde_json::json!({
+        "namespace": "productivity",
+        "pluginId": "release-notes-helper",
+        "name": "Release Notes Helper",
+        "summary": "Generate release notes from commits and PRs.",
+        "categories": ["project:alpha"],
+        "publishedVersion": "0.2.0",
+        "archivedAt": "2026-06-29T10:20:30Z",
+        "archivedBy": "system",
+        "status": "archived"
+    });
+
+    let draft = plugin_admin_state_draft_from_json(
+        "draft/admin/archived/plugins/productivity/release-notes-helper/state.v1.json",
+        &state,
+    )
+    .expect("archived plugin state should build a fallback draft");
+
+    assert_eq!(
+        draft.gitlab_source_path,
+        "productivity/release-notes-helper"
+    );
+    assert!(!draft.source_available);
+    assert_eq!(draft.status, "archived");
+    assert_eq!(draft.updated_at.as_deref(), Some("2026-06-29T10:20:30Z"));
+    let meta = draft
+        .publish_meta
+        .expect("fallback draft should include publish metadata");
+    assert_eq!(meta.publish_scope, "project");
+    assert_eq!(meta.publish_project_slug.as_deref(), Some("alpha"));
+}
+#[test]
 fn plugin_publish_can_synthesize_source_meta_from_readme_and_saved_publish_meta() {
     let files = vec![
         (
@@ -906,7 +1076,10 @@ fn default_plugin_publish_meta_does_not_take_market_scope_from_pluginhub() {
     assert_eq!(meta.publish_scope, "public");
     assert_eq!(meta.publish_category_slug, None);
     assert_eq!(meta.publish_project_slug, None);
-    assert_eq!(meta.targets, vec!["codex".to_string()]);
+    assert_eq!(
+        meta.targets,
+        vec!["codex".to_string(), "claude".to_string()]
+    );
 }
 
 #[test]

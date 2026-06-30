@@ -501,6 +501,21 @@ pub(crate) fn delete_cached_skill_inner(
     Ok(())
 }
 
+fn remove_plugin_package_cache_dir(
+    state: &AppState,
+    namespace: &str,
+    plugin_id: &str,
+    version: &str,
+    target: &str,
+) -> Result<()> {
+    let package_dir = plugin_package_cache_dir(state, namespace, plugin_id, version, target);
+    if package_dir.exists() {
+        package::ensure_safe_plugin_package_cache_path(state, &package_dir)?;
+        fs::remove_dir_all(&package_dir)
+            .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove cached plugin package failed")?;
+    }
+    Ok(())
+}
 pub(crate) fn delete_cached_plugin_inner(
     request: DeleteCachedPluginRequest,
     state: &AppState,
@@ -531,6 +546,13 @@ pub(crate) fn delete_cached_plugin_inner(
         .optional()?;
 
     let Some((package_id, package_path, binding_count)) = cached else {
+        remove_plugin_package_cache_dir(
+            state,
+            &request.namespace,
+            &request.plugin_id,
+            &request.version,
+            &request.target,
+        )?;
         return Ok(());
     };
     if binding_count > 0 {
@@ -545,6 +567,13 @@ pub(crate) fn delete_cached_plugin_inner(
         fs::remove_dir_all(&path)
             .context("PLUGIN_MARKETPLACE_WRITE_FAILED: remove cached plugin package failed")?;
     }
+    remove_plugin_package_cache_dir(
+        state,
+        &request.namespace,
+        &request.plugin_id,
+        &request.version,
+        &request.target,
+    )?;
 
     conn.execute(
         "DELETE FROM local_package_metadata WHERE package_id = ?1",
@@ -1165,6 +1194,20 @@ pub(crate) async fn prepare_package(
     Ok(package_dir)
 }
 
+fn plugin_package_cache_dir(
+    state: &AppState,
+    namespace: &str,
+    plugin_id: &str,
+    version: &str,
+    target: &str,
+) -> PathBuf {
+    state
+        .app_dir
+        .join("plugin-packages")
+        .join(format!("{namespace}.{plugin_id}"))
+        .join(version)
+        .join(target)
+}
 pub(crate) async fn prepare_plugin_package(
     state: &AppState,
     source: Option<&Source>,
@@ -1178,12 +1221,8 @@ pub(crate) async fn prepare_plugin_package(
         "claude" => ".claude-plugin/plugin.json",
         _ => return Err(anyhow!("PLUGIN_TARGET_UNSUPPORTED: {target}")),
     };
-    let package_dir = state
-        .app_dir
-        .join("plugin-packages")
-        .join(format!("{}.{}", plugin.namespace, plugin.id))
-        .join(version)
-        .join(target);
+    let package_dir =
+        plugin_package_cache_dir(state, &plugin.namespace, &plugin.id, version, target);
 
     if package_dir.join(manifest_file).exists() {
         return Ok(package_dir);

@@ -1,4 +1,4 @@
-import { AlertCircle, Archive, Blocks, BookOpen, CheckCircle2, ChevronDown, ChevronRight, Download, FileText, FolderGit2, FolderOpen, Layers3, PackageCheck, Pencil, Plus, RefreshCw, Rocket, Save, Search, Settings, Trash2, X } from "lucide-react";
+import { AlertCircle, Archive, Blocks, BookOpen, CheckCircle2, ChevronDown, ChevronRight, Download, FileText, FolderGit2, FolderOpen, Layers3, Loader2, PackageCheck, Pencil, Plus, RefreshCw, Rocket, Save, Search, Settings, Trash2, X } from "lucide-react";
 import type { AdminAuditLog, AdminDraftPlugin, AdminDraftSkill, AdminSession, AppBootstrap, CachedPluginPackage, CachedSkillPackage, Category, LocalPlugin, LocalSkill, MarketPlugin, MarketProject, MarketSkill, Project, PublishMeta, SkillBinding, TargetRoot, UpdateCandidate } from "../../types";
 import { Badge } from "../../components/common/Badge";
 import { BindingDots } from "../../components/common/BindingDots";
@@ -46,6 +46,8 @@ export function MarketView(props: {
   onUnsupportedPluginProjectScope: () => void;
   installProjectPath: string;
   onInstallProjectPath: (value: string) => void;
+  installingPluginKey?: string | null;
+  installingPluginStage?: string;
   targetRoots: TargetRoot[];
   projects: Project[];
   onInstall: () => void;
@@ -90,6 +92,10 @@ export function MarketView(props: {
             props.installProjectPath
           )
         : { label: "安装并启用", disabled: false, tone: "install" as const };
+  const activePluginKey = props.selectedPlugin ? pluginKey(props.selectedPlugin) : null;
+  const pluginInstalling =
+    props.artifactKind === "plugin" && activePluginKey !== null && props.installingPluginKey === activePluginKey;
+  const pluginInstallLabel = pluginInstalling ? props.installingPluginStage || "安装中" : installState.label;
   const filterProjects = normalizeProjectList(props.marketProjects);
   const codexPluginProjectUnsupported = props.artifactKind === "plugin" && props.installTarget === "codex";
   const changeMarketFilter = (value: string) => {
@@ -386,16 +392,18 @@ export function MarketView(props: {
                 详情预览
               </button>
               <button
-                className="primary-action"
+                className={`primary-action ${pluginInstalling ? "installing" : ""}`}
                 onClick={props.onInstall}
-                disabled={installState.disabled}
+                disabled={installState.disabled || pluginInstalling}
               >
-                {installState.tone === "cached" || installState.tone === "installed" ? (
+                {pluginInstalling ? (
+                  <Loader2 size={18} className="button-spinner" />
+                ) : installState.tone === "cached" || installState.tone === "installed" ? (
                   <CheckCircle2 size={18} />
                 ) : (
                   <Download size={18} />
                 )}
-                {installState.label}
+                {pluginInstallLabel}
               </button>
             </div>
           </>
