@@ -4,6 +4,7 @@ frontend/.vite/
 fronted/node_modules/
 fronted/dist/
 fronted/.vite/
+frontend/package-lock.json
 src-tauri/target/
 src-tauri/Cargo.lock
 .worktrees/
