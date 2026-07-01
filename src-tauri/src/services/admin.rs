@@ -98,6 +98,7 @@ pub(crate) async fn list_admin_drafts_inner(
     let objects = client.list_objects(DRAFT_GITLAB_PREFIX).await?;
     let mut drafts = Vec::new();
     let mut seen_sources = HashSet::new();
+    let mut catalog_for_recovery: Option<CatalogDoc> = None;
 
     for source_path in collect_skill_draft_source_paths(&objects) {
         seen_sources.insert(source_path.clone());
@@ -111,28 +112,45 @@ pub(crate) async fn list_admin_drafts_inner(
         let state_path = admin_object_path(&source_path, "state.v1.json")?;
         let validation_path = format!("{}{}/validation.json", DRAFT_GITLAB_PREFIX, source_path);
         let default_meta = default_publish_meta_from_draft(&source_path, &draft_metadata);
-        let publish_meta = client
-            .get_optional_json::<PublishMeta>(&meta_path)
-            .await?
-            .map(|meta| {
-                merge_publish_meta_defaults(
-                    normalize_publish_meta_for_source(meta, &source_path),
-                    default_meta.clone(),
-                )
-            })
-            .or(Some(default_meta));
-        let state_json = client
+        let saved_publish_meta = client.get_optional_json::<PublishMeta>(&meta_path).await?;
+        let mut state_json = client
             .get_optional_json::<serde_json::Value>(&state_path)
             .await?;
+        let recovered = if saved_publish_meta.is_none() || state_json.is_none() {
+            if catalog_for_recovery.is_none() {
+                catalog_for_recovery = Some(load_remote_catalog(&client).await?);
+            }
+            recover_skill_admin_artifacts_from_market(
+                &source_path,
+                &draft_metadata,
+                catalog_for_recovery.as_ref().expect("catalog loaded"),
+            )
+        } else {
+            None
+        };
+        let publish_meta = match saved_publish_meta {
+            Some(meta) => Some(merge_publish_meta_defaults(
+                normalize_publish_meta_for_source(meta, &source_path),
+                default_meta.clone(),
+            )),
+            None => {
+                if let Some(recovered) = recovered.as_ref() {
+                    client.put_json(&meta_path, &recovered.publish_meta).await?;
+                    Some(recovered.publish_meta.clone())
+                } else {
+                    Some(default_meta)
+                }
+            }
+        };
+        if state_json.is_none() {
+            if let Some(recovered) = recovered.as_ref() {
+                client.put_json(&state_path, &recovered.state).await?;
+                state_json = Some(recovered.state.clone());
+            }
+        }
         let published_version = state_json
             .as_ref()
-            .and_then(|value| {
-                value
-                    .get("publishedVersion")
-                    .or_else(|| value.get("published_version"))
-            })
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string);
+            .and_then(skill_published_version_from_state);
         let state_status = state_json
             .as_ref()
             .and_then(|value| value.get("status"))
@@ -291,15 +309,7 @@ pub(crate) async fn list_admin_plugin_drafts_inner(
         let state_json = client
             .get_optional_json::<serde_json::Value>(&state_path)
             .await?;
-        let published_version = state_json
-            .as_ref()
-            .and_then(|value| {
-                value
-                    .get("publishedVersion")
-                    .or_else(|| value.get("published_version"))
-            })
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string);
+        let published_version = state_json.as_ref().and_then(published_version_from_state);
         let state_status = state_json
             .as_ref()
             .and_then(|value| value.get("status"))
@@ -540,13 +550,7 @@ pub(crate) fn plugin_admin_state_draft_from_json(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .unwrap_or_else(|| "Plugin source is no longer available from GitLab.".to_string());
-    let published_version = state_json
-        .get("publishedVersion")
-        .or_else(|| state_json.get("published_version"))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
+    let published_version = published_version_from_state(state_json);
     let state_status = state_json
         .get("status")
         .and_then(|value| value.as_str())
@@ -1216,18 +1220,13 @@ pub(crate) async fn publish_draft_inner(
         .await?;
     let published_version = state_json
         .as_ref()
-        .and_then(|value| {
-            value
-                .get("publishedVersion")
-                .or_else(|| value.get("published_version"))
-        })
-        .and_then(|value| value.as_str());
+        .and_then(skill_published_version_from_state);
     let state_archived = state_json
         .as_ref()
         .and_then(|value| value.get("status"))
         .and_then(|value| value.as_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("archived"));
-    if !state_archived && published_version == Some(version.as_str()) {
+    if !state_archived && published_version.as_deref() == Some(version.as_str()) {
         return Err(anyhow!("该草稿当前版本已发布，禁止重复发布"));
     }
     validation::validate_publish_meta(&meta)?;
@@ -1481,15 +1480,8 @@ pub(crate) async fn publish_plugin_draft_inner(
     ensure_can_manage_plugin_publish_target(&authorization, meta)?;
     validate_plugin_publish_target(&client, meta).await?;
 
-    let published_version = state_json
-        .as_ref()
-        .and_then(|value| {
-            value
-                .get("publishedVersion")
-                .or_else(|| value.get("published_version"))
-        })
-        .and_then(|value| value.as_str());
-    if !state_archived && published_version == Some(meta.version.as_str()) {
+    let published_version = state_json.as_ref().and_then(published_version_from_state);
+    if !state_archived && published_version.as_deref() == Some(meta.version.as_str()) {
         return Err(anyhow!("PLUGIN_PUBLISH_OBJECT_EXISTS: 当前版本已发布"));
     }
 
@@ -1801,12 +1793,7 @@ pub(crate) async fn quick_republish_archived_skill_inner(
         // 5b. 如果 manifest 不存在，尝试从 state.v1.json 读取版本
         state_json
             .as_ref()
-            .and_then(|v| {
-                v.get("publishedVersion")
-                    .or_else(|| v.get("published_version"))
-            })
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .and_then(skill_published_version_from_state)
             .ok_or_else(|| {
                 anyhow!(
                     "无法确定 skill 版本信息。该 skill 的下架记录不完整，缺少版本号。\n\n\
@@ -2686,6 +2673,134 @@ pub(crate) fn non_empty_string(value: String) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RecoveredSkillAdminArtifacts {
+    pub(crate) publish_meta: PublishMeta,
+    pub(crate) state: serde_json::Value,
+}
+
+pub(crate) fn recover_skill_admin_artifacts_from_market(
+    source_path: &str,
+    metadata: &DraftSkillMetadata,
+    catalog: &CatalogDoc,
+) -> Option<RecoveredSkillAdminArtifacts> {
+    let version = metadata.version.as_deref()?.trim();
+    if version.is_empty() {
+        return None;
+    }
+    let skill_id = draft_skill_id_from_source_path(source_path);
+    let market_skill = catalog.skills.iter().find(|skill| {
+        skill.namespace == FIXED_PUBLISH_NAMESPACE
+            && skill.id == skill_id
+            && skill.latest_version == version
+    })?;
+
+    let mut publish_meta = PublishMeta {
+        namespace: market_skill.namespace.clone(),
+        skill_id: market_skill.id.clone(),
+        version: Some(market_skill.latest_version.clone()),
+        name: market_skill.name.clone(),
+        summary: market_skill.summary.clone(),
+        tags: market_skill.tags.clone(),
+        targets: market_skill.targets.clone(),
+        levels: if market_skill.levels.is_empty() {
+            vec!["personal".to_string(), "project".to_string()]
+        } else {
+            market_skill.levels.clone()
+        },
+        publish_scope: "public".to_string(),
+        publish_category_slug: None,
+        publish_project_slug: None,
+        changelog: String::new(),
+        updated_at: market_skill.updated_at.clone(),
+        updated_by: None,
+    };
+    apply_market_categories_to_publish_meta(&mut publish_meta, &market_skill.categories);
+
+    let state = serde_json::json!({
+        "gitlabSourcePath": source_path,
+        "namespace": market_skill.namespace,
+        "skillId": market_skill.id,
+        "name": market_skill.name,
+        "summary": market_skill.summary,
+        "categories": market_skill.categories,
+        "publishedVersion": market_skill.latest_version,
+        "publishScope": publish_meta.publish_scope,
+        "publishCategorySlug": publish_meta.publish_category_slug,
+        "publishProjectSlug": publish_meta.publish_project_slug,
+        "status": "published",
+        "updatedAt": market_skill.updated_at
+    });
+
+    Some(RecoveredSkillAdminArtifacts {
+        publish_meta,
+        state,
+    })
+}
+
+fn apply_market_categories_to_publish_meta(meta: &mut PublishMeta, categories: &[String]) {
+    if let Some(project_slug) = categories
+        .iter()
+        .filter_map(|category| category.strip_prefix("project:"))
+        .map(str::trim)
+        .find(|slug| !slug.is_empty())
+    {
+        meta.publish_scope = "project".to_string();
+        meta.publish_project_slug = Some(project_slug.to_string());
+        meta.publish_category_slug = None;
+        return;
+    }
+
+    meta.publish_scope = "public".to_string();
+    meta.publish_category_slug = categories
+        .iter()
+        .map(|category| category.trim())
+        .find(|category| !category.is_empty())
+        .map(ToString::to_string);
+    meta.publish_project_slug = None;
+}
+pub(crate) fn skill_published_version_from_state(value: &serde_json::Value) -> Option<String> {
+    if let Some(version) = published_version_from_state(value) {
+        return Some(version);
+    }
+
+    let state_status = value
+        .get("status")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if !state_status.eq_ignore_ascii_case("published")
+        && !state_status.eq_ignore_ascii_case("archived")
+    {
+        return None;
+    }
+
+    for key in ["version", "latestVersion", "latest_version"] {
+        if let Some(version) = state_version_field(value, key) {
+            return Some(version);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn published_version_from_state(value: &serde_json::Value) -> Option<String> {
+    for key in ["publishedVersion", "published_version"] {
+        if let Some(version) = state_version_field(value, key) {
+            return Some(version);
+        }
+    }
+
+    None
+}
+
+fn state_version_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    match value.get(key)? {
+        serde_json::Value::String(value) => non_empty_string(value.clone()),
+        serde_json::Value::Number(value) => non_empty_string(value.to_string()),
+        _ => None,
+    }
+}
 pub(crate) fn plugin_draft_status(
     source_available: bool,
     readme_metadata_complete: bool,

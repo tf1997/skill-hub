@@ -1,4 +1,9 @@
 .market-grid {
+  --market-filter-rail-bg: linear-gradient(180deg, rgba(245, 248, 252, 0.8), rgba(255, 255, 255, 0));
+  --market-filter-chip-hover-bg: rgba(76, 120, 255, 0.08);
+  --market-filter-chip-hover-border: rgba(76, 120, 255, 0.16);
+  --market-filter-chip-active-shadow: inset 0 0 0 1px rgba(76, 120, 255, 0.08);
+
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(360px, 0.92fr);
   grid-template-rows: minmax(0, 1fr);
@@ -6,6 +11,13 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+.app-shell[data-theme="dark"] .market-grid {
+  --market-filter-rail-bg: linear-gradient(180deg, rgba(23, 31, 43, 0.88), rgba(18, 24, 34, 0.32));
+  --market-filter-chip-hover-bg: rgba(93, 138, 255, 0.14);
+  --market-filter-chip-hover-border: rgba(93, 138, 255, 0.26);
+  --market-filter-chip-active-shadow: inset 0 0 0 1px rgba(93, 138, 255, 0.14);
 }
 
 .list-pane,
@@ -117,7 +129,7 @@
   min-width: 0;
   min-height: 0;
   padding: 10px;
-  background: linear-gradient(180deg, rgba(245, 248, 252, 0.8), rgba(255, 255, 255, 0));
+  background: var(--market-filter-rail-bg);
   border-right: 1px solid var(--line);
   overflow: auto;
   scrollbar-width: thin;
@@ -142,15 +154,15 @@
 
 .market-filter-chip:hover {
   color: var(--text);
-  background: rgba(76, 120, 255, 0.08);
-  border-color: rgba(76, 120, 255, 0.16);
+  background: var(--market-filter-chip-hover-bg);
+  border-color: var(--market-filter-chip-hover-border);
 }
 
 .market-filter-chip.active {
   color: var(--accent-primary);
   background: var(--nav-active);
   border-color: var(--accent-line);
-  box-shadow: inset 0 0 0 1px rgba(76, 120, 255, 0.08);
+  box-shadow: var(--market-filter-chip-active-shadow);
 }
 
 .market-filter-chip span {

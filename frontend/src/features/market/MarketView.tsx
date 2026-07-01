@@ -289,7 +289,7 @@ export function MarketView(props: {
               <p className="detail-summary">{props.selectedPlugin.summary}</p>
 
               <div className="tag-cloud">
-                {[...props.selectedPlugin.targets, ...props.selectedPlugin.scopes, ...props.selectedPlugin.components].map((tag) => (
+                {props.selectedPlugin.tags.map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
               </div>

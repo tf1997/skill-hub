@@ -1752,6 +1752,123 @@ fn validation_status_controls_draft_status() {
 }
 
 #[test]
+fn recovers_skill_admin_artifacts_from_matching_market_skill() {
+    let metadata = DraftSkillMetadata {
+        name: Some("Draft Name".to_string()),
+        description: Some("Draft summary".to_string()),
+        tags: vec!["draft".to_string()],
+        version: Some("1.0.0".to_string()),
+        author: Some("Skill Hub".to_string()),
+    };
+    let catalog = CatalogDoc {
+        schema: "skillhub.catalog.v1".to_string(),
+        generated_at: None,
+        categories: vec!["project:alpha".to_string()],
+        skills: vec![MarketSkill {
+            namespace: FIXED_PUBLISH_NAMESPACE.to_string(),
+            id: "release-helper".to_string(),
+            name: "Release Helper".to_string(),
+            summary: "Published market summary".to_string(),
+            latest_version: "1.0.0".to_string(),
+            categories: vec!["project:alpha".to_string()],
+            tags: vec!["release".to_string()],
+            targets: vec!["codex".to_string()],
+            levels: vec!["personal".to_string(), "project".to_string()],
+            manifest_path: "skills/DT/release-helper/manifest.json".to_string(),
+            updated_at: Some("2026-06-30T01:02:03Z".to_string()),
+            source_id: None,
+            installed_bindings: Vec::new(),
+            cached_versions: Vec::new(),
+        }],
+    };
+
+    let recovered = recover_skill_admin_artifacts_from_market(
+        "productivity/release-helper",
+        &metadata,
+        &catalog,
+    )
+    .expect("matching market skill should recover admin artifacts");
+
+    assert_eq!(recovered.publish_meta.namespace, FIXED_PUBLISH_NAMESPACE);
+    assert_eq!(recovered.publish_meta.skill_id, "release-helper");
+    assert_eq!(recovered.publish_meta.version.as_deref(), Some("1.0.0"));
+    assert_eq!(recovered.publish_meta.name, "Release Helper");
+    assert_eq!(recovered.publish_meta.summary, "Published market summary");
+    assert_eq!(recovered.publish_meta.tags, vec!["release"]);
+    assert_eq!(recovered.publish_meta.targets, vec!["codex"]);
+    assert_eq!(recovered.publish_meta.publish_scope, "project");
+    assert_eq!(
+        recovered.publish_meta.publish_project_slug.as_deref(),
+        Some("alpha")
+    );
+    assert!(recovered.publish_meta.publish_category_slug.is_none());
+    assert!(validation::is_publish_meta_ready_for_status(
+        &recovered.publish_meta
+    ));
+    assert_eq!(
+        recovered.state["gitlabSourcePath"],
+        "productivity/release-helper"
+    );
+    assert_eq!(recovered.state["namespace"], FIXED_PUBLISH_NAMESPACE);
+    assert_eq!(recovered.state["skillId"], "release-helper");
+    assert_eq!(recovered.state["publishedVersion"], "1.0.0");
+    assert_eq!(recovered.state["status"], "published");
+    assert_eq!(
+        draft_status(
+            metadata.version.as_deref(),
+            skill_published_version_from_state(&recovered.state).as_deref(),
+            Some("published"),
+            Some(&recovered.publish_meta),
+            None,
+        ),
+        "已发布"
+    );
+}
+#[test]
+fn skill_published_version_from_state_accepts_legacy_version_fields() {
+    let camel = serde_json::json!({ "publishedVersion": "1.0.0" });
+    let snake = serde_json::json!({ "published_version": "1.1.0" });
+    let legacy_version = serde_json::json!({
+        "status": "published",
+        "version": "1.2.0"
+    });
+    let legacy_latest = serde_json::json!({
+        "status": "published",
+        "latestVersion": "1.3.0"
+    });
+    let legacy_latest_snake = serde_json::json!({
+        "status": "published",
+        "latest_version": "1.4.0"
+    });
+    let pending_legacy = serde_json::json!({
+        "status": "pending",
+        "version": "2.0.0"
+    });
+
+    assert_eq!(
+        skill_published_version_from_state(&camel).as_deref(),
+        Some("1.0.0")
+    );
+    assert_eq!(
+        skill_published_version_from_state(&snake).as_deref(),
+        Some("1.1.0")
+    );
+    assert_eq!(
+        skill_published_version_from_state(&legacy_version).as_deref(),
+        Some("1.2.0")
+    );
+    assert_eq!(
+        skill_published_version_from_state(&legacy_latest).as_deref(),
+        Some("1.3.0")
+    );
+    assert_eq!(
+        skill_published_version_from_state(&legacy_latest_snake).as_deref(),
+        Some("1.4.0")
+    );
+    assert_eq!(skill_published_version_from_state(&pending_legacy), None);
+    assert_eq!(published_version_from_state(&legacy_version), None);
+}
+#[test]
 fn draft_status_treats_missing_publish_target_as_pending() {
     let meta = PublishMeta {
         namespace: "community".to_string(),

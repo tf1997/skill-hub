@@ -981,6 +981,21 @@
     max-height: calc(100vh - 20px);
   }
 
+  .preview-toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .preview-file-nav,
+  .preview-tree-actions,
+  .preview-zoom-control {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .preview-copy-status {
+    justify-self: start;
+  }
   .preview-browser {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(160px, 0.36fr) minmax(0, 1fr);
